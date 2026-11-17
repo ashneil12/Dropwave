@@ -130,11 +130,13 @@ import { isHostedByThisApp } from "../sidebar/useUpdateEverything";
 const RESPONSE_STREAMING_MODE_LABELS: Record<ResponseStreamingMode, string> = {
   turn: "Wait for the full response",
   paragraph: "Show finished paragraphs",
+  live: "Show text as it is written",
 };
 
 const RESPONSE_STREAMING_MODE_DESCRIPTIONS: Record<ResponseStreamingMode, string> = {
   turn: "Text appears once the agent finishes its turn.",
   paragraph: "Each paragraph or code block appears as soon as it is complete.",
+  live: "Text appears word by word while the agent writes.",
 };
 
 const SIDEBAR_PROJECT_SORT_ORDER_LABELS: Record<SidebarProjectSortOrder, string> = {
@@ -2148,7 +2150,7 @@ export function ThreadsSettingsPanel() {
               <Select
                 value={mixedResponseStreamingMode ? null : settings.responseStreamingMode}
                 onValueChange={(value) => {
-                  if (value === "turn" || value === "paragraph") {
+                  if (value === "turn" || value === "paragraph" || value === "live") {
                     updateSettings({ responseStreamingMode: value });
                   }
                 }}
@@ -2166,6 +2168,9 @@ export function ThreadsSettingsPanel() {
                   </SelectItem>
                   <SelectItem hideIndicator value="paragraph">
                     {RESPONSE_STREAMING_MODE_LABELS.paragraph}
+                  </SelectItem>
+                  <SelectItem hideIndicator value="live">
+                    {RESPONSE_STREAMING_MODE_LABELS.live}
                   </SelectItem>
                 </SelectPopup>
               </Select>

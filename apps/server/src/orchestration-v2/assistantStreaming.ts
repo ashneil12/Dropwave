@@ -112,6 +112,8 @@ export function splitBufferedAssistantText(text: string): { ready: string; rest:
 // Long enough to ride out normal gaps between chunks; short enough that text written before a
 // long tool call or background wait does not look lost.
 const ASSISTANT_IDLE_FLUSH_MS = 800;
+// Live mode writes a whole-text snapshot per delivery, so it is paced rather than per token.
+const LIVE_DELIVERY_GAP_MS = 80;
 
 type StreamedMessage = {
   readonly id: string;
@@ -154,7 +156,8 @@ function withText(
 /**
  * Paragraph mode delivers streamed text at Markdown boundaries, at most every 400ms. A snapshot
  * held back that way is delivered whole once its message has been idle for `idleFlushMs`, so a
- * provider that pauses mid-turn still shows everything it wrote.
+ * provider that pauses mid-turn still shows everything it wrote. Live mode delivers text as it is
+ * written, at most every 80ms, and a held snapshot follows after that gap.
  */
 export function makeAssistantStreamingFilter(
   mode: ResponseStreamingMode,
@@ -190,17 +193,23 @@ export function makeAssistantStreamingFilter(
       if (mode === "turn") return null;
       const previous = tracks.get(key);
       const delivered = previous?.text ?? "";
+      const live = mode === "live";
       const hold = (scan = previous?.scan ?? EMPTY_SCAN) => {
         track(key, {
           text: delivered,
           at: previous?.at ?? Number.NEGATIVE_INFINITY,
           held: message.text !== delivered ? event : null,
-          dueAt: now + idleFlushMs,
+          dueAt: live && previous ? previous.at + LIVE_DELIVERY_GAP_MS : now + idleFlushMs,
           scan,
         });
         return null;
       };
-      if (previous && now - previous.at < 400) return hold();
+      if (previous && now - previous.at < (live ? LIVE_DELIVERY_GAP_MS : 400)) return hold();
+      if (live) {
+        if (message.text === delivered) return hold();
+        track(key, { text: message.text, at: now, held: null, dueAt: now, scan: EMPTY_SCAN });
+        return event;
+      }
       const scan = advanceScan(previous?.scan ?? EMPTY_SCAN, message.text);
       const boundary = readyBoundary(scan);
       const ready = boundary === -1 ? "" : message.text.slice(0, boundary);

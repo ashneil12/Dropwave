@@ -64,7 +64,11 @@ const snapshot = (id: string, text: string, streaming: boolean) =>
 const shown = (event: ProviderAdapter.ProviderAdapterV2Event | null) =>
   event?.type === "message.updated" ? event.message.text : null;
 
-it.each<{ readonly name: string; readonly mode?: "turn"; readonly steps: ReadonlyArray<Step> }>([
+it.each<{
+  readonly name: string;
+  readonly mode?: "turn" | "live";
+  readonly steps: ReadonlyArray<Step>;
+}>([
   {
     name: "an unfinished code fence",
     steps: [
@@ -188,6 +192,24 @@ it.each<{ readonly name: string; readonly mode?: "turn"; readonly steps: Readonl
     name: "turn mode",
     mode: "turn",
     steps: [{ at: 0, text: "A\n\nB", shows: null }, { dueAt: null }],
+  },
+  {
+    name: "live mode, which shows text mid-line and mid-fence, paced",
+    mode: "live",
+    steps: [
+      { at: 0, text: "Count", shows: "Count" },
+      { at: 30, text: "Counting the", shows: null },
+      { dueAt: 80 },
+      { at: 60, text: "Counting the lines", shows: null },
+      { at: 80, text: "Counting the lines\n\n```ts\nx(", shows: "Counting the lines\n\n```ts\nx(" },
+      { dueAt: 80 },
+      { at: 100, text: "Counting the lines\n\n```ts\nx()", shows: null },
+      { idle: 150, shows: [] },
+      { idle: 160, shows: ["Counting the lines\n\n```ts\nx()"] },
+      { at: 300, text: "Counting the lines\n\n```ts\nx()", shows: null },
+      { dueAt: null },
+      { at: 310, final: "Counting the lines\n\n```ts\nx()\n```\n" },
+    ],
   },
 ])("paragraph streaming holds and idle-delivers $name", ({ mode, steps }) => {
   const filter = makeAssistantStreamingFilter(mode ?? "paragraph", 800);

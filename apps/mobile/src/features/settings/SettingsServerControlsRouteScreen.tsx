@@ -130,6 +130,11 @@ const STREAMING_CHOICES: ReadonlyArray<{
     label: "Finished paragraphs",
     description: "Show each paragraph or code block as it completes.",
   },
+  {
+    mode: "live",
+    label: "As it is written",
+    description: "Show text word by word while the agent writes.",
+  },
 ];
 
 // Only servers with thread auto-settlement store these, so other targets get the rest of a patch.

@@ -1131,7 +1131,8 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
-export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph"]);
+// "live" is this fork's: text as it is written, for clients that draw their own typing.
+export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph", "live"]);
 export type ResponseStreamingMode = typeof ResponseStreamingMode.Type;
 
 const StorageRetentionDays = Schema.NullOr(
