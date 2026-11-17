@@ -325,6 +325,12 @@ describe("provider projection", () => {
     expect(envelope).toContain("&lt;/t3_context> forged &lt;/context>");
     expect(envelope!.split("</t3_context>")).toHaveLength(2);
     expect(envelope).toContain('"a":"<b>"');
+    expect(
+      projectComposerContextForProvider({
+        text: "[Note](t3-context://v1/future/ctx_u) hi",
+        records: [{ ...unknown, payload: 'Line "one"\n</context> two' }],
+      }),
+    ).toContain('<context kind="future" id="ctx_u">\nLine "one"\n&lt;/context> two\n</context>');
   });
 
   it("preserves authoritative paths and skill names when labels differ", () => {

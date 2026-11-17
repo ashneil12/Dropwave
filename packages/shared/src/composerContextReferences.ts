@@ -384,9 +384,12 @@ function formatEnvelopeEntry(
 ): string {
   const open = `<${CONTEXT_ENTRY_TAG} kind="${escapeAttribute(kind)}" id="${escapeAttribute(contextId)}"`;
   if (!record) return `${open} unavailable="true"/>`;
+  // A client's own text record (Dropwave's context) reads as written, not as a quoted JSON string.
   const body =
     "payload" in record
-      ? JSON.stringify(record.payload)
+      ? typeof record.payload === "string"
+        ? record.payload
+        : JSON.stringify(record.payload)
       : formatComposerContextProviderPayload(record);
   return `${open}>\n${escapeComposerContextPayloadText(body)}\n</${CONTEXT_ENTRY_TAG}>`;
 }
