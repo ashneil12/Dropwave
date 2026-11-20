@@ -5,6 +5,7 @@ import {
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type {
+  ChildThreadApproval,
   ThreadPendingApproval,
   ThreadPendingUserInput,
 } from "@t3tools/client-runtime/state/thread-requests";
@@ -13,6 +14,7 @@ import {
   type DropwaveRiskLevel,
   type ProviderApprovalDecision,
   type ScopedThreadRef,
+  type UploadChatAttachment,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { T, Var, msg, useGT, useMessages } from "gt-react";
@@ -24,10 +26,19 @@ import {
   ExpandIcon,
   FileTextIcon,
   MicIcon,
-  PlusIcon,
+  MicOffIcon,
+  PaperclipIcon,
   SquareIcon,
+  XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 
 import { newMessageId } from "../lib/utils";
 import { providerInstanceEntriesFor } from "../providerInstances";
@@ -35,15 +46,21 @@ import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useThreadProjection, useThreadVisibleTurnItems } from "../state/entities";
 import { useEnvironmentProviders } from "../state/environments";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
-import { environmentThreadDetails, threadEnvironment } from "../state/threads";
+import {
+  childThreadApprovalsAtom,
+  environmentThreadDetails,
+  threadEnvironment,
+} from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { DropwaveMarkdown } from "./DropwaveMarkdown";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { workState } from "./model";
 import type { SamplePendingReview, SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 const EMPTY_PENDING_REQUESTS_ATOM = Atom.make(null);
+const EMPTY_CHILD_APPROVALS_ATOM = Atom.make<ReadonlyArray<ChildThreadApproval>>([]);
 
 /* oxlint-disable t3code/no-untranslated-copy -- model brand names */
 const PREVIEW_MODEL_OPTIONS: ReadonlyArray<DropwaveSelectOption> = [
@@ -52,6 +69,45 @@ const PREVIEW_MODEL_OPTIONS: ReadonlyArray<DropwaveSelectOption> = [
   { value: "codex:gpt-5-4", label: "GPT-5.4 Codex", hint: msg("Heavy coding") },
 ];
 /* oxlint-enable t3code/no-untranslated-copy */
+
+interface PendingImageAttachment {
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  readonly dataUrl: string;
+}
+
+interface BrowserSpeechRecognitionEvent {
+  readonly results: {
+    readonly length: number;
+    readonly [index: number]: {
+      readonly isFinal: boolean;
+      readonly [index: number]: { readonly transcript: string } | undefined;
+    };
+  };
+}
+
+interface BrowserSpeechRecognition {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;
+  onerror: (() => void) | null;
+  onend: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+type SpeechRecognitionCtor = new () => BrowserSpeechRecognition;
+
+function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  const win = window as unknown as {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  };
+  return win.SpeechRecognition ?? win.webkitSpeechRecognition ?? null;
+}
 
 function formatClock(iso: string | Date): string {
   const date = typeof iso === "string" ? new Date(iso) : iso;
@@ -191,9 +247,11 @@ function ReviewDecisionCard({
 function LiveApprovalCard({
   approval,
   threadRef,
+  sourceTitle,
 }: {
   approval: ThreadPendingApproval;
   threadRef: ScopedThreadRef;
+  sourceTitle?: string | undefined;
 }) {
   const gt = useGT();
   const [busy, setBusy] = useState(false);
@@ -222,7 +280,9 @@ function LiveApprovalCard({
           <span data-dw-dot="coral" data-pulse="" />
           <T>Approval needed</T>
         </span>
-        <span data-dw-mono="muted">{approval.requestKind}</span>
+        <span data-dw-mono="muted">
+          {sourceTitle ? `${sourceTitle} · ${approval.requestKind}` : approval.requestKind}
+        </span>
       </div>
       <div data-dw-needs-copy="">
         <strong>{approval.detail || gt("Your bot wants to run an action.")}</strong>
@@ -373,6 +433,33 @@ function LiveUserInputCard({
   );
 }
 
+function HelperChildApprovals({
+  ownerRef,
+  headerCode,
+}: {
+  ownerRef: ScopedThreadRef;
+  headerCode: string;
+}) {
+  const childApprovals = useAtomValue(childThreadApprovalsAtom(ownerRef));
+  if (childApprovals.length === 0) return null;
+  return (
+    <>
+      {childApprovals.map((entry) => (
+        <div key={`${entry.thread.threadId}:${entry.approval.requestId}`} data-dw-msg="bot">
+          <span data-dw-msg-avatar="bot">{headerCode}</span>
+          <div data-dw-msg-stack="">
+            <LiveApprovalCard
+              approval={entry.approval}
+              threadRef={entry.thread}
+              sourceTitle={entry.title}
+            />
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
 export function DropwaveChatPillar({
   venture,
   activePreviewAgentId,
@@ -394,12 +481,17 @@ export function DropwaveChatPillar({
   const gt = useGT();
   const m = useMessages();
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<Array<PendingImageAttachment>>([]);
   const [expandedFolds, setExpandedFolds] = useState<Record<string, boolean>>({});
+  const [workersFoldOpen, setWorkersFoldOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [previewModel, setPreviewModel] = useState(PREVIEW_MODEL_OPTIONS[0]!.value);
+  const [recording, setRecording] = useState(false);
   const streamEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const speechRef = useRef<BrowserSpeechRecognition | null>(null);
 
   const isPreview = workspace?.mode === "preview" && venture !== null;
   const activeThread = !isPreview ? (workspace?.activeThread ?? workspace?.lead ?? null) : null;
@@ -413,6 +505,9 @@ export function DropwaveChatPillar({
     activeThreadRef
       ? environmentThreadDetails.pendingRequestsAtom(activeThreadRef)
       : EMPTY_PENDING_REQUESTS_ATOM,
+  );
+  const directChildApprovals = useAtomValue(
+    activeThreadRef ? childThreadApprovalsAtom(activeThreadRef) : EMPTY_CHILD_APPROVALS_ATOM,
   );
   const providersByEnv = useEnvironmentProviders();
   const liveProviders = activeThread ? (providersByEnv.get(activeThread.environmentId) ?? []) : [];
@@ -446,6 +541,15 @@ export function DropwaveChatPillar({
     el.style.height = "auto";
     el.style.height = `${Math.min(180, Math.max(24, el.scrollHeight))}px`;
   }, [draft]);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clean up browser speech recognizer on unmount
+  useEffect(
+    () => () => {
+      speechRef.current?.stop();
+      speechRef.current = null;
+    },
+    [],
+  );
 
   if (!workspace) return null;
 
@@ -495,7 +599,6 @@ export function DropwaveChatPillar({
   const isLiveRunning = !isPreview && activeThread ? workState(activeThread) === "working" : false;
   const openAsksBadge = isPreview ? venture!.objectives.length : workspace.openAsksCount;
 
-  // Build real model options from live providers
   const liveModelEntries: Array<{
     readonly key: string;
     readonly label: string;
@@ -597,14 +700,87 @@ export function DropwaveChatPillar({
     });
   };
 
+  const handleAttachFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = "";
+    for (const file of files.slice(0, 4)) {
+      if (!file.type.startsWith("image/")) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result);
+        setAttachments((prev) => [
+          ...prev.slice(0, 3),
+          {
+            id: `att-${Date.now()}-${file.name}`,
+            name: file.name,
+            mimeType: file.type,
+            sizeBytes: file.size,
+            dataUrl,
+          },
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const toggleVoice = () => {
+    if (recording) {
+      speechRef.current?.stop();
+      speechRef.current = null;
+      setRecording(false);
+      return;
+    }
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      setSendError(gt("Voice dictation is not supported in this browser."));
+      return;
+    }
+    setSendError(null);
+    const recognition = new Ctor();
+    recognition.continuous = true;
+    recognition.interimResults = false;
+    recognition.lang = navigator.language || "en-US";
+    recognition.onresult = (ev) => {
+      let chunk = "";
+      for (let i = 0; i < ev.results.length; i += 1) {
+        const entry = ev.results[i];
+        if (entry?.isFinal && entry[0]?.transcript) {
+          chunk += `${entry[0].transcript} `;
+        }
+      }
+      const cleaned = chunk.trim();
+      if (cleaned) {
+        setDraft((prev) => (prev.trim() ? `${prev.trim()} ${cleaned}` : cleaned));
+      }
+    };
+    recognition.onerror = () => {
+      setRecording(false);
+      speechRef.current = null;
+    };
+    recognition.onend = () => {
+      setRecording(false);
+      speechRef.current = null;
+    };
+    speechRef.current = recognition;
+    setRecording(true);
+    recognition.start();
+  };
+
   const submitMessage = async () => {
     const text = draft.trim();
-    if (!text || sending) return;
+    if ((!text && attachments.length === 0) || sending) return;
     setSendError(null);
 
+    if (recording) {
+      speechRef.current?.stop();
+      speechRef.current = null;
+      setRecording(false);
+    }
+
     if (isPreview) {
-      onSendPreviewMessage(text);
+      onSendPreviewMessage(text || gt("[Attached screenshot]"));
       setDraft("");
+      setAttachments([]);
       return;
     }
 
@@ -612,6 +788,14 @@ export function DropwaveChatPillar({
       workspace.setMainView("setup");
       return;
     }
+
+    const uploadAttachments: ReadonlyArray<UploadChatAttachment> = attachments.map((att) => ({
+      type: "image",
+      name: att.name,
+      mimeType: att.mimeType,
+      sizeBytes: att.sizeBytes,
+      dataUrl: att.dataUrl,
+    }));
 
     setSending(true);
     const res = await startTurn({
@@ -622,7 +806,7 @@ export function DropwaveChatPillar({
           messageId: newMessageId(),
           role: "user",
           text,
-          attachments: [],
+          attachments: uploadAttachments,
         },
         runtimeMode: activeThread.source.runtimeMode,
         interactionMode: activeThread.source.interactionMode,
@@ -631,6 +815,7 @@ export function DropwaveChatPillar({
     setSending(false);
     if (res._tag === "Success") {
       setDraft("");
+      setAttachments([]);
       workspace.refreshOpenAsksCount();
     } else if (!isAtomCommandInterrupted(res)) {
       const cause = squashAtomCommandFailure(res);
@@ -671,14 +856,57 @@ export function DropwaveChatPillar({
         confidence: "confirmed",
       },
     });
+    const lead = workspace.lead;
+    if (lead && lead.source.dropwaveBot?.kind === "lead") {
+      const existing = lead.source.dropwaveBot.rules;
+      if (!existing.includes(ruleText)) {
+        void updateMetadataCmd({
+          environmentId: lead.environmentId,
+          input: {
+            threadId: lead.id,
+            dropwaveBot: {
+              ...lead.source.dropwaveBot,
+              rules: [...existing, ruleText].slice(-50),
+            },
+          },
+        });
+      }
+    }
+    workspace.refreshOpenAsksCount();
   };
 
   const liveMessages = projection?.projection.messages ?? [];
+  const liveSubagents = projection?.projection.subagents ?? [];
   const liveApprovals = pendingRequests?.approvals ?? [];
   const liveUserInputs = pendingRequests?.userInputs ?? [];
   const streamingAssistant = visibleItems
     .filter((entry) => entry.item.type === "assistant_message" && entry.item.status === "running")
     .at(-1);
+
+  const runningTool = visibleItems
+    .filter(
+      (entry) =>
+        (entry.item.type === "command_execution" ||
+          entry.item.type === "dynamic_tool" ||
+          entry.item.type === "file_change" ||
+          entry.item.type === "web_search") &&
+        entry.item.status === "running",
+    )
+    .at(-1);
+  const runningSubagent = liveSubagents.find(
+    (s) => s.status === "running" || s.status === "pending" || s.status === "waiting",
+  );
+  const helperRefsForLead =
+    !isPreview && workspace.lead && activeThread && workspace.lead.id === activeThread.id
+      ? workspace.bots
+          .filter(
+            (bot) =>
+              bot.environmentId === workspace.lead!.environmentId &&
+              bot.source.dropwaveBot?.kind === "teammate" &&
+              bot.source.dropwaveBot.leadThreadId === workspace.lead!.id,
+          )
+          .map((bot) => scopeThreadRef(bot.environmentId, bot.id))
+      : [];
 
   return (
     <div data-dw-pillar-body="">
@@ -906,8 +1134,8 @@ export function DropwaveChatPillar({
                   <div key={msg.id} data-dw-msg="bot">
                     <span data-dw-msg-avatar="bot">{headerCode}</span>
                     <div data-dw-msg-stack="">
-                      <div data-dw-bubble="bot" data-multiline="">
-                        {msg.text}
+                      <div data-dw-bubble="bot">
+                        <DropwaveMarkdown text={msg.text} />
                       </div>
                     </div>
                   </div>
@@ -915,17 +1143,103 @@ export function DropwaveChatPillar({
               )
             )}
 
-            {streamingAssistant && streamingAssistant.item.type === "assistant_message" ? (
+            {/* Folded Live Delegated Worker Sessions */}
+            {liveSubagents.length > 0 && activeThreadRef ? (
               <div data-dw-msg="bot">
                 <span data-dw-msg-avatar="bot">{headerCode}</span>
                 <div data-dw-msg-stack="">
-                  <div data-dw-bubble="bot" data-multiline="">
-                    {streamingAssistant.item.text || gt("Thinking…")}
+                  <div data-dw-fold-wrap="">
+                    <button
+                      type="button"
+                      data-dw-fold-pill=""
+                      onClick={() => setWorkersFoldOpen((open) => !open)}
+                    >
+                      <span
+                        data-dw-dot={runningSubagent ? "emerald" : "indigo"}
+                        data-pulse={runningSubagent ? "" : undefined}
+                      />
+                      <strong>
+                        <T>
+                          <Var>{liveSubagents.length}</Var> delegated sessions
+                        </T>
+                      </strong>
+                      <span data-dw-muted-sep="">
+                        ·{" "}
+                        <T>
+                          <Var>
+                            {
+                              liveSubagents.filter(
+                                (s) => s.status === "running" || s.status === "pending",
+                              ).length
+                            }
+                          </Var>{" "}
+                          running,{" "}
+                          <Var>{liveSubagents.filter((s) => s.status === "completed").length}</Var>{" "}
+                          done
+                        </T>
+                      </span>
+                      {workersFoldOpen ? (
+                        <ChevronUpIcon className="size-3" />
+                      ) : (
+                        <ChevronDownIcon className="size-3" />
+                      )}
+                    </button>
+                    {workersFoldOpen ? (
+                      <div data-dw-fold-body="">
+                        {liveSubagents.slice(-8).map((sub) => (
+                          <div key={sub.id} data-dw-fold-line="">
+                            <div data-dw-fold-worker-head="">
+                              <strong>{sub.title || sub.prompt.slice(0, 60)}</strong>
+                              <span
+                                data-dw-mono={
+                                  sub.status === "failed"
+                                    ? "coral"
+                                    : sub.status === "running"
+                                      ? "emerald"
+                                      : "muted"
+                                }
+                              >
+                                {sub.status}
+                              </span>
+                            </div>
+                            {sub.result ? <p>{sub.result.slice(0, 200)}</p> : null}
+                            {sub.childThreadId ? (
+                              <button
+                                type="button"
+                                data-dw-inline-link=""
+                                onClick={() =>
+                                  workspace.openThread(
+                                    scopeThreadRef(
+                                      activeThreadRef.environmentId,
+                                      sub.childThreadId!,
+                                    ),
+                                  )
+                                }
+                              >
+                                <T>Inspect session</T>
+                              </button>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>
             ) : null}
 
+            {streamingAssistant && streamingAssistant.item.type === "assistant_message" ? (
+              <div data-dw-msg="bot">
+                <span data-dw-msg-avatar="bot">{headerCode}</span>
+                <div data-dw-msg-stack="">
+                  <div data-dw-bubble="bot">
+                    <DropwaveMarkdown text={streamingAssistant.item.text || gt("Thinking…")} />
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Inline direct approvals & user inputs */}
             {activeThreadRef
               ? liveApprovals.map((approval) => (
                   <div key={approval.requestId} data-dw-msg="bot">
@@ -951,6 +1265,27 @@ export function DropwaveChatPillar({
                   </div>
                 ))
               : null}
+
+            {/* Project-wide delegated child & helper approvals right inside Lead chat */}
+            {directChildApprovals.map((entry) => (
+              <div key={`${entry.thread.threadId}:${entry.approval.requestId}`} data-dw-msg="bot">
+                <span data-dw-msg-avatar="bot">{headerCode}</span>
+                <div data-dw-msg-stack="">
+                  <LiveApprovalCard
+                    approval={entry.approval}
+                    threadRef={entry.thread}
+                    sourceTitle={entry.title}
+                  />
+                </div>
+              </div>
+            ))}
+            {helperRefsForLead.map((helperRef) => (
+              <HelperChildApprovals
+                key={`${helperRef.environmentId}:${helperRef.threadId}`}
+                ownerRef={helperRef}
+                headerCode={headerCode}
+              />
+            ))}
           </>
         )}
         <div ref={streamEndRef} />
@@ -959,11 +1294,44 @@ export function DropwaveChatPillar({
       <div data-dw-composer-wrap="">
         <div data-dw-ticker="">
           <div data-dw-ticker-left="">
-            <span data-dw-dot="emerald" data-pulse="" />
-            {isPreview ? (
+            <span
+              data-dw-dot={recording ? "coral" : "emerald"}
+              data-pulse={isPreview || isLiveRunning || recording ? "" : undefined}
+            />
+            {recording ? (
+              <span>
+                <T>Listening… speak naturally, click mic again when done</T>
+              </span>
+            ) : isPreview ? (
               <>
                 <strong>{venture!.liveTicker.bot}</strong>
                 <span>{venture!.liveTicker.text}</span>
+              </>
+            ) : runningSubagent ? (
+              <>
+                <strong>{runningSubagent.title || gt("Worker session")}</strong>
+                <span>
+                  <T>is running in an isolated worktree…</T>
+                </span>
+              </>
+            ) : runningTool ? (
+              <>
+                <strong>{headerName}</strong>
+                <span>
+                  <T>
+                    is running{" "}
+                    <Var>
+                      {runningTool.item.type === "dynamic_tool"
+                        ? (runningTool.item.toolName ?? gt("tool"))
+                        : runningTool.item.type === "command_execution"
+                          ? gt("shell command")
+                          : runningTool.item.type === "file_change"
+                            ? gt("file edit")
+                            : gt("web search")}
+                    </Var>
+                    …
+                  </T>
+                </span>
               </>
             ) : isLiveRunning ? (
               <>
@@ -990,6 +1358,26 @@ export function DropwaveChatPillar({
         ) : null}
 
         <form data-dw-composer-box="" onSubmit={handleSend}>
+          {attachments.length > 0 ? (
+            <div data-dw-attach-strip="">
+              {attachments.map((att) => (
+                <div key={att.id} data-dw-attach-chip="">
+                  <img src={att.dataUrl} alt={att.name} />
+                  <span>{att.name}</span>
+                  <button
+                    type="button"
+                    aria-label={gt("Remove attachment")}
+                    onClick={() =>
+                      setAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                    }
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
+
           <textarea
             ref={textareaRef}
             rows={1}
@@ -1001,13 +1389,21 @@ export function DropwaveChatPillar({
           />
           <div data-dw-composer-bar="">
             <div data-dw-composer-left="">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={handleAttachFiles}
+              />
               <button
                 type="button"
                 data-dw-composer-icon=""
-                aria-label={gt("Add tracked ask")}
-                onClick={() => workspace.openPanel({ kind: "asks" })}
+                aria-label={gt("Attach image")}
+                onClick={() => fileInputRef.current?.click()}
               >
-                <PlusIcon className="size-4" />
+                <PaperclipIcon className="size-4" />
               </button>
               <DropwaveSelect
                 value={currentModelValue}
@@ -1029,10 +1425,12 @@ export function DropwaveChatPillar({
               <button
                 type="button"
                 data-dw-composer-icon=""
-                aria-label={gt("Voice input")}
-                onClick={() => workspace.openPanel({ kind: "asks" })}
+                data-recording={recording ? "true" : undefined}
+                aria-label={recording ? gt("Stop voice input") : gt("Voice input")}
+                aria-pressed={recording}
+                onClick={toggleVoice}
               >
-                <MicIcon className="size-4" />
+                {recording ? <MicOffIcon className="size-4" /> : <MicIcon className="size-4" />}
               </button>
               {isLiveRunning ? (
                 <button
@@ -1048,7 +1446,7 @@ export function DropwaveChatPillar({
                   type="submit"
                   data-dw-send-btn=""
                   aria-label={gt("Send message")}
-                  disabled={!draft.trim() || sending}
+                  disabled={(!draft.trim() && attachments.length === 0) || sending}
                 >
                   <ArrowUpIcon className="size-3.5" />
                 </button>

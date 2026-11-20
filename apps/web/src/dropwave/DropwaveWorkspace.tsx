@@ -42,6 +42,7 @@ import { DropwaveChatPillar } from "./DropwaveChatPillar";
 import { DropwaveConversationalSetup } from "./DropwaveConversationalSetup";
 import { DropwaveDecisionModal, type DecisionQueueItem } from "./DropwaveDecisionModal";
 import { DropwaveDocsView } from "./DropwaveDocsView";
+import { DropwaveLiveDecisionModal } from "./DropwaveLiveDecisionModal";
 import { DropwavePanels } from "./DropwavePanels";
 import { DropwaveSettingsDialog } from "./DropwaveSettingsDialog";
 import { DropwaveToolbar, useDropwaveAppearance } from "./DropwaveToolbar";
@@ -789,36 +790,42 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         </div>
       </DropwaveModeContext>
 
-      {/* Decision Queue Focus Modal */}
-      <DropwaveDecisionModal
-        open={decisionModalOpen}
-        items={decisionQueueItems}
-        initialIndex={decisionInitialIndex}
-        onClose={() => setDecisionModalOpen(false)}
-        onResolve={(item, choiceLabel, alwaysDoThis) => {
-          if (mode === "preview") {
-            handleResolvePreviewReview(item.id, choiceLabel, alwaysDoThis);
-          } else {
-            const match = needs.find((t) => keyOfThread(t) === item.id);
-            setDecisionModalOpen(false);
-            if (match) openThread(scopeThreadRef(match.environmentId, match.id));
+      {/* Decision Queue Focus Modal — live thread resolver in Live mode, showcase resolver in Preview mode */}
+      {mode === "live" ? (
+        <DropwaveLiveDecisionModal
+          open={decisionModalOpen}
+          needs={needs}
+          projects={projects}
+          leadsByProjectKey={
+            new Map(
+              roster
+                .filter((b) => b.source.dropwaveBot?.kind === "lead")
+                .map((b) => [`${b.environmentId}:${b.projectId}`, b] as const),
+            )
           }
-        }}
-        onIgnore={(item) => {
-          if (mode === "preview") handleIgnorePreviewReview(item.id);
-          else setDecisionModalOpen(false);
-        }}
-        onJumpToChat={(item) => {
-          if (mode === "preview") {
+          onClose={() => setDecisionModalOpen(false)}
+          onOpenThread={openThread}
+          onSavedRule={() => setRefreshNonce((n) => n + 1)}
+        />
+      ) : (
+        <DropwaveDecisionModal
+          open={decisionModalOpen}
+          items={decisionQueueItems}
+          initialIndex={decisionInitialIndex}
+          onClose={() => setDecisionModalOpen(false)}
+          onResolve={(item, choiceLabel, alwaysDoThis) => {
+            handleResolvePreviewReview(item.id, choiceLabel, alwaysDoThis);
+          }}
+          onIgnore={(item) => {
+            handleIgnorePreviewReview(item.id);
+          }}
+          onJumpToChat={(item) => {
             const owner = ventures.find((v) => v.reviews.some((r) => r.id === item.id));
             if (owner) setSelectedVentureId(owner.id);
             jumpToReview(item.id);
-          } else {
-            const match = needs.find((t) => keyOfThread(t) === item.id);
-            if (match) openThread(scopeThreadRef(match.environmentId, match.id));
-          }
-        }}
-      />
+          }}
+        />
+      )}
 
       {/* Dropwave-first Settings Dialog */}
       <DropwaveSettingsDialog

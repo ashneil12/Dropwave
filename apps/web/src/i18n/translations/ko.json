@@ -2869,16 +2869,25 @@
   "4b3c40e9d1335bf6": "Decides 99% end-to-end",
   "f04842916b1e0637": "Asks on ambiguous calls",
   "4eeae51fb33e7b1b": "Checks in early",
+  "50631459ca1d5ec5": "Voice dictation is not supported in this browser.",
+  "3ee354434dcb2ab7": "[Attached screenshot]",
   "9502908c4474d645": "Could not send message.",
   "9ae5a9eff59ffbce": "Bot and core loop settings",
   "db63c9a6a9c9e4a1": "Let us design our core loop together. Ask me what shipped means and wire the steps with dropwave_team.",
   "336d4c776fa2d3ec": "Summarize where this project stands and what we should ship next.",
   "19716fdaca23d08e": "Thinking…",
+  "8a1d216f39ddf50d": "Worker session",
+  "a61e3cc46b147e9a": "tool",
+  "bb7e12f96725d862": "shell command",
+  "50c5740b40d13874": "file edit",
+  "4d5b89125b4e754e": "web search",
+  "7f29dba7ce5dc22c": "Remove attachment",
   "895452b657f61544": "Dump ideas, asks, or reply to {name}…",
   "02af338d7b3c0808": "Message {name}",
-  "63b3bcfa9edd4efa": "Add tracked ask",
+  "2cc8afffc5e9d48f": "Attach image",
   "cd1ecf414350321f": "Select model",
   "61e4aea2f07f3a80": "Autonomy level",
+  "4d7e5c66d3523b28": "Stop voice input",
   "f518fcec180322f7": "Voice input",
   "e4fb5aaeaa4f3bd7": "Stop run",
   "95ee62a0d6968b89": "메시지 보내기",
@@ -2897,6 +2906,44 @@
   "d100f141e0b82aa1": "Dump ideas, decisions, or tasks. Everything is tracked through your core loop.",
   "dfcc68ccc605da1c": "Design core loop",
   "f3c6af41cca1e28b": "Plan next work",
+  "f586c1f08cf924ff": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " delegated sessions"
+  ],
+  "d9cb87991678dede": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " ",
+    "running,",
+    " ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " ",
+    "done"
+  ],
+  "bd25348d6836d10f": "Inspect session",
+  "1ec1a780f71318b8": "Listening… speak naturally, click mic again when done",
+  "4b417fe701d005d4": "is running in an isolated worktree…",
+  "87aa5a778b1c35ae": [
+    "is running",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "…"
+  ],
   "d0644c0b1b24fe5d": "is working through the core loop…",
   "a7eb2624ef4ef4c8": [
     {
@@ -3069,6 +3116,15 @@
   "f8e6667118cf4cfd": "Learned memory & standing rules",
   "ef9fc0a3751df122": "Injected automatically before every turn for this project only. Bots never mix memory across projects.",
   "f145acfff9579c65": "No project memories yet. Answer asks with “Always do this” or add rules above.",
+  "d1057cf30e872969": "Your agent is waiting for approval to proceed.",
+  "83437577febc147a": "Action requested",
+  "ed869aee5c7a952a": "If you do nothing: this session stays paused.",
+  "053fd9a04f34debf": "Approve action",
+  "ded43a280aed9f20": "스레드 열기",
+  "0b4544d83081bfaf": "Loading pending request details from this thread…",
+  "328a95b9cc19a1c4": "Open in chat",
+  "0a3a9434fce15880": "Nothing across your projects needs you right now.",
+  "7c1923203049d602": "코드 복사",
   "dd65e69f6a5b6681": "Pull request {number}",
   "5c25bfec42e1e092": "Activity appears here as bots and sessions run.",
   "98632962bc015929": "This bot hasn’t started any sessions yet.",
@@ -4083,7 +4139,6 @@
   "eb6e0584cf4a2a1d": "언어: {language}",
   "d76c606a3c519b78": "줄 바꿈 끄기",
   "2b683498cee8c8a7": "줄 바꿈",
-  "7c1923203049d602": "코드 복사",
   "637817e4ff79c90e": "코드 블록 작업",
   "ebf3a2b1e314aa5f": "터미널에서 실행",
   "fe219642547fa0bf": "터미널에서 실행",
@@ -4382,7 +4437,6 @@
   "aa48b4d278b7fae5": "입력창에서 편집하는 중",
   "49414ffb9aed57ab": "대기열에서 제거",
   "de5c52c3f47ff209": "T3 Code에서 보냄",
-  "ded43a280aed9f20": "스레드 열기",
   "7635dd64bbbe10ec": "자동화 열기",
   "6327e4ffa0f2366d": "풀 리퀘스트를 사용할 수 없음",
   "90062342f04966ff": "풀 리퀘스트를 탐색하려면 이 환경의 T3 Code 서버를 업데이트하세요.",

@@ -319,6 +319,7 @@ export function DropwaveDocsView({
       setOpenDoc(res.value.doc);
       setSelectedPath(res.value.doc.path);
       triggerReload();
+      workspace.refreshOpenAsksCount();
     } else if (!isAtomCommandInterrupted(res)) {
       const cause = squashAtomCommandFailure(res);
       setError(cause instanceof Error ? cause.message : gt("Could not save document."));
@@ -338,6 +339,7 @@ export function DropwaveDocsView({
       setOpenDoc(null);
       setSelectedPath(null);
       triggerReload();
+      workspace.refreshOpenAsksCount();
     } else if (!isAtomCommandInterrupted(res)) {
       const cause = squashAtomCommandFailure(res);
       setError(cause instanceof Error ? cause.message : gt("Could not delete document."));
@@ -371,6 +373,7 @@ export function DropwaveDocsView({
     if (res._tag === "Success") {
       setNewMemoryText("");
       triggerReload();
+      workspace.refreshOpenAsksCount();
     } else if (!isAtomCommandInterrupted(res)) {
       const cause = squashAtomCommandFailure(res);
       setError(cause instanceof Error ? cause.message : gt("Could not save memory."));
@@ -389,7 +392,10 @@ export function DropwaveDocsView({
       input: { id },
     });
     setBusy(false);
-    if (res._tag === "Success") triggerReload();
+    if (res._tag === "Success") {
+      triggerReload();
+      workspace.refreshOpenAsksCount();
+    }
   };
 
   const canDeleteOpenDoc =

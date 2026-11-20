@@ -78,12 +78,28 @@ const make = Effect.gen(function* () {
         ) {
           return;
         }
-        yield* store.captureMessageAsks({
+        const captured = yield* store.captureMessageAsks({
           projectId: thread.projectId,
           botThreadId: thread.id,
           messageId: message.id,
           text: message.text,
         });
+        // Persist explicit owner rules ("always ...", "never ...", "remember to ...") directly into OptMem with exact quote provenance.
+        for (const ask of captured) {
+          if (ask.kind === "rule") {
+            yield* store
+              .saveMemory({
+                projectId: thread.projectId,
+                botThreadId: thread.id,
+                kind: "rule",
+                text: ask.summary,
+                quote: ask.quote,
+                sourceMessageId: message.id,
+                confidence: "confirmed",
+              })
+              .pipe(Effect.ignore);
+          }
+        }
         yield* store.appendTurnSummary({
           threadId: thread.id,
           messageId: message.id,
@@ -256,10 +272,15 @@ const make = Effect.gen(function* () {
                 DateTime.toEpochMillis(msg.createdAt) >= runStartedMs,
             );
             if (!alreadyMessagedLead) {
+              const latestReply = records.messages
+                .filter((msg) => msg.role === "assistant" && msg.text.trim().length > 0)
+                .at(-1)
+                ?.text.trim()
+                .slice(0, 500);
               yield* dispatchSupervisorMessage({
                 threadId: leadId,
                 key: `teammate-done:${thread.id}:${event.payload.id}`,
-                text: `[Dropwave supervisor] Teammate "${thread.title}" (${thread.id}) finished its assigned run (${event.payload.id}). Read its latest reply with t3_thread_read and advance the project's core loop.`,
+                text: `[Dropwave supervisor] Teammate "${thread.title}" (${thread.id}) finished its assigned run (${event.payload.id}).${latestReply ? `\nLatest reply: ${latestReply}` : ""}\nRead full details with t3_thread_read if needed and advance the project's core loop.`,
               });
             }
           }

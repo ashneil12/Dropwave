@@ -30,8 +30,9 @@ import {
 } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readEnvironmentProviders } from "../state/environments";
-import { environmentServerConfigsAtom } from "../state/server";
+import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
+import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import type { SampleVenture } from "./sampleData";
@@ -85,6 +86,8 @@ export function DropwaveConversationalSetup({
   const [error, setError] = useState<string | null>(null);
 
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
+  const writeDoc = useAtomCommand(serverEnvironment.dropwaveDocWrite, { reportFailure: false });
+  const saveMemory = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
 
   if (!workspace) return null;
 
@@ -358,7 +361,34 @@ export function DropwaveConversationalSetup({
       });
     }
 
+    // Seed .dropwave/docs/core-loop.md and OptMem done bar immediately so Docs & Memory panels light up on Day 1.
+    await writeDoc({
+      environmentId: envId,
+      input: {
+        projectId: selectedLiveProject.id,
+        path: ".dropwave/docs/core-loop.md",
+        title: gt("Core loop & done bar"),
+        kind: "loop",
+        content: `# ${title} Core Loop\n\nShipped means: ${shippedText}\n\n## Steps\n${cleanedSteps
+          .map((s, idx) => `${idx + 1}. ${s.title} (${s.owner})`)
+          .join("\n")}\n\n## Autonomy\nRisk level: ${riskLevel.toUpperCase()}\n`,
+      },
+    }).catch(() => undefined);
+
+    await saveMemory({
+      environmentId: envId,
+      input: {
+        projectId: selectedLiveProject.id,
+        botThreadId: leadId,
+        kind: "rule",
+        text: gt("Done bar: {done}", { done: shippedText }),
+        quote: shippedText,
+        confidence: "confirmed",
+      },
+    }).catch(() => undefined);
+
     setBusy(false);
+    workspace.refreshOpenAsksCount();
     workspace.openThread(scopeThreadRef(envId, leadId));
   };
 
