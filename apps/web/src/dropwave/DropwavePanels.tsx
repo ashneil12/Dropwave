@@ -11,7 +11,6 @@ import {
   ListChecksIcon,
   ListTodoIcon,
   PlusIcon,
-  XIcon,
 } from "lucide-react";
 import { useEffect } from "react";
 
@@ -204,35 +203,6 @@ function Activity() {
         />
       )}
     </>
-  );
-}
-
-export function DropwaveDesktopActivity({ onClose }: { onClose: () => void }) {
-  const gt = useGT();
-  return (
-    <aside data-dropwave-activity="" aria-label={gt("Activity")}>
-      <header>
-        <div>
-          <h2>
-            <T>Activity</T>
-          </h2>
-          <small>
-            <T>Everything running, live</T>
-          </small>
-        </div>
-        <button
-          type="button"
-          data-dropwave-icon-button=""
-          aria-label={gt("Close activity")}
-          onClick={onClose}
-        >
-          <XIcon />
-        </button>
-      </header>
-      <div data-dropwave-panel-body="">
-        <Activity />
-      </div>
-    </aside>
   );
 }
 

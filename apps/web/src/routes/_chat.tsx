@@ -4,6 +4,7 @@ import { ThreadRouteView } from "../components/ThreadRouteView";
 import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIndicator";
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
 import { SidebarInset } from "../components/ui/sidebar";
+import { useDropwaveMode } from "../dropwave/workspaceContext";
 import { resolveThreadRouteTarget } from "../threadRoutes";
 import { retainThreadFindForRoute } from "../components/chat/threadFindStore";
 import { ThreadLinkPrompt } from "../components/promptLinks/ThreadLinkPrompt";
@@ -11,7 +12,11 @@ import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
 
 function ChatRouteLayout() {
   // Render both routes here so draft promotion keeps the same ChatView mounted.
+  const dropwaveMode = useDropwaveMode();
   const { shownTarget, modalOpen } = useShownThreadRouteTarget();
+  if (dropwaveMode) {
+    return modalOpen ? <Outlet /> : null;
+  }
   return (
     <>
       {shownTarget?.kind === "server" && !modalOpen ? (

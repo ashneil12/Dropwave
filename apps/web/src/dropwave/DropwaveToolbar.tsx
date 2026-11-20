@@ -1,15 +1,23 @@
 import { Link } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { T, msg, useGT, useMessages } from "gt-react";
-import { ActivityIcon, ImageIcon, SettingsIcon, UploadIcon } from "lucide-react";
+import { Columns3Icon, ImageIcon, Maximize2Icon, SettingsIcon, UploadIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { DropwaveNeeds } from "./DropwavePanels";
+import type { SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
-const Wallpaper = Schema.Literals(["mountains", "ocean", "abstract", "sunrise", "dusk", "custom"]);
+const WallpaperSchema = Schema.Literals([
+  "mountains",
+  "ocean",
+  "abstract",
+  "sunrise",
+  "dusk",
+  "custom",
+]);
 const presetKeys = ["mountains", "ocean", "abstract", "sunrise", "dusk"] as const;
 const wallpapers = {
   mountains: { file: "mountains.jpg", label: msg("Mountains") },
@@ -18,11 +26,14 @@ const wallpapers = {
   sunrise: { file: "sunrise.jpg", label: msg("Sunrise") },
   dusk: { file: "dusk.png", label: msg("Dusk") },
 } as const;
-
 const CustomWallpaperSchema = Schema.NullOr(Schema.String);
 
 export function useDropwaveAppearance() {
-  const [wallpaper, setWallpaper] = useLocalStorage("dropwave:wallpaper", "mountains", Wallpaper);
+  const [wallpaper, setWallpaper] = useLocalStorage(
+    "dropwave:wallpaper",
+    "mountains",
+    WallpaperSchema,
+  );
   const [customWallpaper, setCustomWallpaper] = useLocalStorage(
     "dropwave:custom-wallpaper",
     null,
@@ -45,7 +56,6 @@ export function useDropwaveAppearance() {
   return {
     wallpaper,
     setWallpaper,
-    customWallpaper,
     setCustomWallpaper,
     strength,
     setStrength,
@@ -55,38 +65,95 @@ export function useDropwaveAppearance() {
 
 export function DropwaveToolbar({
   appearance,
-  activityOpen,
-  toggleActivity,
+  ventures,
+  totalNeedsCount,
+  onSelectPreviewReview,
 }: {
   appearance: ReturnType<typeof useDropwaveAppearance>;
-  activityOpen: boolean;
-  toggleActivity: () => void;
+  ventures: ReadonlyArray<SampleVenture>;
+  totalNeedsCount: number;
+  onSelectPreviewReview: (ventureId: string, reviewId: string) => void;
 }) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
   const m = useMessages();
   const [needsOpen, setNeedsOpen] = useState(false);
+
   if (!workspace) return null;
-  const count = workspace.needs.length;
+
   return (
-    <div data-dropwave-toolbar="">
+    <div data-dw-topbar-right="">
+      <div data-dw-mode-switch="" role="group" aria-label={gt("Workspace data mode")}>
+        <button
+          type="button"
+          aria-pressed={workspace.mode === "preview"}
+          onClick={() => workspace.setMode("preview")}
+        >
+          <T>Preview</T>
+        </button>
+        <button
+          type="button"
+          aria-pressed={workspace.mode === "live"}
+          onClick={() => {
+            workspace.setMode("live");
+            if (!workspace.lead) workspace.setMainView("setup");
+          }}
+        >
+          <T>Live</T>
+        </button>
+      </div>
+
       <Popover open={needsOpen} onOpenChange={setNeedsOpen}>
         <PopoverTrigger
-          data-dropwave-header-button=""
-          data-dropwave-needs={count ? "pending" : "clear"}
+          type="button"
+          data-dw-needs-pill={totalNeedsCount > 0 ? "urgent" : "clear"}
           aria-label={gt("Needs you")}
         >
-          <span data-dropwave-needs-dot="" aria-hidden="true" />
-          <T>Needs you</T>
-          {count > 0 ? <span data-dropwave-count="">{count}</span> : null}
+          <span
+            data-dw-dot={totalNeedsCount > 0 ? "coral" : "dim"}
+            data-pulse={totalNeedsCount > 0 ? "" : undefined}
+          />
+          <span>
+            <T>Needs you</T>
+          </span>
+          {totalNeedsCount > 0 ? <span data-dw-needs-count="">{totalNeedsCount}</span> : null}
         </PopoverTrigger>
         <PopoverPopup width="md" align="end" padding="compact" data-dropwave-popover="">
-          <DropwaveNeeds onOpenThread={() => setNeedsOpen(false)} />
+          {workspace.mode === "preview" ? (
+            <div data-dw-preview-needs-pop="">
+              {ventures.flatMap((v) =>
+                v.reviews.map((r) => (
+                  <button
+                    key={r.id}
+                    type="button"
+                    data-dw-pop-review=""
+                    onClick={() => {
+                      setNeedsOpen(false);
+                      onSelectPreviewReview(v.id, r.id);
+                    }}
+                  >
+                    <strong>
+                      {v.name}: {r.title}
+                    </strong>
+                    <small>{r.summary}</small>
+                  </button>
+                )),
+              )}
+              {totalNeedsCount === 0 ? (
+                <p data-dw-card-empty="">
+                  <T>Nothing needs you right now.</T>
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <DropwaveNeeds onOpenThread={() => setNeedsOpen(false)} />
+          )}
         </PopoverPopup>
       </Popover>
+
       <Popover>
-        <PopoverTrigger data-dropwave-chrome-button="" aria-label={gt("Wallpaper and glass")}>
-          <ImageIcon />
+        <PopoverTrigger type="button" data-dw-top-icon="" aria-label={gt("Wallpaper and glass")}>
+          <ImageIcon className="size-4" />
         </PopoverTrigger>
         <PopoverPopup
           width="md"
@@ -149,18 +216,28 @@ export function DropwaveToolbar({
           </div>
         </PopoverPopup>
       </Popover>
+
       <button
-        data-dropwave-chrome-button=""
         type="button"
-        aria-label={gt("Activity")}
-        aria-pressed={activityOpen}
-        onClick={toggleActivity}
+        data-dw-top-icon=""
+        aria-label={workspace.focusMode ? gt("Show side panels") : gt("Focus chat")}
+        aria-pressed={workspace.focusMode}
+        onClick={() => workspace.setFocusMode(!workspace.focusMode)}
       >
-        <ActivityIcon />
+        {workspace.focusMode ? (
+          <Columns3Icon className="size-4" />
+        ) : (
+          <Maximize2Icon className="size-4" />
+        )}
       </button>
-      <Link to="/settings/general" data-dropwave-chrome-button="" aria-label={gt("Settings")}>
-        <SettingsIcon />
+
+      <Link to="/settings/general" data-dw-top-icon="" aria-label={gt("Settings")}>
+        <SettingsIcon className="size-4" />
       </Link>
+
+      <span data-dw-founder-chip="" aria-hidden="true">
+        S
+      </span>
     </div>
   );
 }

@@ -8,19 +8,21 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  DropwaveAsk,
+  DropwaveDocSummary,
+  DropwaveMemoryItem,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import { T, Var, useGT, useMessages } from "gt-react";
-import { PlusIcon } from "lucide-react";
+import { T, Var, useGT } from "gt-react";
+import { PlusIcon, ZapIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { openCommandPalette } from "../commandPaletteBus";
-import { AppSidebarLayout } from "../components/AppSidebarLayout";
-import { SidebarInset, useSidebar } from "../components/ui/sidebar";
+import { SidebarProvider } from "../components/ui/sidebar";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useLocalStorage } from "../hooks/useLocalStorage";
-import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useShownThreadRouteTarget } from "../hooks/useShownThreadRouteTarget";
 import { useRightPanelStore } from "../rightPanelStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -34,35 +36,53 @@ import { serverEnvironment } from "../state/server";
 import { threadFamilies } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { BotAvatar } from "./BotAvatar";
+import { DropwaveChatPillar } from "./DropwaveChatPillar";
+import { DropwaveConversationalSetup } from "./DropwaveConversationalSetup";
 import { DropwaveDocsView } from "./DropwaveDocsView";
-import { DropwaveDesktopActivity, DropwavePanels } from "./DropwavePanels";
+import { DropwavePanels } from "./DropwavePanels";
 import { DropwaveToolbar, useDropwaveAppearance } from "./DropwaveToolbar";
+import { DropwaveWidgetCard } from "./DropwaveWidgets";
+import { botOwner, isWorkspaceBot, keyOfThread, needsOwner, newestWorkFirst } from "./model";
 import {
-  botOwner,
-  formatShortAge,
-  isCurrentWork,
-  isWorkspaceBot,
-  keyOfThread,
-  needsOwner,
-  newestWorkFirst,
-  workFor,
-  workState,
-  workStateGlyph,
-  workStateLabel,
-} from "./model";
+  INITIAL_SAMPLE_VENTURES,
+  type SampleDoc,
+  type SampleMemory,
+  type SampleVenture,
+} from "./sampleData";
 import {
   DropwaveModeContext,
   DropwaveWorkspaceContext,
-  useDropwaveWorkspace,
   type DropwaveMainView,
+  type DropwaveMode,
+  type DropwaveSlotLayout,
+  type DropwaveWidgetKind,
   type WorkspacePanel,
 } from "./workspaceContext";
 import "./workspace.css";
 
 const LAST_PROJECT_KEY = "dropwave:last-project";
 const ProjectKey = Schema.NullOr(Schema.String);
-const RAIL_VISIBLE_OLDER_LIMIT = 4;
+const WidgetKindSchema = Schema.Literals([
+  "mission",
+  "helpers",
+  "reviews",
+  "sessions",
+  "docs",
+  "memory",
+]);
+const SlotLayoutSchema = Schema.Struct({
+  topLeft: WidgetKindSchema,
+  bottomLeft: WidgetKindSchema,
+  topRight: WidgetKindSchema,
+  bottomRight: WidgetKindSchema,
+});
+const DEFAULT_SLOTS: DropwaveSlotLayout = {
+  topLeft: "mission",
+  bottomLeft: "helpers",
+  topRight: "reviews",
+  bottomRight: "sessions",
+};
+const ModeOverrideSchema = Schema.NullOr(Schema.Literals(["preview", "live"]));
 
 function keyOfProject(project: EnvironmentProject) {
   return scopedProjectKey({ environmentId: project.environmentId, projectId: project.id });
@@ -82,7 +102,9 @@ function leadFor(project: EnvironmentProject, bots: ReadonlyArray<EnvironmentThr
 
 export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const gt = useGT();
   const { shownTarget, modalOpen } = useShownThreadRouteTarget();
+
   const projects = useProjects().filter(
     (project) => project.archivedAt == null && !project.isScratch,
   );
@@ -98,13 +120,41 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   const draft = useComposerDraftStore((store) =>
     shownTarget?.kind === "draft" ? store.getDraftSession(shownTarget.draftId) : null,
   );
+
   const [lastProject, setLastProject] = useLocalStorage(LAST_PROJECT_KEY, null, ProjectKey);
+  const [slots, setSlots] = useLocalStorage(
+    "dropwave:slot-layout",
+    DEFAULT_SLOTS,
+    SlotLayoutSchema,
+  );
+  const [focusMode, setFocusMode] = useLocalStorage("dropwave:focus-mode", false, Schema.Boolean);
+  const [modeOverride, setModeOverride] = useLocalStorage(
+    "dropwave:workspace-mode",
+    null,
+    ModeOverrideSchema,
+  );
+  const appearance = useDropwaveAppearance();
+
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
-  const [activityOpen, setActivityOpen] = useState(false);
-  const [openAsksCount, setOpenAsksCount] = useState(0);
-  const inlineActivity = useMediaQuery("lg");
-  const appearance = useDropwaveAppearance();
+  const [highlightReviewId, setHighlightReviewId] = useState<string | null>(null);
+  const [openDocId, setOpenDocId] = useState<string | null>(null);
+
+  // Sample workspace state (interactive Preview mode so founder can experience full Dropwave immediately)
+  const [ventures, setVentures] = useState<ReadonlyArray<SampleVenture>>(INITIAL_SAMPLE_VENTURES);
+  const [selectedVentureId, setSelectedVentureId] = useState(INITIAL_SAMPLE_VENTURES[0]!.id);
+  const [activePreviewHelperId, setActivePreviewHelperId] = useState<string | null>(null);
+  const [resolvedReviews, setResolvedReviews] = useState<Record<string, string>>({});
+
+  // Live Dropwave backend data for side widgets
+  const [liveAsks, setLiveAsks] = useState<ReadonlyArray<DropwaveAsk>>([]);
+  const [liveDocs, setLiveDocs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
+  const [liveMemories, setLiveMemories] = useState<ReadonlyArray<DropwaveMemoryItem>>([]);
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
+  const hasAnyLiveLead = roster.some((b) => b.source.dropwaveBot?.kind === "lead");
+  const mode: DropwaveMode = modeOverride ?? (hasAnyLiveLead ? "live" : "preview");
+
   const activeBot = botOwner(byKey, activeThread);
   const routeProject = activeBot ?? activeThread ?? draft;
   const project =
@@ -125,28 +175,43 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     )
     .sort(newestWorkFirst);
 
-  const [asksRefreshNonce, setAsksRefreshNonce] = useState(0);
+  const activeVenture = ventures.find((v) => v.id === selectedVentureId) ?? ventures[0] ?? null;
+
   const listAsksCmd = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
-  const refreshOpenAsksCount = () => setAsksRefreshNonce((n) => n + 1);
+  const listDocsCmd = useAtomCommand(serverEnvironment.dropwaveDocsList, { reportFailure: false });
+  const listMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryList, { reportFailure: false });
+
   const activeUpdatedAt = activeThread?.updatedAt ?? null;
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- syncs open ask count badge when project or active thread updates
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live Dropwave asks, docs, and memories for the active project
   useEffect(() => {
-    if (!project || asksRefreshNonce < 0) return;
+    if (mode !== "live" || !project || refreshNonce < 0) return;
     if (activeUpdatedAt === "__never__") return;
     let cancelled = false;
     void listAsksCmd({
       environmentId: project.environmentId,
       input: { projectId: project.id, includeClosed: false },
     }).then((res) => {
-      if (!cancelled && res._tag === "Success") setOpenAsksCount(res.value.asks.length);
+      if (!cancelled && res._tag === "Success") setLiveAsks(res.value.asks);
+    });
+    void listDocsCmd({
+      environmentId: project.environmentId,
+      input: { projectId: project.id },
+    }).then((res) => {
+      if (!cancelled && res._tag === "Success") setLiveDocs(res.value.docs);
+    });
+    void listMemCmd({
+      environmentId: project.environmentId,
+      input: { projectId: project.id },
+    }).then((res) => {
+      if (!cancelled && res._tag === "Success") setLiveMemories(res.value.items);
     });
     return () => {
       cancelled = true;
     };
-  }, [activeUpdatedAt, asksRefreshNonce, listAsksCmd, project]);
+  }, [activeUpdatedAt, listAsksCmd, listDocsCmd, listMemCmd, mode, project, refreshNonce]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- syncs root attribute and dark class so header, composer, settings, and dialogs share Dropwave's dark glass theme
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stamps dark glass root attributes for Settings dialogs and popovers
   useEffect(() => {
     const root = document.documentElement;
     const hadDark = root.classList.contains("dark");
@@ -158,7 +223,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains the active bot's delegated session family for the Sessions rail
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains active bot delegated session family for live sessions widget
   useEffect(() => {
     const owner = activeBot ?? lead;
     if (!owner) return;
@@ -168,6 +233,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   const openThread = (ref: ScopedThreadRef) => {
     setPanel(null);
     setMainView("chat");
+    setModeOverride("live");
     const panels = useRightPanelStore.getState();
     if (panels.threadPanelVisibilityByThreadKey[scopedThreadKey(ref)] === undefined) {
       panels.setThreadPanelOpen(ref, "inline", false);
@@ -182,9 +248,190 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
   };
 
+  const setSlotWidget = (slot: keyof DropwaveSlotLayout, kind: DropwaveWidgetKind) => {
+    setSlots({ ...slots, [slot]: kind });
+  };
+
+  const jumpToReview = (reviewId: string) => {
+    setMainView("chat");
+    setActivePreviewHelperId(null);
+    setHighlightReviewId(reviewId);
+    setTimeout(() => {
+      document.getElementById(`review-${reviewId}`)?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 40);
+  };
+
+  const handleResolvePreviewReview = (
+    reviewId: string,
+    choiceLabel: string,
+    alwaysDoThis: boolean,
+  ) => {
+    if (!activeVenture) return;
+    setResolvedReviews((prev) => ({
+      ...prev,
+      [reviewId]: alwaysDoThis
+        ? gt("Saved rule & chose: {choice}", { choice: choiceLabel })
+        : gt("Chose: {choice} (just this once)", { choice: choiceLabel }),
+    }));
+    setVentures((prev) =>
+      prev.map((v) => {
+        if (v.id !== activeVenture.id) return v;
+        const review = v.reviews.find((r) => r.id === reviewId);
+        return {
+          ...v,
+          reviews: v.reviews.filter((r) => r.id !== reviewId),
+          objectives: v.objectives.map((o) =>
+            o.status === "approval" ? { ...o, status: "live" as const, badge: "Resolved" } : o,
+          ),
+          memories:
+            alwaysDoThis && review
+              ? [
+                  {
+                    id: `mem-${Date.now()}`,
+                    kind: "rule",
+                    text: gt("Always: {choice} ({title})", {
+                      choice: choiceLabel,
+                      title: review.title,
+                    }),
+                    quote: review.question,
+                  },
+                  ...v.memories,
+                ]
+              : v.memories,
+        };
+      }),
+    );
+  };
+
+  const handleIgnorePreviewReview = (reviewId: string) => {
+    if (!activeVenture) return;
+    setVentures((prev) =>
+      prev.map((v) =>
+        v.id === activeVenture.id
+          ? { ...v, reviews: v.reviews.filter((r) => r.id !== reviewId) }
+          : v,
+      ),
+    );
+  };
+
+  const handleSendPreviewMessage = (text: string) => {
+    if (!activeVenture) return;
+    const nowTime = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    setVentures((prev) =>
+      prev.map((v) => {
+        if (v.id !== activeVenture.id) return v;
+        const nextObjId = `ask-${Date.now()}`;
+        return {
+          ...v,
+          objectives: [
+            {
+              id: nextObjId,
+              title: text.slice(0, 44),
+              status: "working",
+              badge: "Tracked",
+            },
+            ...v.objectives,
+          ],
+          messages: [
+            ...v.messages,
+            {
+              id: `u-${Date.now()}`,
+              role: "owner",
+              author: "Founder",
+              authorCode: "S",
+              time: nowTime,
+              text,
+            },
+            {
+              id: `b-${Date.now() + 1}`,
+              role: "bot",
+              author: v.leadName,
+              authorCode: v.leadCode,
+              time: nowTime,
+              text: gt(
+                "Logged in Mission Control and queued through the {name} core loop. Switch to Live in the top bar anytime to run real agents on your repos.",
+                { name: v.name },
+              ),
+            },
+          ],
+        };
+      }),
+    );
+  };
+
+  const handleSavePreviewDoc = (doc: SampleDoc) => {
+    if (!activeVenture) return;
+    setVentures((prev) =>
+      prev.map((v) => {
+        if (v.id !== activeVenture.id) return v;
+        const exists = v.docs.some((d) => d.id === doc.id);
+        return {
+          ...v,
+          docs: exists ? v.docs.map((d) => (d.id === doc.id ? doc : d)) : [doc, ...v.docs],
+        };
+      }),
+    );
+  };
+
+  const handleAddPreviewMemory = (mem: SampleMemory) => {
+    if (!activeVenture) return;
+    setVentures((prev) =>
+      prev.map((v) => (v.id === activeVenture.id ? { ...v, memories: [mem, ...v.memories] } : v)),
+    );
+  };
+
+  const handleRemovePreviewMemory = (id: string) => {
+    if (!activeVenture) return;
+    setVentures((prev) =>
+      prev.map((v) =>
+        v.id === activeVenture.id
+          ? { ...v, memories: v.memories.filter((item) => item.id !== id) }
+          : v,
+      ),
+    );
+  };
+
+  const totalNeedsCount =
+    mode === "preview" ? ventures.reduce((sum, v) => sum + v.reviews.length, 0) : needs.length;
+
+  const targetText =
+    mode === "preview" && activeVenture
+      ? activeVenture.targetLine
+      : project
+        ? project.title
+        : gt("No project linked");
+  const statusText =
+    mode === "preview" && activeVenture
+      ? activeVenture.statusWord
+      : lead
+        ? gt("Autonomous Execution")
+        : gt("Ready for setup");
+
+  const widgetData = {
+    venture: mode === "preview" ? activeVenture : null,
+    liveAsks,
+    liveDocs,
+    liveMemories,
+    activePreviewHelperId,
+    onSelectPreviewHelper: (id: string | null) => {
+      setActivePreviewHelperId(id);
+      setMainView("chat");
+    },
+    onIgnorePreviewReview: handleIgnorePreviewReview,
+    onOpenDoc: (docId: string) => setOpenDocId(docId),
+  };
+
   return (
     <DropwaveWorkspaceContext
       value={{
+        mode,
+        setMode: (next) => {
+          setModeOverride(next);
+          setMainView("chat");
+        },
         projects,
         project,
         threads,
@@ -202,330 +449,219 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         selectedProjectKey: project ? keyOfProject(project) : null,
         mainView,
         setMainView,
-        openAsksCount: project ? openAsksCount : 0,
-        refreshOpenAsksCount,
+        openAsksCount:
+          mode === "preview" ? (activeVenture?.objectives.length ?? 0) : liveAsks.length,
+        refreshOpenAsksCount: () => setRefreshNonce((n) => n + 1),
         selectProject: (chosen) => {
           setLastProject(keyOfProject(chosen));
           setPanel(null);
-          setMainView("chat");
+          setModeOverride("live");
           const chosenLead = leadFor(chosen, roster);
           if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
+            setMainView("chat");
             openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
-          } else void navigate({ to: "/" });
+          } else {
+            setMainView("setup");
+            void navigate({ to: "/" });
+          }
         },
         openThread,
         openPanel: setPanel,
+        slots,
+        setSlotWidget,
+        focusMode,
+        setFocusMode,
+        highlightReviewId,
+        jumpToReview,
       }}
     >
       <DropwaveModeContext value={true}>
-        <AppSidebarLayout
-          workspaceSidebar={<DropwaveRail />}
-          workspaceStyle={appearance.style}
-          workspaceToolbar={
+        <div data-dw-cockpit="" style={appearance.style}>
+          {/* Top Venture Switcher Bar */}
+          <header data-dw-topbar="">
+            <div data-dw-topbar-left="">
+              <span data-dw-brand="">
+                <span data-dw-brand-dot="" />
+                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product brand name */}
+                <strong>Dropwave</strong>
+              </span>
+
+              <span data-dw-vdiv="" aria-hidden="true" />
+
+              <nav data-dw-ventures="" aria-label={gt("Projects")}>
+                {mode === "preview"
+                  ? ventures.map((v) => {
+                      const active = activeVenture?.id === v.id;
+                      const hasUrgent = v.reviews.length > 0;
+                      return (
+                        <button
+                          key={v.id}
+                          type="button"
+                          data-dw-venture-pill=""
+                          aria-current={active ? "true" : undefined}
+                          onClick={() => {
+                            setSelectedVentureId(v.id);
+                            setActivePreviewHelperId(null);
+                            setMainView("chat");
+                          }}
+                        >
+                          <span
+                            data-dw-dot={active ? "emerald" : hasUrgent ? "coral" : "dim"}
+                            data-pulse={active ? "" : undefined}
+                          />
+                          <span>{v.name}</span>
+                          {v.tag ? <small>{v.tag}</small> : null}
+                        </button>
+                      );
+                    })
+                  : projects.map((proj) => {
+                      const key = keyOfProject(proj);
+                      const active = project !== null && keyOfProject(project) === key;
+                      const hasUrgent = needs.some((t) => {
+                        const owner = botOwner(byKey, t);
+                        return owner !== null && projectIncludes(proj, owner);
+                      });
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          data-dw-venture-pill=""
+                          aria-current={active ? "true" : undefined}
+                          onClick={() => {
+                            setLastProject(key);
+                            const chosenLead = leadFor(proj, roster);
+                            if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
+                              setMainView("chat");
+                              openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
+                            } else {
+                              setMainView("setup");
+                            }
+                          }}
+                        >
+                          <span
+                            data-dw-dot={active ? "emerald" : hasUrgent ? "coral" : "dim"}
+                            data-pulse={active ? "" : undefined}
+                          />
+                          <span>{proj.title}</span>
+                        </button>
+                      );
+                    })}
+                <button
+                  type="button"
+                  data-dw-venture-add=""
+                  aria-label={gt("New project setup")}
+                  onClick={() => setMainView("setup")}
+                >
+                  <PlusIcon className="size-3.5" />
+                </button>
+              </nav>
+            </div>
+
+            <div data-dw-topbar-center="">
+              <span data-dw-target-pill="">
+                <span data-dw-muted-label="">
+                  <T>Active Target:</T>
+                </span>
+                <strong>{targetText}</strong>
+                <span data-dw-muted-sep="">·</span>
+                <span data-dw-mono="emerald">{statusText}</span>
+              </span>
+            </div>
+
             <DropwaveToolbar
               appearance={appearance}
-              activityOpen={inlineActivity ? activityOpen : panel?.kind === "activity"}
-              toggleActivity={() => {
-                if (inlineActivity) setActivityOpen(!activityOpen);
-                else setPanel(panel?.kind === "activity" ? null : { kind: "activity" });
+              ventures={ventures}
+              totalNeedsCount={totalNeedsCount}
+              onSelectPreviewReview={(ventureId, reviewId) => {
+                setSelectedVentureId(ventureId);
+                jumpToReview(reviewId);
               }}
             />
-          }
-          workspacePanel={
-            inlineActivity && activityOpen && !modalOpen ? (
-              <DropwaveDesktopActivity onClose={() => setActivityOpen(false)} />
-            ) : undefined
-          }
-        >
-          {mainView === "docs" && !modalOpen && project ? (
-            <SidebarInset>
-              <DropwaveDocsView />
-            </SidebarInset>
-          ) : (
-            children
-          )}
-        </AppSidebarLayout>
+          </header>
+
+          {/* Main Spatial 3-Zone Workspace */}
+          <main data-dw-spatial="" data-focus={focusMode ? "true" : undefined}>
+            {!focusMode ? (
+              <div data-dw-wing="left">
+                <DropwaveWidgetCard slot="topLeft" kind={slots.topLeft} data={widgetData} />
+                <DropwaveWidgetCard slot="bottomLeft" kind={slots.bottomLeft} data={widgetData} />
+              </div>
+            ) : null}
+
+            <section data-dw-center-pillar="">
+              {mainView === "setup" ? (
+                <DropwaveConversationalSetup
+                  onCancel={() => setMainView("chat")}
+                  onCreatedPreviewVenture={(newVenture) => {
+                    setVentures((prev) => [newVenture, ...prev]);
+                    setSelectedVentureId(newVenture.id);
+                    setActivePreviewHelperId(null);
+                    setMainView("chat");
+                  }}
+                />
+              ) : mainView === "docs" ? (
+                <DropwaveDocsView
+                  venture={mode === "preview" ? activeVenture : null}
+                  initialDocId={openDocId}
+                  onSavePreviewDoc={handleSavePreviewDoc}
+                  onAddPreviewMemory={handleAddPreviewMemory}
+                  onRemovePreviewMemory={handleRemovePreviewMemory}
+                />
+              ) : (
+                <DropwaveChatPillar
+                  venture={mode === "preview" ? activeVenture : null}
+                  activePreviewHelperId={activePreviewHelperId}
+                  onClearPreviewHelper={() => setActivePreviewHelperId(null)}
+                  resolvedReviews={resolvedReviews}
+                  onResolvePreviewReview={handleResolvePreviewReview}
+                  onSendPreviewMessage={handleSendPreviewMessage}
+                  onOpenDoc={(docId) => setOpenDocId(docId)}
+                />
+              )}
+            </section>
+
+            {!focusMode ? (
+              <div data-dw-wing="right">
+                <DropwaveWidgetCard slot="topRight" kind={slots.topRight} data={widgetData} />
+                <DropwaveWidgetCard slot="bottomRight" kind={slots.bottomRight} data={widgetData} />
+              </div>
+            ) : null}
+          </main>
+
+          {/* Subtle Bottom Status Dock */}
+          <footer data-dw-footer="">
+            <div data-dw-footer-left="">
+              <span data-dw-footer-badge="">S</span>
+              <strong>
+                <T>Solo Founder</T>
+              </strong>
+              <span data-dw-muted-sep="">·</span>
+              <span data-dw-status-inline="emerald">
+                <span data-dw-dot="emerald" />
+                <T>Orchestrating</T>
+              </span>
+            </div>
+            <div data-dw-footer-right="">
+              <ZapIcon className="size-3" data-dw-icon="indigo" />
+              <span>
+                {mode === "preview" ? (
+                  <T>Preview Showcase · click Live for connected repos</T>
+                ) : (
+                  <T>
+                    Live Harness · <Var>{projects.length}</Var> projects
+                  </T>
+                )}
+              </span>
+            </div>
+          </footer>
+
+          {/* Settings & route modals render cleanly on top */}
+          {modalOpen ? <SidebarProvider>{children}</SidebarProvider> : null}
+        </div>
       </DropwaveModeContext>
       {!modalOpen && panel !== null ? (
         <DropwavePanels panel={panel} onClose={() => setPanel(null)} />
       ) : null}
     </DropwaveWorkspaceContext>
-  );
-}
-
-function DropwaveRail() {
-  const workspace = useDropwaveWorkspace();
-  const { isMobile, setOpenMobile } = useSidebar();
-  const gt = useGT();
-  const m = useMessages();
-  const [showOlder, setShowOlder] = useState(false);
-
-  if (!workspace) return null;
-  const closeMobile = () => {
-    if (isMobile) setOpenMobile(false);
-  };
-
-  const teammates = workspace.bots.filter(
-    (bot) =>
-      bot.environmentId === workspace.lead?.environmentId &&
-      bot.source.dropwaveBot?.kind === "teammate" &&
-      bot.source.dropwaveBot.leadThreadId === workspace.lead.id,
-  );
-
-  const sessionOwner = workspace.activeBot ?? workspace.lead;
-  const botSessions = sessionOwner
-    ? workFor(workspace.threads, scopeThreadRef(sessionOwner.environmentId, sessionOwner.id)).sort(
-        newestWorkFirst,
-      )
-    : [];
-  const activeSessions = botSessions.filter(isCurrentWork);
-  const finishedSessions = botSessions.filter((session) => !isCurrentWork(session));
-  const visibleFinished = showOlder
-    ? finishedSessions
-    : finishedSessions.slice(0, RAIL_VISIBLE_OLDER_LIMIT);
-  const hiddenCount = Math.max(0, finishedSessions.length - RAIL_VISIBLE_OLDER_LIMIT);
-
-  return (
-    <div data-dropwave-rail="">
-      <ul data-dropwave-projects="" aria-label={gt("Projects")}>
-        {workspace.projects.map((project, index) => {
-          const key = keyOfProject(project);
-          const isCurrent =
-            workspace.selectedProjectKey === key &&
-            (workspace.activeBot === null || workspace.activeBot.id === workspace.lead?.id);
-          return (
-            <li key={key}>
-              <button
-                data-dropwave-project=""
-                type="button"
-                aria-current={isCurrent ? "true" : undefined}
-                onClick={() => {
-                  closeMobile();
-                  workspace.selectProject(project);
-                }}
-              >
-                <span data-dropwave-project-tile="">
-                  <BotAvatar size={54} seed={index % 6} />
-                  {workspace.needsProject(project) ? (
-                    <span data-dropwave-project-needs="" aria-label={gt("Needs you")} />
-                  ) : null}
-                </span>
-                <span data-dropwave-project-caption="">{project.title}</span>
-              </button>
-            </li>
-          );
-        })}
-        <li>
-          <button
-            data-dropwave-add-project=""
-            type="button"
-            aria-label={gt("Add project")}
-            onClick={() => {
-              closeMobile();
-              openCommandPalette({ open: "add-project" });
-            }}
-          >
-            <PlusIcon />
-          </button>
-        </li>
-      </ul>
-
-      <div data-dropwave-rail-scroll="">
-        {workspace.project ? (
-          <section data-dropwave-team-rail="" aria-label={gt("Helper bots")}>
-            <div data-dropwave-rail-section-head="">
-              <button
-                data-dropwave-team-heading=""
-                type="button"
-                onClick={() => {
-                  closeMobile();
-                  workspace.openPanel({ kind: "team" });
-                }}
-              >
-                <T>Team</T> <span aria-hidden="true">›</span>
-              </button>
-              {workspace.lead ? (
-                <button
-                  type="button"
-                  data-dropwave-icon-button=""
-                  aria-label={gt("Add helper bot")}
-                  onClick={() => {
-                    closeMobile();
-                    workspace.openPanel({
-                      kind: "profile",
-                      target: {
-                        kind: "new-teammate",
-                        project: workspace.project!,
-                        lead: workspace.lead!,
-                      },
-                    });
-                  }}
-                >
-                  <PlusIcon />
-                </button>
-              ) : null}
-            </div>
-            {teammates.length > 0 ? (
-              <ul>
-                {teammates.map((bot, index) => {
-                  const helperWork = workFor(
-                    workspace.threads,
-                    scopeThreadRef(bot.environmentId, bot.id),
-                  ).filter(isCurrentWork);
-                  const state = workState(bot);
-                  const statusSub =
-                    helperWork.length > 0
-                      ? gt(
-                          "{count, plural, one {Running 1 session} other {Running {count} sessions}}",
-                          {
-                            count: helperWork.length,
-                          },
-                        )
-                      : bot.source.dropwaveBot?.kind === "teammate" && bot.source.dropwaveBot.role
-                        ? `${m(workStateLabel[state])} · ${bot.source.dropwaveBot.role}`
-                        : m(workStateLabel[state]);
-                  return (
-                    <li key={keyOfThread(bot)}>
-                      <button
-                        data-dropwave-teammate=""
-                        type="button"
-                        aria-current={workspace.activeBot?.id === bot.id ? "true" : undefined}
-                        onClick={() => {
-                          closeMobile();
-                          workspace.openThread(scopeThreadRef(bot.environmentId, bot.id));
-                        }}
-                      >
-                        <BotAvatar size={30} seed={3 + (index % 3)} />
-                        <span>
-                          <strong>{bot.title}</strong>
-                          <small data-status={state}>{statusSub}</small>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p data-dropwave-rail-hint="">
-                <T>Solo loop. Add a helper like QA or SEO anytime.</T>
-              </p>
-            )}
-          </section>
-        ) : null}
-
-        {sessionOwner ? (
-          <section data-dropwave-sessions-rail="" aria-label={gt("Sessions")}>
-            <div data-dropwave-rail-section-head="">
-              <span data-dropwave-rail-label="">
-                <T>Sessions</T>
-              </span>
-              <span data-dropwave-rail-num="">{botSessions.length}</span>
-            </div>
-
-            {activeSessions.length > 0 ? (
-              <div data-dropwave-session-group="">
-                <span data-dropwave-session-group-label="">
-                  <T>Active</T>
-                </span>
-                <ul>
-                  {activeSessions.map((session) => (
-                    <RailSessionRow
-                      key={keyOfThread(session)}
-                      session={session}
-                      current={workspace.activeThread?.id === session.id}
-                      onOpen={() => {
-                        closeMobile();
-                        workspace.openThread(scopeThreadRef(session.environmentId, session.id));
-                      }}
-                    />
-                  ))}
-                </ul>
-              </div>
-            ) : null}
-
-            {visibleFinished.length > 0 ? (
-              <div data-dropwave-session-group="">
-                {activeSessions.length > 0 ? (
-                  <span data-dropwave-session-group-label="">
-                    <T>Recent</T>
-                  </span>
-                ) : null}
-                <ul>
-                  {visibleFinished.map((session) => (
-                    <RailSessionRow
-                      key={keyOfThread(session)}
-                      session={session}
-                      current={workspace.activeThread?.id === session.id}
-                      onOpen={() => {
-                        closeMobile();
-                        workspace.openThread(scopeThreadRef(session.environmentId, session.id));
-                      }}
-                    />
-                  ))}
-                </ul>
-                {hiddenCount > 0 ? (
-                  <button
-                    type="button"
-                    data-dropwave-show-more=""
-                    onClick={() => setShowOlder(!showOlder)}
-                  >
-                    {showOlder ? (
-                      <T>Show less</T>
-                    ) : (
-                      <T>
-                        Show <Var>{hiddenCount}</Var> older
-                      </T>
-                    )}
-                  </button>
-                ) : null}
-              </div>
-            ) : activeSessions.length === 0 ? (
-              <p data-dropwave-rail-hint="">
-                <T>Sessions spawned by this bot appear here automatically.</T>
-              </p>
-            ) : null}
-          </section>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function RailSessionRow({
-  session,
-  current,
-  onOpen,
-}: {
-  session: EnvironmentThreadShell;
-  current: boolean;
-  onOpen: () => void;
-}) {
-  const m = useMessages();
-  const state = workState(session);
-  const pr = session.pullRequests[0] ?? session.linkedPullRequest;
-  return (
-    <li>
-      <button
-        type="button"
-        data-dropwave-session-row=""
-        data-status={state}
-        aria-current={current ? "true" : undefined}
-        onClick={onOpen}
-      >
-        <div data-dropwave-session-top="">
-          <span data-dropwave-session-glyph="" data-status={state} aria-hidden="true">
-            {workStateGlyph[state]}
-          </span>
-          <span data-dropwave-session-title="">{session.title}</span>
-          {pr ? <span data-dropwave-pr-chip="">#{pr.number}</span> : null}
-        </div>
-        <div data-dropwave-session-sub="">
-          <span data-dropwave-session-state="" data-status={state}>
-            {m(workStateLabel[state])}
-          </span>
-          <span>· {formatShortAge(session.updatedAt)}</span>
-        </div>
-      </button>
-    </li>
   );
 }

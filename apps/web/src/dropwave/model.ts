@@ -22,16 +22,6 @@ export const workStateLabel: Record<WorkState, string> = {
   ready: msg("Ready"),
 };
 
-export const workStateGlyph: Record<WorkState, string> = {
-  working: "◔",
-  "needs-you": "!",
-  waiting: "◌",
-  done: "✓",
-  failed: "!",
-  stopped: "–",
-  ready: "·",
-};
-
 const ATTENTION_PRIORITY: Record<WorkState, number> = {
   "needs-you": 0,
   failed: 1,
