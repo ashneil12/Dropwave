@@ -6,13 +6,7 @@ import {
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { Link, Navigate } from "@tanstack/react-router";
-import {
-  ArrowUpRightIcon,
-  FolderOpenIcon,
-  ListTodoIcon,
-  PlusIcon,
-  SlidersHorizontalIcon,
-} from "lucide-react";
+import { ArrowUpRightIcon, FileTextIcon, ListTodoIcon, PlusIcon } from "lucide-react";
 
 import { openCommandPalette } from "../commandPaletteBus";
 import { Button } from "../components/ui/button";
@@ -20,7 +14,7 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { useEnvironmentScope } from "../state/session";
 import { useAllEnvironmentShellsBootstrapped } from "../state/entities";
 import { buildThreadRouteParams } from "../threadRoutes";
-import { DropwaveMark, ProjectMark } from "./DropwaveWorkspace";
+import { BotAvatar } from "./BotAvatar";
 import { isCurrentWork, workFor, workState, workStateLabel } from "./model";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
@@ -43,7 +37,7 @@ export function DropwaveIndex() {
       {bootstrapped || project ? (
         <section data-dropwave-landing="">
           <div data-dropwave-hero-mark="">
-            {project ? <ProjectMark name={project.title} /> : <DropwaveMark />}
+            <BotAvatar size={35} />
           </div>
           <h1>{project?.title ?? "Give your project a lead"}</h1>
           <p>
@@ -126,25 +120,62 @@ export function DropwaveConversationTools({
       </button>
       <button
         type="button"
-        data-dropwave-icon-button=""
+        data-dropwave-header-button=""
         data-dropwave-files-button=""
         aria-label="Project files"
         onClick={onOpenFiles}
       >
-        <FolderOpenIcon />
+        <FileTextIcon />
+        <span>Docs</span>
       </button>
-      {thread.id === bot.id && thread.environmentId === bot.environmentId ? (
-        <button
-          type="button"
-          data-dropwave-icon-button=""
-          data-dropwave-profile-button=""
-          aria-label="Bot profile"
-          onClick={() => workspace.openPanel({ kind: "profile", target: { kind: "edit", bot } })}
-        >
-          <SlidersHorizontalIcon />
-        </button>
-      ) : null}
     </div>
+  );
+}
+
+export function DropwaveChatAvatar({
+  size,
+  threadRef,
+  profile = false,
+}: { size?: number; threadRef?: ScopedThreadRef | null; profile?: boolean } = {}) {
+  const workspace = useDropwaveWorkspace();
+  const bot = workspace?.activeBot;
+  const project = workspace?.project;
+  if (
+    !bot ||
+    !project ||
+    (threadRef && (bot.id !== threadRef.threadId || bot.environmentId !== threadRef.environmentId))
+  )
+    return null;
+  const projectIndex = workspace.projects.indexOf(project);
+  const teammateIndex = workspace.bots
+    .filter(
+      (thread) =>
+        thread.environmentId === bot.environmentId &&
+        thread.source.dropwaveBot?.kind === "teammate" &&
+        thread.source.dropwaveBot.leadThreadId === workspace.lead?.id,
+    )
+    .indexOf(bot);
+  const avatar = (
+    <BotAvatar
+      {...(size === undefined ? {} : { size })}
+      seed={
+        bot.source.dropwaveBot?.kind === "lead"
+          ? Math.max(0, projectIndex) % 3
+          : 3 + (Math.max(0, teammateIndex) % 3)
+      }
+    />
+  );
+  return profile ? (
+    <button
+      type="button"
+      data-dropwave-profile-button=""
+      aria-label="Bot profile"
+      onClick={() => workspace.openPanel({ kind: "profile", target: { kind: "edit", bot } })}
+    >
+      {avatar}
+    </button>
+  ) : (
+    avatar
   );
 }
 
@@ -185,7 +216,7 @@ export function DropwaveConversationStart({
   return (
     <section data-dropwave-conversation-start="" aria-label={`Start a conversation with ${title}`}>
       <div data-dropwave-hero-mark="">
-        <ProjectMark name={title} />
+        <BotAvatar size={35} seed={profile.kind === "lead" ? 0 : 3} />
       </div>
       <h1>{title}</h1>
       <p>{caption}</p>

@@ -1,4 +1,5 @@
 import {
+  DropwaveChatAvatar,
   DropwaveConversationStart,
   DropwaveConversationTools,
 } from "../dropwave/DropwaveConversation";
@@ -3397,6 +3398,7 @@ export default function ChatView(props: ChatViewProps) {
               onOpenThread={onOpenRelatedThreadStable}
               rightPanelOpen={inlineRightPanelOwnsTitleBar}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
+              leading={dropwaveProfile ? <DropwaveChatAvatar profile /> : undefined}
               trailing={
                 dropwaveMode ? (
                   <DropwaveConversationTools

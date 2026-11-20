@@ -1,3 +1,4 @@
+import { DropwaveChatAvatar } from "../../dropwave/DropwaveConversation";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
 import { MessageId, type RunId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
@@ -51,7 +52,12 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
 
   return (
     <>
-      <div className="relative min-w-0 px-1 py-0.5">
+      <div className="relative min-w-0 px-1 py-0.5" data-dropwave-reply="">
+        {ctx.threadRef ? (
+          <span data-dropwave-reply-avatar="">
+            <DropwaveChatAvatar size={28} threadRef={ctx.threadRef} />
+          </span>
+        ) : null}
         <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
         <div data-thread-find-text="true">
           <AssistantCitationSource

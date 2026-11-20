@@ -17,12 +17,26 @@ test("Dropwave creates and reopens a project team", WEB, async ({ t3, screen }) 
   await screen.getByRole("textbox", "Responsibility").fill("Verify the release checks.");
   await screen.getByRole("button", "Add teammate").tap();
   await screen.getByRole("button", "Thread actions for Release QA").waitFor();
+  await screen.getByRole("button", "Bot profile").tap();
+  await expect(screen.getByRole("dialog", "Bot profile")).toBeVisible();
+  await screen.getByRole("button", "Cancel").tap();
   await screen.getByRole("button", "Work").tap();
   await expect(screen.getByText("This bot hasn’t started any sessions yet.")).toBeVisible();
   await screen.getByRole("button", "Close").tap();
 
   await screen.getByRole("button", "Dropwave fixture").tap();
   await screen.getByRole("button", "Thread actions for Chief of Staff").waitFor();
+  const activity = screen.getByRole("button", "Activity");
+  await activity.tap();
+  await expect(activity).toHaveAttribute("aria-pressed", "true");
+  await screen.getByRole("button", "Close activity").tap();
+
+  await screen.getByRole("button", "Wallpaper and glass").tap();
+  const ocean = screen.getByRole("button", "Ocean");
+  await ocean.tap();
+  await expect(ocean).toHaveAttribute("aria-pressed", "true");
+  await ocean.press("Escape");
+
   await screen.getByRole("link", "Settings").tap();
   await expect(screen.getByRole("dialog", "Settings")).toBeVisible();
 });

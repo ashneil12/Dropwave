@@ -414,11 +414,17 @@ export function AppSidebarLayout({
   children,
   showSidebar = true,
   workspaceSidebar,
+  workspaceToolbar,
+  workspacePanel,
+  workspaceStyle,
   sidebarAccessory,
 }: {
   children: ReactNode;
   showSidebar?: boolean;
   workspaceSidebar?: ReactNode;
+  workspaceToolbar?: ReactNode;
+  workspacePanel?: ReactNode;
+  workspaceStyle?: CSSProperties;
   sidebarAccessory?: ReactNode;
 }) {
   const dropwave = workspaceSidebar !== undefined;
@@ -459,10 +465,11 @@ export function AppSidebarLayout({
   ) as CSSProperties;
   const sidebarProviderStyle = {
     "--sidebar-width": dropwave
-      ? "234px"
+      ? "264px"
       : `${clampThreadSidebarWidth(sidebarWidth, sidebarMinimumWidth, sidebarMaximumWidth)}px`,
     "--panel-animation-duration": `${panelAnimationDurationMs}ms`,
     ...windowControlsInsetStyle,
+    ...workspaceStyle,
   } as CSSProperties;
 
   return (
@@ -511,7 +518,9 @@ export function AppSidebarLayout({
             </Sidebar>
           </>
         ) : null}
+        {workspaceToolbar}
         {children}
+        {workspacePanel}
         <BackgroundThreadAnnouncer />
         <SidebarControl showSidebar={showSidebar} />
         {isElectron ? <HistorySwipeNavigation /> : null}

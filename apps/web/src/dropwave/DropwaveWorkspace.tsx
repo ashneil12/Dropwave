@@ -9,16 +9,9 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
-import {
-  ActivityIcon,
-  InboxIcon,
-  ListIcon,
-  PlusIcon,
-  Settings2Icon,
-  UsersRoundIcon,
-} from "lucide-react";
+import { ListIcon, PlusIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { openCommandPalette } from "../commandPaletteBus";
@@ -35,8 +28,19 @@ import {
 } from "../state/entities";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { useRightPanelStore } from "../rightPanelStore";
-import { DropwavePanels } from "./DropwavePanels";
-import { botOwner, isWorkspaceBot, keyOfThread, needsOwner, newestWorkFirst } from "./model";
+import { DropwaveDesktopActivity, DropwavePanels } from "./DropwavePanels";
+import { DropwaveToolbar, useDropwaveAppearance } from "./DropwaveToolbar";
+import { BotAvatar } from "./BotAvatar";
+import { useMediaQuery } from "../hooks/useMediaQuery";
+import {
+  botOwner,
+  isWorkspaceBot,
+  keyOfThread,
+  needsOwner,
+  newestWorkFirst,
+  workState,
+  workStateLabel,
+} from "./model";
 import {
   DropwaveWorkspaceContext,
   DropwaveModeContext,
@@ -85,6 +89,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   const [lastProject, setLastProject] = useLocalStorage(LAST_PROJECT_KEY, null, ProjectKey);
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [classic, setClassic] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  const inlineActivity = useMediaQuery("lg");
+  const appearance = useDropwaveAppearance();
   const activeBot = botOwner(byKey, activeThread);
   const routeProject = activeBot ?? activeThread ?? draft;
   const project =
@@ -133,6 +140,11 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
               bots,
               lead,
               leadHidden,
+              needsProject: (project) =>
+                needs.some((thread) => {
+                  const owner = botOwner(byKey, thread);
+                  return owner !== null && projectIncludes(project, owner);
+                }),
               activeThread,
               activeBot,
               needs,
@@ -168,7 +180,24 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                   </button>
                 ),
               }
-            : { workspaceSidebar: <DropwaveRail /> })}
+            : {
+                workspaceSidebar: <DropwaveRail />,
+                workspaceStyle: appearance.style,
+                workspaceToolbar: (
+                  <DropwaveToolbar
+                    appearance={appearance}
+                    activityOpen={inlineActivity ? activityOpen : panel?.kind === "activity"}
+                    toggleActivity={() => {
+                      if (inlineActivity) setActivityOpen(!activityOpen);
+                      else setPanel(panel?.kind === "activity" ? null : { kind: "activity" });
+                    }}
+                  />
+                ),
+                workspacePanel:
+                  inlineActivity && activityOpen && !modalOpen ? (
+                    <DropwaveDesktopActivity onClose={() => setActivityOpen(false)} />
+                  ) : undefined,
+              })}
         >
           {children}
         </AppSidebarLayout>
@@ -180,26 +209,6 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   );
 }
 
-export function DropwaveMark() {
-  return (
-    <span data-dropwave-mark="" aria-hidden="true">
-      <i />
-      <i />
-      <i />
-    </span>
-  );
-}
-
-export function ProjectMark({ name }: { name: string }) {
-  const hue = [...name].reduce((result, letter) => (result * 31 + letter.charCodeAt(0)) % 360, 250);
-  const style: React.CSSProperties & { "--dw-project-hue": number } = { "--dw-project-hue": hue };
-  return (
-    <span data-dropwave-project-mark="" style={style} aria-hidden="true">
-      {name.trim().slice(0, 1).toUpperCase()}
-    </span>
-  );
-}
-
 function DropwaveRail() {
   const workspace = useDropwaveWorkspace();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -207,22 +216,43 @@ function DropwaveRail() {
   const closeMobile = () => {
     if (isMobile) setOpenMobile(false);
   };
-  const showPanel = (panel: WorkspacePanel) => {
-    closeMobile();
-    workspace.openPanel(panel);
-  };
+  const teammates = workspace.bots.filter(
+    (bot) =>
+      bot.environmentId === workspace.lead?.environmentId &&
+      bot.source.dropwaveBot?.kind === "teammate" &&
+      bot.source.dropwaveBot.leadThreadId === workspace.lead.id,
+  );
 
   return (
     <div data-dropwave-rail="">
-      <div data-dropwave-brand="">
-        <DropwaveMark />
-        <span>Dropwave</span>
-      </div>
-      <div data-dropwave-projects="">
-        <div data-dropwave-section-label="">
-          <span>Projects</span>
+      <ul data-dropwave-projects="" aria-label="Projects">
+        {workspace.projects.map((project, index) => {
+          const key = keyOfProject(project);
+          return (
+            <li key={key}>
+              <button
+                data-dropwave-project=""
+                type="button"
+                aria-current={workspace.selectedProjectKey === key ? "true" : undefined}
+                onClick={() => {
+                  closeMobile();
+                  workspace.selectProject(project);
+                }}
+              >
+                <span data-dropwave-project-tile="">
+                  <BotAvatar size={54} seed={index % 3} />
+                  {workspace.needsProject(project) ? (
+                    <span data-dropwave-project-needs="" aria-label="Needs you" />
+                  ) : null}
+                </span>
+                <span data-dropwave-project-caption="">{project.title}</span>
+              </button>
+            </li>
+          );
+        })}
+        <li>
           <button
-            data-dropwave-icon-button=""
+            data-dropwave-add-project=""
             type="button"
             aria-label="Add project"
             onClick={() => {
@@ -232,52 +262,43 @@ function DropwaveRail() {
           >
             <PlusIcon />
           </button>
-        </div>
-        <ul aria-label="Projects">
-          {workspace.projects.map((project) => {
-            const key = keyOfProject(project);
-            return (
-              <li key={key}>
+        </li>
+      </ul>
+      {workspace.project ? (
+        <section data-dropwave-team-rail="" aria-label="Project team">
+          <button
+            data-dropwave-team-heading=""
+            type="button"
+            onClick={() => {
+              closeMobile();
+              workspace.openPanel({ kind: "team" });
+            }}
+          >
+            Team <span aria-hidden="true">›</span>
+          </button>
+          <ul>
+            {teammates.map((bot, index) => (
+              <li key={keyOfThread(bot)}>
                 <button
-                  data-dropwave-project=""
+                  data-dropwave-teammate=""
                   type="button"
-                  aria-current={workspace.selectedProjectKey === key ? "true" : undefined}
+                  aria-current={workspace.activeBot?.id === bot.id ? "true" : undefined}
                   onClick={() => {
                     closeMobile();
-                    workspace.selectProject(project);
+                    workspace.openThread(scopeThreadRef(bot.environmentId, bot.id));
                   }}
                 >
-                  <ProjectMark name={project.title} />
-                  <span>{project.title}</span>
+                  <BotAvatar size={30} seed={3 + (index % 3)} />
+                  <span>
+                    <strong>{bot.title}</strong>
+                    <small>{workStateLabel[workState(bot)]}</small>
+                  </span>
                 </button>
               </li>
-            );
-          })}
-        </ul>
-      </div>
-      <div data-dropwave-nav="">
-        <button
-          type="button"
-          data-dropwave-nav-row=""
-          onClick={() => showPanel({ kind: "team" })}
-          disabled={!workspace.project}
-        >
-          <UsersRoundIcon /> Team
-        </button>
-        <button
-          type="button"
-          data-dropwave-nav-row=""
-          onClick={() => showPanel({ kind: "activity" })}
-        >
-          <ActivityIcon /> Activity
-        </button>
-        <button type="button" data-dropwave-nav-row="" onClick={() => showPanel({ kind: "needs" })}>
-          <InboxIcon /> Needs you
-          {workspace.needs.length > 0 ? (
-            <span data-dropwave-count="">{workspace.needs.length}</span>
-          ) : null}
-        </button>
-      </div>
+            ))}
+          </ul>
+        </section>
+      ) : null}
       <div data-dropwave-rail-footer="">
         <button
           type="button"
@@ -289,9 +310,6 @@ function DropwaveRail() {
         >
           <ListIcon /> All threads
         </button>
-        <Link to="/settings/general" data-dropwave-nav-row="" onClick={closeMobile}>
-          <Settings2Icon /> Settings
-        </Link>
       </div>
     </div>
   );

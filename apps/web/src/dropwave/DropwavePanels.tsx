@@ -8,9 +8,9 @@ import {
   ActivityIcon,
   ArrowUpRightIcon,
   CheckIcon,
-  InboxIcon,
   ListTodoIcon,
   PlusIcon,
+  XIcon,
 } from "lucide-react";
 import { useEffect } from "react";
 
@@ -83,7 +83,13 @@ function Row({
   );
 }
 
-function WorkList({ threads }: { threads: ReadonlyArray<EnvironmentThreadShell> }) {
+function WorkList({
+  threads,
+  onOpenThread,
+}: {
+  threads: ReadonlyArray<EnvironmentThreadShell>;
+  onOpenThread?: () => void;
+}) {
   const workspace = useDropwaveWorkspace();
   if (!workspace) return null;
   return (
@@ -92,7 +98,10 @@ function WorkList({ threads }: { threads: ReadonlyArray<EnvironmentThreadShell> 
         <Row
           key={keyOfThread(thread)}
           thread={thread}
-          onOpen={() => workspace.openThread(scopeThreadRef(thread.environmentId, thread.id))}
+          onOpen={() => {
+            onOpenThread?.();
+            workspace.openThread(scopeThreadRef(thread.environmentId, thread.id));
+          }}
         />
       ))}
     </ul>
@@ -120,7 +129,7 @@ function WorkGroups({
       {finished.length > 0 ? (
         <section data-dropwave-group="">
           <h3>
-            Finished <span>{finished.length}</span>
+            Done <span>{finished.length}</span>
           </h3>
           <WorkList threads={finished} />
         </section>
@@ -155,11 +164,42 @@ function Activity() {
         <SessionFamily key={keyOfThread(bot)} thread={bot} />
       ))}
       {recent.length > 0 ? (
-        <WorkGroups threads={recent} emptyText="No activity yet." />
+        <WorkList threads={recent} />
       ) : (
         <Empty icon={<ActivityIcon />} text="Activity will appear when a bot starts working." />
       )}
     </>
+  );
+}
+
+export function DropwaveDesktopActivity({ onClose }: { onClose: () => void }) {
+  return (
+    <aside data-dropwave-activity="" aria-label="Activity">
+      <header>
+        <h2>Activity</h2>
+        <button
+          type="button"
+          data-dropwave-icon-button=""
+          aria-label="Close activity"
+          onClick={onClose}
+        >
+          <XIcon />
+        </button>
+      </header>
+      <div data-dropwave-panel-body="">
+        <Activity />
+      </div>
+    </aside>
+  );
+}
+
+export function DropwaveNeeds({ onOpenThread }: { onOpenThread: () => void }) {
+  const workspace = useDropwaveWorkspace();
+  if (!workspace) return null;
+  return workspace.needs.length > 0 ? (
+    <WorkList threads={workspace.needs} onOpenThread={onOpenThread} />
+  ) : (
+    <Empty icon={<CheckIcon />} text="Nothing needs you right now." />
   );
 }
 
@@ -314,19 +354,8 @@ export function DropwavePanels({ panel, onClose }: { panel: WorkspacePanel; onCl
       body = <Activity />;
       break;
     }
-    case "needs":
-      title = "Needs you";
-      description = "Questions and approvals across your projects";
-      body =
-        workspace.needs.length > 0 ? (
-          <WorkList threads={workspace.needs} />
-        ) : (
-          <Empty icon={<CheckIcon />} text="You’re all caught up." />
-        );
-      break;
   }
-  const Icon =
-    panel.kind === "needs" ? InboxIcon : panel.kind === "activity" ? ActivityIcon : ListTodoIcon;
+  const Icon = panel.kind === "activity" ? ActivityIcon : ListTodoIcon;
   return (
     <Sheet
       open

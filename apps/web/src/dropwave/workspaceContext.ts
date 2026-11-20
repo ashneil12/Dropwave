@@ -11,7 +11,7 @@ export type BotEditorTarget =
   | { kind: "edit"; bot: EnvironmentThreadShell; decision?: string };
 
 export type WorkspacePanel =
-  | { kind: "team" | "activity" | "needs" }
+  | { kind: "team" | "activity" }
   | { kind: "work"; owner: ScopedThreadRef }
   | { kind: "profile"; target: BotEditorTarget };
 
@@ -25,6 +25,7 @@ interface DropwaveWorkspaceState {
   readonly activeThread: EnvironmentThreadShell | null;
   readonly activeBot: EnvironmentThreadShell | null;
   readonly needs: ReadonlyArray<EnvironmentThreadShell>;
+  readonly needsProject: (project: EnvironmentProject) => boolean;
   readonly selectedProjectKey: string | null;
   readonly selectProject: (project: EnvironmentProject) => void;
   readonly openThread: (thread: ScopedThreadRef) => void;

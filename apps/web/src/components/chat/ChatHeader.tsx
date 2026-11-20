@@ -58,6 +58,7 @@ interface ChatHeaderProps {
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
+  leading?: ReactNode;
   trailing?: ReactNode;
 }
 
@@ -84,6 +85,7 @@ export const ChatHeader = memo(function ChatHeader({
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
+  leading,
   trailing,
 }: ChatHeaderProps) {
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
@@ -249,6 +251,31 @@ export const ChatHeader = memo(function ChatHeader({
       setRenaming(null);
     }
   };
+  const projectCrumb = activeProject ? (
+    <WorkspaceBreadcrumbItem className="shrink">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              aria-label={`New thread in ${activeProjectName}`}
+              onClick={onNewThreadInProject}
+              className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            />
+          }
+        >
+          <ProjectFavicon project={activeProject} className="size-3.5" />
+          <MiddleTruncate
+            data-slot="workspace-breadcrumb-text"
+            value={activeProjectName ?? ""}
+            showTitle={false}
+            variant="cap-aligned"
+          />
+        </TooltipTrigger>
+        <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
+      </Tooltip>
+    </WorkspaceBreadcrumbItem>
+  ) : null;
   return (
     <div
       ref={breadcrumbContainerRef}
@@ -257,36 +284,16 @@ export const ChatHeader = memo(function ChatHeader({
         rightPanelOpen ? "pr-10" : "pr-24",
       )}
       onContextMenu={handleHeaderContextMenu}
+      data-dropwave-bot-header={leading ? "" : undefined}
     >
+      {leading}
       <WorkspaceBreadcrumb
         ariaLabel="Thread breadcrumb"
         className="flex-1 overflow-clip [overflow-clip-margin:2px]"
       >
-        {activeProject ? (
+        {!leading && projectCrumb ? (
           <>
-            <WorkspaceBreadcrumbItem className="shrink">
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      aria-label={`New thread in ${activeProjectName}`}
-                      onClick={onNewThreadInProject}
-                      className="inline-flex min-w-0 max-w-full cursor-pointer items-center gap-1.5 rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                    />
-                  }
-                >
-                  <ProjectFavicon project={activeProject} className="size-3.5" />
-                  <MiddleTruncate
-                    data-slot="workspace-breadcrumb-text"
-                    value={activeProjectName ?? ""}
-                    showTitle={false}
-                    variant="cap-aligned"
-                  />
-                </TooltipTrigger>
-                <TooltipPopup side="top">New thread in {activeProjectName}</TooltipPopup>
-              </Tooltip>
-            </WorkspaceBreadcrumbItem>
+            {projectCrumb}
             <WorkspaceBreadcrumbSeparator>
               <WorkspaceBreadcrumbText>/</WorkspaceBreadcrumbText>
             </WorkspaceBreadcrumbSeparator>
@@ -400,6 +407,7 @@ export const ChatHeader = memo(function ChatHeader({
             </Tooltip>
           ) : null}
         </WorkspaceBreadcrumbItem>
+        {leading ? projectCrumb : null}
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
       {trailing}
