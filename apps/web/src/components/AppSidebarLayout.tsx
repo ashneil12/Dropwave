@@ -413,11 +413,17 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
 export function AppSidebarLayout({
   children,
   showSidebar = true,
+  workspaceSidebar,
+  sidebarAccessory,
 }: {
   children: ReactNode;
   showSidebar?: boolean;
+  workspaceSidebar?: ReactNode;
+  sidebarAccessory?: ReactNode;
 }) {
-  const sidebarArea = workspaceAreaProps("sidebar", 0, "Threads");
+  const dropwave = workspaceSidebar !== undefined;
+  const sidebarLabel = dropwave ? "Workspace" : "Threads";
+  const sidebarArea = workspaceAreaProps("sidebar", 0, sidebarLabel);
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
     observedKey: null,
     pendingKey: null,
@@ -452,7 +458,9 @@ export function AppSidebarLayout({
       : {}
   ) as CSSProperties;
   const sidebarProviderStyle = {
-    "--sidebar-width": `${clampThreadSidebarWidth(sidebarWidth, sidebarMinimumWidth, sidebarMaximumWidth)}px`,
+    "--sidebar-width": dropwave
+      ? "234px"
+      : `${clampThreadSidebarWidth(sidebarWidth, sidebarMinimumWidth, sidebarMaximumWidth)}px`,
     "--panel-animation-duration": `${panelAnimationDurationMs}ms`,
     ...windowControlsInsetStyle,
   } as CSSProperties;
@@ -461,33 +469,45 @@ export function AppSidebarLayout({
     <PanelAnimationSuppressionProvider value={panelAnimationsSuppressed}>
       <SidebarProvider
         className="h-dvh! min-h-0!"
+        data-dropwave-stage={dropwave ? "" : undefined}
         data-panel-animations={routePanelAnimationsActive ? "true" : "false"}
         storageKey="chat_thread_sidebar_open"
         style={sidebarProviderStyle}
       >
         {showSidebar ? (
           <>
-            <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
+            {dropwave ? null : (
+              <SidebarBrandWidthProbe isElectron={isElectron} onWidthChange={setBrandWidth} />
+            )}
             <Sidebar
               side="left"
               collapsible="offcanvas"
               data-app-sidebar=""
               {...sidebarArea}
               role="navigation"
-              aria-label="Threads"
-              resizable={{
-                maxWidth: sidebarMaximumWidth,
-                minWidth: sidebarMinimumWidth,
-                shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
-                  nextWidth <= currentWidth ||
-                  wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
-                storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
-                onResize: setSidebarWidth,
-              }}
+              aria-label={sidebarLabel}
+              resizable={
+                dropwave
+                  ? false
+                  : {
+                      maxWidth: sidebarMaximumWidth,
+                      minWidth: sidebarMinimumWidth,
+                      shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }) =>
+                        nextWidth <= currentWidth ||
+                        wrapper.clientWidth - nextWidth >= THREAD_MAIN_CONTENT_MIN_WIDTH,
+                      storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
+                      onResize: setSidebarWidth,
+                    }
+              }
               style={windowControlsInsetStyle}
             >
-              <ThreadSidebar routeReveal={sidebarRouteReveal} />
-              <SidebarRail onDoubleClick={resetSidebarWidth} />
+              {workspaceSidebar ?? (
+                <>
+                  <ThreadSidebar routeReveal={sidebarRouteReveal} />
+                  {sidebarAccessory}
+                  <SidebarRail onDoubleClick={resetSidebarWidth} />
+                </>
+              )}
             </Sidebar>
           </>
         ) : null}

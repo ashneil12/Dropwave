@@ -13,6 +13,7 @@ import { cn } from "~/lib/utils";
 import { isInSideChatPane } from "~/lib/sideChatPane";
 import { ComposerBanner } from "./ComposerBanner";
 import ChatMarkdown from "../ChatMarkdown";
+import { DropwaveDecisionRule } from "../../dropwave/DropwaveConversation";
 
 interface PendingUserInputPanelProps {
   pendingUserInputs: PendingUserInput[];
@@ -340,6 +341,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                 );
               })}
             </div>
+            <DropwaveDecisionRule threadRef={threadRef} question={activeQuestion.question} />
           </ComposerBanner.Body>
         </ComposerBanner.Scroll>
       </CollapsiblePanel>

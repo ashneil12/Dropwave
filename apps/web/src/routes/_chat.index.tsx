@@ -20,17 +20,20 @@ import {
   useVisibleThreadShells,
 } from "../state/entities";
 import { useEnvironments } from "../state/environments";
+import { DropwaveIndex } from "../dropwave/DropwaveConversation";
+import { useDropwaveWorkspace } from "../dropwave/workspaceContext";
 
 function ChatIndexRouteView() {
   const { authGateState } = Route.useRouteContext();
   const { environments, isReady } = useEnvironments();
+  const workspace = useDropwaveWorkspace();
 
   if (authGateState.status === "hosted-static") {
     if (!isReady) return null;
     if (environments.length === 0) return <HostedEmptyState />;
   }
 
-  return <IndexDraftLanding />;
+  return workspace === null ? <IndexDraftLanding /> : <DropwaveIndex />;
 }
 
 function IndexDraftLanding() {

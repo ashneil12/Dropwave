@@ -15,6 +15,7 @@ import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { APP_DISPLAY_NAME, APP_VERSION } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
+import { DropwaveWorkspace } from "../dropwave/DropwaveWorkspace";
 import { CommandPalette } from "../components/CommandPalette";
 import { CustomSnoozeDialogHost } from "../components/CustomSnoozeDialog";
 import { GuestShareDialogHost } from "../components/chat/GuestShareControls";
@@ -202,9 +203,15 @@ function RootRouteBranch() {
   const appShell = (
     <CommandPalette>
       {/* Setup starts with an empty workspace, so the Welcome page has no thread list. */}
-      <AppSidebarLayout showSidebar={!isWelcome}>
-        <Outlet />
-      </AppSidebarLayout>
+      {isWelcome || !primaryEnvironmentAuthenticated ? (
+        <AppSidebarLayout showSidebar={!isWelcome}>
+          <Outlet />
+        </AppSidebarLayout>
+      ) : (
+        <DropwaveWorkspace>
+          <Outlet />
+        </DropwaveWorkspace>
+      )}
     </CommandPalette>
   );
 

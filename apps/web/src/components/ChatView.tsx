@@ -1,3 +1,8 @@
+import {
+  DropwaveConversationStart,
+  DropwaveConversationTools,
+} from "../dropwave/DropwaveConversation";
+import { useDropwaveMode } from "../dropwave/workspaceContext";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
@@ -441,6 +446,7 @@ const DismissedFallbackWindowSchema = Schema.NullOr(Schema.String);
 const ignoreComposerFocus = () => {};
 
 export default function ChatView(props: ChatViewProps) {
+  const dropwaveMode = useDropwaveMode();
   const {
     environmentId,
     threadId,
@@ -1028,6 +1034,13 @@ export default function ChatView(props: ChatViewProps) {
   );
   const browserAvailable = isPreviewSupportedInRuntime() || activeEnvironmentServerBrowser;
   const activeThreadShell = serverThread;
+  const dropwaveProfile =
+    dropwaveMode && !embedded ? activeThreadShell?.source.dropwaveBot : undefined;
+  const showDropwaveStart =
+    dropwaveProfile !== undefined &&
+    activeMessageCount === 0 &&
+    activeThreadShell?.latestRun === null &&
+    !threadDetailLoading;
   const limitRecoveryRun =
     serverRuntime?.status === "failed" && serverRuntime.lastErrorClass === "usage_limit"
       ? (activeThreadShell?.latestRun ?? null)
@@ -3327,6 +3340,7 @@ export default function ChatView(props: ChatViewProps) {
   const content = (
     <div
       ref={setWorkspaceLayoutElement}
+      data-dropwave-chat={dropwaveMode && !embedded ? "" : undefined}
       className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background"
     >
       {embedded ? null : (
@@ -3383,6 +3397,14 @@ export default function ChatView(props: ChatViewProps) {
               onOpenThread={onOpenRelatedThreadStable}
               rightPanelOpen={inlineRightPanelOwnsTitleBar}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
+              trailing={
+                dropwaveMode ? (
+                  <DropwaveConversationTools
+                    thread={activeThreadShell}
+                    onOpenFiles={addFilesSurfaceStable}
+                  />
+                ) : undefined
+              }
               {...(activeDraftLogicalProjectKey
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
                 : {})}
@@ -3527,7 +3549,9 @@ export default function ChatView(props: ChatViewProps) {
                   onIsAtEndChange={onIsAtEndChangeStable}
                   onViewportAttach={attachTimelineViewport}
                   onFooterGrow={onTimelineFooterGrowStable}
-                  hideEmptyPlaceholder={isDraftHeroState || threadDetailLoading}
+                  hideEmptyPlaceholder={
+                    isDraftHeroState || threadDetailLoading || showDropwaveStart
+                  }
                   emptyPlaceholderInset={composerReservedHeight}
                   topFadeEnabled={!hasTimelineTopBanner}
                   {...(threadHistoryControls === undefined
@@ -3536,6 +3560,23 @@ export default function ChatView(props: ChatViewProps) {
                 />
               </WorkspaceMutationIdContext>
 
+              {showDropwaveStart && dropwaveProfile ? (
+                <DropwaveConversationStart
+                  title={activeThread.title}
+                  profile={dropwaveProfile}
+                  onUsePrompt={(prompt) => {
+                    if (
+                      !useComposerDraftStore
+                        .getState()
+                        .getComposerDraft(composerDraftTarget)
+                        ?.prompt.trim()
+                    ) {
+                      setComposerDraftPrompt(composerDraftTarget, prompt);
+                    }
+                    focusComposerStable();
+                  }}
+                />
+              ) : null}
               {showScrollToBottom && !isThreadFindActive && (
                 <ScrollToEndButton
                   bottom={scrollToEndClearance + 4}
