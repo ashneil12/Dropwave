@@ -3,7 +3,7 @@ import { expect } from "e2e";
 import { test, WEB } from "./t3.ts";
 
 test(
-  "Dropwave 2-pane Atelier cockpit runs bot-face sidebar, T3 provider selectors, Soul setup, Docs, Asks, and Settings",
+  "Dropwave 2-pane Atelier cockpit runs bot-face sidebar, first-run LLM onboarding, Docs, Asks, and Settings",
   WEB,
   async ({ t3, screen }) => {
     await t3.project("Dropwave fixture", { "README.md": "# Disposable fixture" });
@@ -21,22 +21,18 @@ test(
     await screen.getByRole("button", "Pin project to top").tap();
     await screen.getByRole("button", /Projects/).tap();
 
-    // Start conversational setup with Bot Soul + QA teammate.
-    await screen.getByRole("button", "Start conversational setup").tap();
-    await screen.getByRole("button", "Tested live with screenshots and checks green").tap();
-    await expect(screen.getByText("Bot identity & soul")).toBeVisible();
-    await screen.getByRole("button", "Launch Chief of Staff").tap();
-
-    // Verify real Lead ("Atlas") & QA bot appear in Team list with 1-click switching.
-    await expect(screen.getByRole("button", /Atlas Lead/)).toBeVisible();
-    await expect(screen.getByRole("button", /Dropwave fixture QA/)).toBeVisible();
-    await screen.getByRole("button", /Dropwave fixture QA/).tap();
-    await screen.getByRole("button", /Atlas Lead/).tap();
+    // Set up the Chief of Staff: first run wires a persistent "Atlas" persona and
+    // lands on its chat showing the client-rendered opening line in normal agent styling.
+    await screen.getByRole("button", "Set up Chief of Staff").tap();
+    await expect(
+      screen.getByText(/I just came online\. I'll be running point on your projects/),
+    ).toBeVisible();
+    await expect(screen.getByText("Onboarding")).toBeVisible();
+    await expect(screen.getByRole("button", /Atlas/)).toBeVisible();
 
     // Verify Docs & Asks tabs in the main canvas header.
     await screen.getByRole("tab", "Docs").tap();
-    await expect(screen.getByText("Dropwave fixture Core Loop")).toBeVisible();
-    await expect(screen.getByRole("button", /Atlas Soul/)).toBeVisible();
+    await expect(screen.getByRole("tab", /Asks/)).toBeVisible();
 
     await screen.getByRole("tab", /Asks/).tap();
     await screen.getByRole("textbox").fill("Verify Canary pricing before launch");
@@ -44,9 +40,11 @@ test(
     await expect(screen.getByText("Verify Canary pricing before launch")).toBeVisible();
     await screen.getByRole("tab", "Chat").tap();
 
-    // Verify Dropwave-first Settings (with embedded Providers & Models + separated T3 Engine & Advanced).
+    // Verify Dropwave-first Settings (Crew + embedded Providers & Models + T3 Engine & Advanced).
     await screen.getByRole("button", "Settings").tap();
     await expect(screen.getByText("Dropwave Settings")).toBeVisible();
+    await screen.getByRole("button", "Crew").tap();
+    await expect(screen.getByText(/Your crew follows you into every project/)).toBeVisible();
     await screen.getByRole("button", "Providers & Models").tap();
     await screen.getByRole("button", "T3 Engine & Advanced").tap();
     await expect(screen.getByText("Underlying T3 Engine Settings")).toBeVisible();

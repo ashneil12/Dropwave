@@ -96,7 +96,15 @@ export const DropwaveAskMutationResult = Schema.Struct({
 });
 export type DropwaveAskMutationResult = typeof DropwaveAskMutationResult.Type;
 
-export const DropwaveDocKind = Schema.Literals(["brief", "spec", "note", "loop", "memory", "hub"]);
+export const DropwaveDocKind = Schema.Literals([
+  "brief",
+  "spec",
+  "note",
+  "loop",
+  "memory",
+  "hub",
+  "foundation",
+]);
 export type DropwaveDocKind = typeof DropwaveDocKind.Type;
 
 export const DropwaveDocSummary = Schema.Struct({
@@ -169,10 +177,15 @@ export type DropwaveMemoryKind = typeof DropwaveMemoryKind.Type;
 export const DropwaveMemoryConfidence = Schema.Literals(["mentioned", "learned", "confirmed"]);
 export type DropwaveMemoryConfidence = typeof DropwaveMemoryConfidence.Type;
 
+export const DropwaveMemoryScope = Schema.Literals(["project", "global"]);
+export type DropwaveMemoryScope = typeof DropwaveMemoryScope.Type;
+
 export const DropwaveMemoryItem = Schema.Struct({
   id: TrimmedNonEmptyString,
   projectId: ProjectId,
   botThreadId: Schema.NullOr(ThreadId),
+  scope: DropwaveMemoryScope,
+  personaId: Schema.NullOr(TrimmedNonEmptyString),
   kind: DropwaveMemoryKind,
   text: Schema.String.check(Schema.isMaxLength(600)),
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
@@ -199,6 +212,7 @@ export type DropwaveSummaryNode = typeof DropwaveSummaryNode.Type;
 export const DropwaveMemoryListInput = Schema.Struct({
   projectId: ProjectId,
   botThreadId: Schema.optional(ThreadId),
+  personaId: Schema.optional(TrimmedNonEmptyString),
   query: Schema.optional(Schema.String),
 });
 export type DropwaveMemoryListInput = typeof DropwaveMemoryListInput.Type;
@@ -211,6 +225,9 @@ export type DropwaveMemoryListResult = typeof DropwaveMemoryListResult.Type;
 export const DropwaveMemorySaveInput = Schema.Struct({
   projectId: ProjectId,
   botThreadId: Schema.optional(Schema.NullOr(ThreadId)),
+  scope: Schema.optional(DropwaveMemoryScope),
+  about: Schema.optional(Schema.Literals(["owner", "self"])),
+  personaId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   kind: DropwaveMemoryKind,
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(600)),
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
@@ -232,3 +249,50 @@ export const DropwaveMemoryRemoveResult = Schema.Struct({
   removed: Schema.Boolean,
 });
 export type DropwaveMemoryRemoveResult = typeof DropwaveMemoryRemoveResult.Type;
+
+export const DropwaveMemorySetScopeInput = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  scope: DropwaveMemoryScope,
+});
+export type DropwaveMemorySetScopeInput = typeof DropwaveMemorySetScopeInput.Type;
+
+export const DropwaveMemorySetScopeResult = Schema.Struct({
+  item: DropwaveMemoryItem,
+});
+export type DropwaveMemorySetScopeResult = typeof DropwaveMemorySetScopeResult.Type;
+
+export const DropwavePersonaRole = Schema.Literals(["chief_of_staff", "specialist"]);
+export type DropwavePersonaRole = typeof DropwavePersonaRole.Type;
+
+export const DropwavePersona = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  role: DropwavePersonaRole,
+  roleLabel: Schema.String.check(Schema.isMaxLength(160)),
+  soul: Schema.String.check(Schema.isMaxLength(4000)),
+  identity: Schema.String.check(Schema.isMaxLength(40000)),
+  avatarSeed: Schema.Int,
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type DropwavePersona = typeof DropwavePersona.Type;
+
+export const DropwavePersonaListResult = Schema.Struct({
+  items: Schema.Array(DropwavePersona),
+});
+export type DropwavePersonaListResult = typeof DropwavePersonaListResult.Type;
+
+export const DropwavePersonaUpsertInput = Schema.Struct({
+  id: Schema.optional(TrimmedNonEmptyString),
+  name: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(80))),
+  role: Schema.optional(DropwavePersonaRole),
+  roleLabel: Schema.optional(Schema.String.check(Schema.isMaxLength(160))),
+  soul: Schema.optional(Schema.String.check(Schema.isMaxLength(4000))),
+  identity: Schema.optional(Schema.String.check(Schema.isMaxLength(40000))),
+});
+export type DropwavePersonaUpsertInput = typeof DropwavePersonaUpsertInput.Type;
+
+export const DropwavePersonaUpsertResult = Schema.Struct({
+  item: DropwavePersona,
+});
+export type DropwavePersonaUpsertResult = typeof DropwavePersonaUpsertResult.Type;

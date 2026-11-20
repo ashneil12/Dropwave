@@ -253,6 +253,45 @@ it.effect(
               cmd.text.includes("42 suites passing"),
           ),
         ).toBe(true);
+
+        // 5. Lead edits the project checkout directly -> supervisor nudges per the first mate contract.
+        yield* supervisor.handle({
+          id: EventId.make("ev-5"),
+          threadId: leadId,
+          occurredAt: now,
+          type: "turn-item.updated",
+          payload: {
+            id: "item:edit-1",
+            type: "file_change",
+            fileName: "apps/web/src/billing.tsx",
+            status: "completed",
+          } as never,
+        });
+        expect(
+          dispatched.some(
+            (cmd) =>
+              cmd.type === "message.dispatch" &&
+              cmd.threadId === leadId &&
+              cmd.text.includes("apps/web/src/billing.tsx") &&
+              cmd.text.includes("project changes go to a worker"),
+          ),
+        ).toBe(true);
+
+        // Teammates editing are not nudged — only the lead is bound by the contract.
+        const dispatchedBefore = dispatched.length;
+        yield* supervisor.handle({
+          id: EventId.make("ev-6"),
+          threadId: qaId,
+          occurredAt: now,
+          type: "turn-item.updated",
+          payload: {
+            id: "item:edit-2",
+            type: "file_change",
+            fileName: "apps/web/src/qa.tsx",
+            status: "completed",
+          } as never,
+        });
+        expect(dispatched.length).toBe(dispatchedBefore);
         expect(ProviderDriverKind.make("claudeAgent")).toBe("claudeAgent");
       }).pipe(Effect.provide(testLayer));
     }),

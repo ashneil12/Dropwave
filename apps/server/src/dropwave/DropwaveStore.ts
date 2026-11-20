@@ -14,7 +14,10 @@ import {
   type DropwaveMemoryConfidence,
   type DropwaveMemoryItem,
   type DropwaveMemoryKind,
+  type DropwaveMemoryScope,
   DropwaveOperationError,
+  type DropwavePersona,
+  type DropwavePersonaRole,
   type DropwaveSummaryNode,
   type IsoDateTime,
   ProjectId,
@@ -24,6 +27,8 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+
+import { PERSONALITY_SOURCES } from "./personality/sources.ts";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
@@ -130,7 +135,34 @@ function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
       value_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS dropwave_personas (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      role_label TEXT NOT NULL,
+      soul TEXT NOT NULL DEFAULT '',
+      identity TEXT NOT NULL DEFAULT '',
+      avatar_seed INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
+
+  const memoryColumns = new Set(
+    (db.prepare("PRAGMA table_info(dropwave_memories)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!memoryColumns.has("scope")) {
+    db.exec("ALTER TABLE dropwave_memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'");
+  }
+  if (!memoryColumns.has("persona_id")) {
+    db.exec("ALTER TABLE dropwave_memories ADD COLUMN persona_id TEXT");
+  }
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_dropwave_memories_scope ON dropwave_memories (scope, persona_id, active)",
+  );
 }
 
 interface AskRow {
@@ -158,6 +190,8 @@ interface MemoryRow {
   readonly id: string;
   readonly project_id: string;
   readonly bot_thread_id: string | null;
+  readonly scope: string;
+  readonly persona_id: string | null;
   readonly kind: string;
   readonly text: string;
   readonly quote: string | null;
@@ -211,16 +245,44 @@ function rowToAsk(row: AskRow): DropwaveAsk {
   };
 }
 
+interface PersonaRow {
+  readonly id: string;
+  readonly name: string;
+  readonly role: string;
+  readonly role_label: string;
+  readonly soul: string;
+  readonly identity: string;
+  readonly avatar_seed: number;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
 function rowToMemory(row: MemoryRow): DropwaveMemoryItem {
   return {
     id: row.id,
     projectId: ProjectId.make(row.project_id),
     botThreadId: row.bot_thread_id ? ThreadId.make(row.bot_thread_id) : null,
+    scope: (row.scope === "global" ? "global" : "project") as DropwaveMemoryScope,
+    personaId: row.persona_id ?? null,
     kind: row.kind as DropwaveMemoryKind,
     text: row.text,
     ...(row.quote ? { quote: row.quote } : {}),
     ...(row.source_message_id ? { sourceMessageId: row.source_message_id } : {}),
     confidence: row.confidence as DropwaveMemoryConfidence,
+    createdAt: asIsoDateTime(row.created_at),
+    updatedAt: asIsoDateTime(row.updated_at),
+  };
+}
+
+function rowToPersona(row: PersonaRow): DropwavePersona {
+  return {
+    id: row.id,
+    name: row.name,
+    role: row.role as DropwavePersonaRole,
+    roleLabel: row.role_label,
+    soul: row.soul,
+    identity: row.identity,
+    avatarSeed: row.avatar_seed,
     createdAt: asIsoDateTime(row.created_at),
     updatedAt: asIsoDateTime(row.updated_at),
   };
@@ -292,12 +354,15 @@ export interface DropwaveStoreShape {
   readonly listMemories: (input: {
     readonly projectId: ProjectId;
     readonly botThreadId?: ThreadId | undefined;
+    readonly personaId?: string | undefined;
     readonly query?: string | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveMemoryItem>, DropwaveOperationError>;
 
   readonly saveMemory: (input: {
     readonly projectId: ProjectId;
     readonly botThreadId?: ThreadId | null | undefined;
+    readonly scope?: DropwaveMemoryScope | undefined;
+    readonly personaId?: string | null | undefined;
     readonly kind: DropwaveMemoryKind;
     readonly text: string;
     readonly quote?: string | undefined;
@@ -306,6 +371,29 @@ export interface DropwaveStoreShape {
   }) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
 
   readonly removeMemory: (id: string) => Effect.Effect<boolean, DropwaveOperationError>;
+
+  readonly setMemoryScope: (
+    id: string,
+    scope: DropwaveMemoryScope,
+  ) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
+
+  readonly listPersonas: () => Effect.Effect<
+    ReadonlyArray<DropwavePersona>,
+    DropwaveOperationError
+  >;
+
+  readonly getPersona: (
+    id: string,
+  ) => Effect.Effect<DropwavePersona | undefined, DropwaveOperationError>;
+
+  readonly upsertPersona: (input: {
+    readonly id?: string | undefined;
+    readonly name?: string | undefined;
+    readonly role?: DropwavePersonaRole | undefined;
+    readonly roleLabel?: string | undefined;
+    readonly soul?: string | undefined;
+    readonly identity?: string | undefined;
+  }) => Effect.Effect<DropwavePersona, DropwaveOperationError>;
 
   readonly appendTurnSummary: (input: {
     readonly threadId: ThreadId;
@@ -739,12 +827,21 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
     listMemories: (input) =>
       Effect.try({
         try: () => {
-          const clauses = ["project_id = ?", "active = 1"];
+          const scopeClauses = [
+            "(scope = 'project' AND project_id = ?" +
+              (input.botThreadId !== undefined
+                ? " AND (bot_thread_id IS NULL OR bot_thread_id = ?)"
+                : "") +
+              ")",
+            "(scope = 'global' AND persona_id IS NULL)",
+          ];
           const params: Array<string> = [input.projectId];
-          if (input.botThreadId !== undefined) {
-            clauses.push("(bot_thread_id IS NULL OR bot_thread_id = ?)");
-            params.push(input.botThreadId);
+          if (input.botThreadId !== undefined) params.push(input.botThreadId);
+          if (input.personaId !== undefined) {
+            scopeClauses.push("(scope = 'global' AND persona_id = ?)");
+            params.push(input.personaId);
           }
+          const clauses = [`(${scopeClauses.join(" OR ")})`, "active = 1"];
           if (input.query?.trim()) {
             const like = `%${input.query.trim().toLowerCase()}%`;
             clauses.push("(LOWER(text) LIKE ? OR LOWER(COALESCE(quote, '')) LIKE ?)");
@@ -767,12 +864,18 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
         try: () => {
           const text = oneLine(input.text).slice(0, 600);
           const timestamp = nowIso();
+          const scope: DropwaveMemoryScope = input.scope ?? "project";
+          const personaId = scope === "global" ? (input.personaId ?? null) : null;
           const duplicate = getOne<MemoryRow>(
-            `SELECT * FROM dropwave_memories
-             WHERE project_id = ? AND active = 1 AND LOWER(text) = LOWER(?)
-             LIMIT 1`,
-            input.projectId,
-            text,
+            scope === "global"
+              ? `SELECT * FROM dropwave_memories
+                 WHERE scope = 'global' AND active = 1 AND LOWER(text) = LOWER(?)
+                   AND persona_id IS ?
+                 LIMIT 1`
+              : `SELECT * FROM dropwave_memories
+                 WHERE scope = 'project' AND project_id = ? AND active = 1 AND LOWER(text) = LOWER(?)
+                 LIMIT 1`,
+            ...(scope === "global" ? [text, personaId] : [input.projectId, text]),
           );
           if (duplicate) {
             const confidence = input.confidence ?? duplicate.confidence;
@@ -788,12 +891,14 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           const id = makeId("mem");
           db.prepare(
             `INSERT INTO dropwave_memories
-              (id, project_id, bot_thread_id, kind, text, quote, source_message_id, confidence, active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+              (id, project_id, bot_thread_id, scope, persona_id, kind, text, quote, source_message_id, confidence, active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
           ).run(
             id,
             input.projectId,
-            input.botThreadId ?? null,
+            scope === "global" ? null : (input.botThreadId ?? null),
+            scope,
+            personaId,
             input.kind,
             text,
             input.quote ? clipQuote(input.quote) : null,
@@ -817,6 +922,124 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           return Number(res.changes) > 0;
         },
         catch: storageError,
+      }),
+
+    setMemoryScope: (id, scope) =>
+      Effect.try({
+        try: () => {
+          const existing = getOne<MemoryRow>(
+            "SELECT * FROM dropwave_memories WHERE id = ? AND active = 1",
+            id,
+          );
+          if (!existing) {
+            throw new DropwaveOperationError({
+              code: "not_found",
+              message: `Memory "${id}" not found.`,
+            });
+          }
+          // Promoting to global detaches it from a single bot; demoting reattaches to the origin.
+          const botThreadId = scope === "global" ? null : existing.bot_thread_id;
+          const personaId = scope === "global" ? existing.persona_id : null;
+          db.prepare(
+            "UPDATE dropwave_memories SET scope = ?, bot_thread_id = ?, persona_id = ?, updated_at = ? WHERE id = ?",
+          ).run(scope, botThreadId, personaId, nowIso(), id);
+          const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id)!;
+          return rowToMemory(row);
+        },
+        catch: (cause) =>
+          isDropwaveError(cause)
+            ? cause
+            : new DropwaveOperationError({
+                code: "storage_error",
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
+      }),
+
+    listPersonas: () =>
+      Effect.try({
+        try: () =>
+          getAll<PersonaRow>(
+            "SELECT * FROM dropwave_personas ORDER BY role ASC, updated_at DESC",
+          ).map(rowToPersona),
+        catch: storageError,
+      }),
+
+    getPersona: (id) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<PersonaRow>("SELECT * FROM dropwave_personas WHERE id = ?", id);
+          return row ? rowToPersona(row) : undefined;
+        },
+        catch: storageError,
+      }),
+
+    upsertPersona: (input) =>
+      Effect.try({
+        try: () => {
+          const timestamp = nowIso();
+          if (input.id !== undefined) {
+            const existing = getOne<PersonaRow>(
+              "SELECT * FROM dropwave_personas WHERE id = ?",
+              input.id,
+            );
+            if (!existing) {
+              throw new DropwaveOperationError({
+                code: "not_found",
+                message: `Persona "${input.id}" not found.`,
+              });
+            }
+            db.prepare(
+              `UPDATE dropwave_personas
+               SET name = ?, role = ?, role_label = ?, soul = ?, identity = ?, updated_at = ?
+               WHERE id = ?`,
+            ).run(
+              input.name?.trim() || existing.name,
+              input.role ?? existing.role,
+              input.roleLabel ?? existing.role_label,
+              input.soul ?? existing.soul,
+              input.identity ?? existing.identity,
+              timestamp,
+              input.id,
+            );
+            const row = getOne<PersonaRow>(
+              "SELECT * FROM dropwave_personas WHERE id = ?",
+              input.id,
+            )!;
+            return rowToPersona(row);
+          }
+          if (!input.name?.trim()) {
+            throw new DropwaveOperationError({
+              code: "invalid_input",
+              message: "Creating a persona requires a name.",
+            });
+          }
+          const id = makeId("persona");
+          db.prepare(
+            `INSERT INTO dropwave_personas
+              (id, name, role, role_label, soul, identity, avatar_seed, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ).run(
+            id,
+            input.name.trim().slice(0, 80),
+            input.role ?? "specialist",
+            (input.roleLabel ?? "").slice(0, 160),
+            (input.soul ?? "").slice(0, 4000),
+            // New personas start with the IDENTITY.md template so the bot can fill it in.
+            (input.identity ?? PERSONALITY_SOURCES.identityTemplate).slice(0, 40000),
+            NodeCrypto.randomInt(0, 2 ** 31 - 1),
+            timestamp,
+            timestamp,
+          );
+          const row = getOne<PersonaRow>("SELECT * FROM dropwave_personas WHERE id = ?", id)!;
+          return rowToPersona(row);
+        },
+        catch: (cause) =>
+          isDropwaveError(cause)
+            ? cause
+            : new DropwaveOperationError({
+                code: "storage_error",
+                message: cause instanceof Error ? cause.message : String(cause),
+              }),
       }),
 
     appendTurnSummary: (input) =>

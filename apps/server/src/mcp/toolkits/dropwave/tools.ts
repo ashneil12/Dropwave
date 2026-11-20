@@ -5,6 +5,7 @@ import {
   DropwaveLoopStep,
   DropwaveMemoryConfidence,
   DropwaveMemoryKind,
+  DropwaveMemoryScope,
   DropwaveRiskLevel,
   OrchestratorMcpFailure,
   ThreadId,
@@ -49,11 +50,13 @@ const DropwaveAsksTool = Tool.make("dropwave_asks", {
 
 const DropwaveMemoryTool = Tool.make("dropwave_memory", {
   description:
-    "Project memory and chat summary tree. list/search: durable facts, rules, and preferences. save: record a durable preference/decision/fact (include the owner's quote when known). zoom: expand a summary tree nodeId into earlier turns. search_tree: search older summarized chat history.",
+    "Memory and chat summary tree. list/search: durable facts, rules, and preferences. save: record a durable fact (scope: project or global; about: owner or self, global only; include the owner's quote when known). zoom: expand a summary tree nodeId. search_tree: search older summarized chat history.",
   parameters: Schema.Struct({
     action: Schema.Literals(["list", "search", "save", "zoom", "search_tree"]),
     query: Schema.optional(Schema.String),
     kind: Schema.optional(DropwaveMemoryKind),
+    scope: Schema.optional(DropwaveMemoryScope),
+    about: Schema.optional(Schema.Literals(["owner", "self"])),
     text: Schema.optional(TrimmedNonEmptyString),
     quote: Schema.optional(Schema.String),
     confidence: Schema.optional(DropwaveMemoryConfidence),
@@ -89,9 +92,20 @@ const DropwaveDocsTool = Tool.make("dropwave_docs", {
 
 const DropwaveTeamTool = Tool.make("dropwave_team", {
   description:
-    "Inspect or configure this project's Dropwave team and core loop (Lead bot only for writes). list: bots and loop. configure_loop: update brief, loopSteps, doneDefinition, riskLevel, fixRoundCap, or addRule. upsert_helper: create or update a helper bot (e.g. QA, SEO) wired to this Lead.",
+    "Inspect or configure this project's Dropwave team, crew personas, and core loop (Lead bot only for writes). list: bots and loop. list_crew: global personas and which projects use each. update_identity: update your own persona (name, roleLabel, soul, identity). complete_onboarding: finish lead onboarding for this project. configure_loop: update brief, loopSteps, doneDefinition, riskLevel, fixRoundCap, or addRule. upsert_helper: create or update a helper bot (e.g. QA, SEO) wired to this Lead; pass personaId to reuse a crew persona.",
   parameters: Schema.Struct({
-    action: Schema.Literals(["list", "configure_loop", "upsert_helper"]),
+    action: Schema.Literals([
+      "list",
+      "list_crew",
+      "update_identity",
+      "complete_onboarding",
+      "configure_loop",
+      "upsert_helper",
+    ]),
+    name: Schema.optional(TrimmedNonEmptyString),
+    roleLabel: Schema.optional(Schema.String),
+    soul: Schema.optional(Schema.String),
+    identity: Schema.optional(Schema.String),
     brief: Schema.optional(Schema.String),
     doneDefinition: Schema.optional(Schema.String),
     riskLevel: Schema.optional(DropwaveRiskLevel),
@@ -102,11 +116,12 @@ const DropwaveTeamTool = Tool.make("dropwave_team", {
     helperName: Schema.optional(TrimmedNonEmptyString),
     helperRole: Schema.optional(Schema.String),
     helperBrief: Schema.optional(Schema.String),
+    personaId: Schema.optional(TrimmedNonEmptyString),
   }),
   success: Schema.Record(Schema.String, Schema.Unknown),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies: [...baseDeps, SecureRandom.SecureRandom],
+  dependencies: [...baseDeps, SecureRandom.SecureRandom, DropwaveStore.DropwaveStore],
 })
   .annotate(Tool.Title, "Manage Dropwave team and core loop")
   .annotate(Tool.Destructive, true)

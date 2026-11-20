@@ -11,15 +11,17 @@ import {
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   UploadIcon,
+  UsersIcon,
   XIcon,
 } from "lucide-react";
 import { useState } from "react";
 
 import { ProviderSettingsPanel } from "../components/settings/ProviderSettingsPanel";
 import { Dialog, DialogPopup } from "../components/ui/dialog";
+import { DropwaveCrewSettings } from "./DropwaveCrewSettings";
 import type { useDropwaveAppearance } from "./DropwaveToolbar";
 
-type SettingsSection = "dropwave" | "providers" | "engine";
+type SettingsSection = "dropwave" | "crew" | "providers" | "engine";
 
 const PRESETS = [
   { key: "mountains", file: "mountains.jpg", label: msg("Mountains") },
@@ -94,6 +96,18 @@ export function DropwaveSettingsDialog({
               <button
                 type="button"
                 data-dw-settings-nav-item=""
+                aria-current={section === "crew" ? "true" : undefined}
+                onClick={() => setSection("crew")}
+              >
+                <UsersIcon className="size-4" />
+                <span>
+                  <T>Crew</T>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-dw-settings-nav-item=""
                 aria-current={section === "providers" ? "true" : undefined}
                 onClick={() => setSection("providers")}
               >
@@ -126,6 +140,8 @@ export function DropwaveSettingsDialog({
               <h2>
                 {section === "dropwave" ? (
                   <T>Workspace & Look</T>
+                ) : section === "crew" ? (
+                  <T>Crew</T>
                 ) : section === "providers" ? (
                   <T>Providers & Models</T>
                 ) : (
@@ -244,6 +260,8 @@ export function DropwaveSettingsDialog({
                     </div>
                   </section>
                 </>
+              ) : section === "crew" ? (
+                <DropwaveCrewSettings />
               ) : section === "providers" ? (
                 <div data-dw-embedded-providers="">
                   <ProviderSettingsPanel />

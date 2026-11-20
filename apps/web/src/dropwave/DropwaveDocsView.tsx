@@ -52,6 +52,7 @@ export function DropwaveDocsView({
   const [creatingNew, setCreatingNew] = useState(false);
 
   const [memories, setMemories] = useState<ReadonlyArray<DropwaveMemoryItem>>([]);
+  const [personaNames, setPersonaNames] = useState<ReadonlyMap<string, string>>(new Map());
   const [newMemoryText, setNewMemoryText] = useState("");
   const [newMemoryKind, setNewMemoryKind] = useState<DropwaveMemoryKind>("rule");
   const [busy, setBusy] = useState(false);
@@ -66,6 +67,12 @@ export function DropwaveDocsView({
   const listMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryList, { reportFailure: false });
   const saveMemCmd = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
   const removeMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryRemove, {
+    reportFailure: false,
+  });
+  const setScopeCmd = useAtomCommand(serverEnvironment.dropwaveMemorySetScope, {
+    reportFailure: false,
+  });
+  const listPersonasCmd = useAtomCommand(serverEnvironment.dropwavePersonaList, {
     reportFailure: false,
   });
 
@@ -105,6 +112,14 @@ export function DropwaveDocsView({
         if (res._tag === "Success") {
           setError(null);
           setMemories(res.value.items);
+          void listPersonasCmd({ environmentId: project.environmentId, input: {} }).then(
+            (personaRes) => {
+              if (cancelled || personaRes._tag !== "Success") return;
+              setPersonaNames(
+                new Map(personaRes.value.items.map((persona) => [persona.id, persona.name])),
+              );
+            },
+          );
         } else if (!isAtomCommandInterrupted(res)) {
           const cause = squashAtomCommandFailure(res);
           setError(cause instanceof Error ? cause.message : gt("Could not load memory."));
@@ -114,7 +129,7 @@ export function DropwaveDocsView({
     return () => {
       cancelled = true;
     };
-  }, [gt, listDocsCmd, listMemCmd, project, query, reloadNonce, tab]);
+  }, [gt, listDocsCmd, listMemCmd, listPersonasCmd, project, query, reloadNonce, tab]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads selected markdown document content
   useEffect(() => {
@@ -263,6 +278,17 @@ export function DropwaveDocsView({
       const cause = squashAtomCommandFailure(res);
       setError(cause instanceof Error ? cause.message : gt("Could not save memory."));
     }
+  };
+
+  const toggleMemoryScope = async (item: DropwaveMemoryItem) => {
+    if (busy) return;
+    setBusy(true);
+    const res = await setScopeCmd({
+      environmentId: project.environmentId,
+      input: { id: item.id, scope: item.scope === "global" ? "project" : "global" },
+    });
+    setBusy(false);
+    if (res._tag === "Success") triggerReload();
   };
 
   const removeMemory = async (id: string) => {
@@ -484,8 +510,8 @@ export function DropwaveDocsView({
               </h2>
               <p>
                 <T>
-                  Injected automatically before every turn for this project only. Bots never mix
-                  memory across projects.
+                  Injected automatically before every turn. Global memories are shared with every
+                  bot in every project; project memories stay here.
                 </T>
               </p>
             </header>
@@ -521,6 +547,20 @@ export function DropwaveDocsView({
                 <li key={item.id}>
                   <div>
                     <span data-dropwave-doc-pill="">{item.kind}</span>
+                    <button
+                      type="button"
+                      data-dropwave-doc-pill=""
+                      onClick={() => void toggleMemoryScope(item)}
+                    >
+                      {item.scope === "global" ? gt("Everywhere") : gt("This project")}
+                    </button>
+                    {item.scope === "global" ? (
+                      <span data-dropwave-doc-pill="">
+                        {item.personaId === null
+                          ? gt("About you")
+                          : (personaNames.get(item.personaId) ?? gt("Bot"))}
+                      </span>
+                    ) : null}
                     <p>{item.text}</p>
                     {item.quote ? <small>“{item.quote}”</small> : null}
                   </div>

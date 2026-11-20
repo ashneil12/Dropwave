@@ -1932,6 +1932,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:dropwave:memory:remove",
       tag: WS_METHODS.dropwaveMemoryRemove,
     }),
+    dropwaveMemorySetScope: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:set-scope",
+      tag: WS_METHODS.dropwaveMemorySetScope,
+    }),
+    dropwavePersonaList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:persona:list",
+      tag: WS_METHODS.dropwavePersonaList,
+    }),
+    dropwavePersonaUpsert: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:persona:upsert",
+      tag: WS_METHODS.dropwavePersonaUpsert,
+    }),
     checkOtlpEndpoint: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:check-otlp-endpoint",
       tag: WS_METHODS.serverCheckOtlpEndpoint,

@@ -42,6 +42,8 @@ export const DropwaveBotProfile = Schema.Union([
     loopSteps: Schema.optional(Schema.Array(DropwaveLoopStep).check(Schema.isMaxLength(12))),
     workerModelSelection: Schema.optional(ModelSelection),
     avatarSeed: Schema.optional(Schema.Int),
+    personaId: Schema.optional(TrimmedNonEmptyString),
+    onboardingPhase: Schema.optional(Schema.Literals(["first_run", "project"])),
   }),
   Schema.Struct({
     kind: Schema.Literal("teammate"),
@@ -50,6 +52,7 @@ export const DropwaveBotProfile = Schema.Union([
     leadThreadId: ThreadId,
     role: Schema.optional(BotRole),
     avatarSeed: Schema.optional(Schema.Int),
+    personaId: Schema.optional(TrimmedNonEmptyString),
   }),
 ]);
 export type DropwaveBotProfile = typeof DropwaveBotProfile.Type;

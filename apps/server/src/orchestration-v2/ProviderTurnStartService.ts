@@ -50,6 +50,7 @@ import { canForkBusySourceNatively, isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
 import * as DropwaveDocsService from "../dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "../dropwave/DropwaveStore.ts";
+import { discoverSkills, dropwaveLibraryRoots } from "../dropwave/DropwaveSkillsDiscovery.ts";
 import { dropwaveBotInstructions } from "./dropwaveBotInstructions.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
@@ -1023,11 +1024,19 @@ export const layer: Layer.Layer<
                     })
                     .pipe(Effect.orElseSucceed(() => []))
                 : [];
+              const personaId = projection.thread.dropwaveBot?.personaId;
+              const persona =
+                Option.isSome(maybeStore) && personaId !== undefined
+                  ? yield* maybeStore.value
+                      .getPersona(personaId)
+                      .pipe(Effect.orElseSucceed(() => undefined))
+                  : undefined;
               const memories = Option.isSome(maybeStore)
                 ? yield* maybeStore.value
                     .listMemories({
                       projectId: projection.thread.projectId,
                       botThreadId: projection.thread.id,
+                      ...(personaId !== undefined ? { personaId } : {}),
                     })
                     .pipe(Effect.orElseSucceed(() => []))
                 : [];
@@ -1041,11 +1050,17 @@ export const layer: Layer.Layer<
                     .listDocs(projection.thread.projectId)
                     .pipe(Effect.orElseSucceed(() => []))
                 : [];
+              const [libraryRoots, skills] = yield* Effect.promise(() =>
+                Promise.all([dropwaveLibraryRoots(), discoverSkills()]),
+              );
               return dropwaveBotInstructions(projection.thread, team, {
                 openAsks,
                 memories,
                 docs,
                 summaryTree,
+                libraryRoots,
+                skills,
+                ...(persona !== undefined ? { persona } : {}),
               });
             });
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.

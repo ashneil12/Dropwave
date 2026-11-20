@@ -42,6 +42,7 @@ function slugifyTitle(title: string): string {
 function inferKindFromPath(relPath: string): DropwaveDocKind {
   if (isHubPath(relPath)) return "hub";
   const lower = relPath.toLowerCase();
+  if (lower.includes("foundation")) return "foundation";
   if (lower.includes("loop") || lower.includes("workflow")) return "loop";
   if (lower.includes("memory") || lower.includes("rules")) return "memory";
   if (lower.includes("spec") || lower.includes("architecture") || lower.includes("plan")) {

@@ -742,7 +742,19 @@ export function DropwaveChatPillar({
             </div>
           ) : (
             <>
-              {liveMessages.length === 0 ? (
+              {liveMessages.length === 0 &&
+              workspace.activeBot?.source.dropwaveBot?.kind === "lead" &&
+              workspace.activeBot.source.dropwaveBot.onboardingPhase === "first_run" ? (
+                <div data-dw-turn="bot">
+                  <DropwaveMarkdown
+                    text={gt(
+                      "Hey. I just came online. I'll be running point on your projects with you. Before anything else, what should I call you?",
+                    )}
+                    onOpenDocPath={onOpenDocPath}
+                    onOpenThreadId={onOpenThreadId}
+                  />
+                </div>
+              ) : liveMessages.length === 0 ? (
                 <div data-dw-empty-chat="">
                   <DropwaveBotAvatar
                     name={headerName}

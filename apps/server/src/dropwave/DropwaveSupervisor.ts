@@ -133,6 +133,27 @@ const make = Effect.gen(function* () {
         return;
       }
 
+      // 2b. First mate contract enforcement: a lead never edits the project checkout directly.
+      // Record each file-change item and queue a nudge back to the lead.
+      if (event.type === "turn-item.updated" && event.payload.type === "file_change") {
+        const thread = yield* projections.getThread(event.threadId);
+        if (
+          thread.dropwaveBot?.kind !== "lead" ||
+          thread.archivedAt !== null ||
+          thread.deletedAt !== null
+        ) {
+          return;
+        }
+        const fileName = event.payload.fileName;
+        yield* store.incrementSupervisorCounter(`lead-direct-edit:${thread.id}`);
+        yield* dispatchSupervisorMessage({
+          threadId: thread.id,
+          key: `lead-direct-edit:${event.payload.id}`,
+          text: `[Dropwave supervisor] You changed ${fileName} directly. Per the first mate contract, project changes go to a worker. Revert or hand it off, unless the owner approved this exact edit.`,
+        });
+        return;
+      }
+
       // 3. Worker lifecycle: sync linked asks and wake the owning Dropwave bot on failures so nothing is ignored.
       if (event.type === "subagent.updated") {
         const task = event.payload;

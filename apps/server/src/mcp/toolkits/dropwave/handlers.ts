@@ -89,6 +89,9 @@ const handlers = {
           .listMemories({
             projectId: thread.projectId,
             botThreadId: thread.id,
+            ...(thread.dropwaveBot?.personaId !== undefined
+              ? { personaId: thread.dropwaveBot.personaId }
+              : {}),
             ...(input.query ? { query: input.query } : {}),
           })
           .pipe(Effect.mapError(mapDropwaveError));
@@ -98,10 +101,23 @@ const handlers = {
         if (!input.text) {
           return yield* fail("invalid_request", "save requires text.");
         }
+        const callerPersonaId = thread.dropwaveBot?.personaId;
+        // Global "self" memories bind to the caller's persona; without one they fall
+        // back to project scope so they still only reach this bot.
+        const scope =
+          input.scope === "global"
+            ? input.about === "self" && callerPersonaId === undefined
+              ? "project"
+              : "global"
+            : "project";
+        const personaId =
+          scope === "global" && input.about === "self" ? (callerPersonaId ?? null) : null;
         const item = yield* store
           .saveMemory({
             projectId: thread.projectId,
             botThreadId: thread.id,
+            scope,
+            personaId,
             kind: input.kind ?? "fact",
             text: input.text,
             ...(input.quote ? { quote: input.quote } : {}),
@@ -194,6 +210,119 @@ const handlers = {
         };
       }
 
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      if (input.action === "list_crew") {
+        const personas = yield* store.listPersonas().pipe(Effect.mapError(mapDropwaveError));
+        const allEntries = yield* threads.listProjectThreads({ includeSubagents: false }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorMcpFailure({
+                code: "orchestration_error",
+                message: cause.message,
+              }),
+          ),
+        );
+        const allBots = (yield* Effect.forEach(allEntries, (entry) =>
+          readThread(entry.id).pipe(
+            Effect.map(({ projection }) => projection.thread),
+            Effect.orElseSucceed(() => undefined),
+          ),
+        )).filter(
+          (candidate): candidate is NonNullable<typeof candidate> =>
+            candidate !== undefined &&
+            candidate.dropwaveBot !== undefined &&
+            candidate.archivedAt === null &&
+            candidate.deletedAt === null,
+        );
+        return {
+          crew: personas.map((persona) => ({
+            persona,
+            usedBy: allBots
+              .filter((bot) => bot.dropwaveBot?.personaId === persona.id)
+              .map((bot) => ({
+                threadId: bot.id,
+                projectId: bot.projectId,
+                title: bot.title,
+              })),
+          })),
+        };
+      }
+
+      if (input.action === "update_identity") {
+        const personaId = thread.dropwaveBot?.personaId;
+        if (personaId === undefined) {
+          return yield* fail(
+            "invalid_request",
+            "This bot has no crew persona yet, so there is no shared identity to update.",
+          );
+        }
+        const persona = yield* store
+          .upsertPersona({
+            id: personaId,
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.roleLabel !== undefined ? { roleLabel: input.roleLabel } : {}),
+            ...(input.soul !== undefined ? { soul: input.soul } : {}),
+            ...(input.identity !== undefined ? { identity: input.identity } : {}),
+          })
+          .pipe(Effect.mapError(mapDropwaveError));
+        // A new persona name renames every active bot bound to it.
+        if (input.name !== undefined) {
+          const allEntries = yield* threads
+            .listProjectThreads({ includeSubagents: false })
+            .pipe(Effect.orElseSucceed(() => []));
+          for (const entry of allEntries) {
+            if (entry.id === thread.id) continue;
+            const shell = yield* readThread(entry.id).pipe(
+              Effect.map(({ projection }) => projection.thread),
+              Effect.orElseSucceed(() => undefined),
+            );
+            if (shell?.dropwaveBot?.personaId !== personaId) continue;
+            const renameCommandId = yield* newCommandId();
+            yield* threads
+              .dispatch({
+                type: "thread.metadata.update",
+                commandId: renameCommandId,
+                threadId: entry.id,
+                title: persona.name,
+              })
+              .pipe(Effect.ignore);
+          }
+          const renameSelfId = yield* newCommandId();
+          yield* threads
+            .dispatch({
+              type: "thread.metadata.update",
+              commandId: renameSelfId,
+              threadId: thread.id,
+              title: persona.name,
+            })
+            .pipe(Effect.mapError(dispatchFailure));
+        }
+        return { persona };
+      }
+
+      if (input.action === "complete_onboarding") {
+        const current = thread.dropwaveBot;
+        if (current?.kind !== "lead") {
+          return yield* fail(
+            "invalid_request",
+            "Only the project's Lead bot can finish onboarding.",
+          );
+        }
+        const { onboardingPhase: _cleared, ...nextProfile } = current;
+        const clearedProfile: DropwaveBotProfile = nextProfile;
+        const commandId = yield* newCommandId();
+        yield* threads
+          .dispatch({
+            type: "thread.metadata.update",
+            commandId,
+            threadId: thread.id,
+            dropwaveBot: clearedProfile,
+          })
+          .pipe(Effect.mapError(dispatchFailure));
+        return { completed: true, profile: clearedProfile };
+      }
+
       if (thread.dropwaveBot?.kind !== "lead") {
         return yield* fail(
           "invalid_request",
@@ -235,8 +364,20 @@ const handlers = {
         return { updated: true, profile: nextProfile };
       }
 
-      if (!input.helperName) {
-        return yield* fail("invalid_request", "upsert_helper requires helperName.");
+      // Reusing a crew persona pulls the helper's name, role, and soul from it.
+      let helperPersona =
+        input.personaId !== undefined
+          ? yield* store.getPersona(input.personaId).pipe(Effect.mapError(mapDropwaveError))
+          : undefined;
+      if (input.personaId !== undefined && helperPersona === undefined) {
+        return yield* fail(
+          "invalid_request",
+          `Crew persona "${input.personaId}" not found; call list_crew for valid ids.`,
+        );
+      }
+      const helperName = input.helperName ?? helperPersona?.name;
+      if (!helperName) {
+        return yield* fail("invalid_request", "upsert_helper requires helperName or personaId.");
       }
       const existingHelper =
         (input.helperThreadId
@@ -250,14 +391,40 @@ const handlers = {
               (bot) =>
                 bot.dropwaveBot?.kind === "teammate" &&
                 bot.dropwaveBot.leadThreadId === thread.id &&
-                bot.title.toLowerCase() === input.helperName!.toLowerCase(),
+                (bot.dropwaveBot.personaId !== undefined
+                  ? bot.dropwaveBot.personaId === input.personaId
+                  : bot.title.toLowerCase() === helperName.toLowerCase()),
             )) ?? undefined;
+
+      // A helper with no persona yet gets one so the same crew member can be reused later.
+      if (helperPersona === undefined) {
+        const existingPersonaId = existingHelper?.dropwaveBot?.personaId;
+        if (existingPersonaId !== undefined) {
+          helperPersona = yield* store
+            .getPersona(existingPersonaId)
+            .pipe(Effect.mapError(mapDropwaveError));
+        }
+        if (helperPersona === undefined) {
+          helperPersona = yield* store
+            .upsertPersona({
+              name: helperName,
+              role: "specialist",
+              roleLabel: input.helperRole?.trim() ?? "",
+              soul: "",
+            })
+            .pipe(Effect.mapError(mapDropwaveError));
+        }
+      }
 
       const helperProfile: DropwaveBotProfile = {
         kind: "teammate",
         brief: (input.helperBrief ?? existingHelper?.dropwaveBot?.brief ?? "").trim(),
         leadThreadId: thread.id,
-        ...(input.helperRole ? { role: input.helperRole.trim() } : {}),
+        personaId: helperPersona.id,
+        ...(input.helperRole || helperPersona.roleLabel
+          ? { role: (input.helperRole ?? helperPersona.roleLabel).trim() }
+          : {}),
+        ...(helperPersona.soul.trim() ? { soul: helperPersona.soul } : {}),
       };
       const commandId = yield* newCommandId();
       if (existingHelper) {
@@ -266,11 +433,11 @@ const handlers = {
             type: "thread.metadata.update",
             commandId,
             threadId: existingHelper.id,
-            title: input.helperName,
+            title: helperName,
             dropwaveBot: helperProfile,
           })
           .pipe(Effect.mapError(dispatchFailure));
-        return { created: false, threadId: existingHelper.id, title: input.helperName };
+        return { created: false, threadId: existingHelper.id, title: helperName };
       }
       const newHelperId = ThreadId.make(`dropwave-helper-${commandId.slice(-12)}`);
       yield* threads
@@ -279,7 +446,7 @@ const handlers = {
           commandId,
           projectId: thread.projectId,
           threadId: newHelperId,
-          title: input.helperName,
+          title: helperName,
           dropwaveBot: helperProfile,
           modelSelection: thread.modelSelection,
           runtimeMode: thread.runtimeMode,
@@ -290,7 +457,7 @@ const handlers = {
           creationSource: "mcp",
         })
         .pipe(Effect.mapError(dispatchFailure));
-      return { created: true, threadId: newHelperId, title: input.helperName };
+      return { created: true, threadId: newHelperId, title: helperName };
     }),
   ),
 

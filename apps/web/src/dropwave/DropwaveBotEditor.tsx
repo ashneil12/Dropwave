@@ -176,6 +176,10 @@ export function DropwaveBotEditor({
           ? profile.leadThreadId
           : null;
 
+    const preserved = {
+      ...(profile?.personaId ? { personaId: profile.personaId } : {}),
+      ...(profile?.avatarSeed !== undefined ? { avatarSeed: profile.avatarSeed } : {}),
+    };
     const next: DropwaveBotProfile | null = isLead
       ? {
           kind: "lead",
@@ -187,6 +191,13 @@ export function DropwaveBotEditor({
           ...(doneDefinition.trim() ? { doneDefinition: doneDefinition.trim() } : {}),
           fixRoundCap: Math.min(10, Math.max(1, Math.round(fixRoundCap))),
           loopSteps: cleanedSteps,
+          ...preserved,
+          ...(profile?.kind === "lead" && profile.onboardingPhase !== undefined
+            ? { onboardingPhase: profile.onboardingPhase }
+            : {}),
+          ...(profile?.kind === "lead" && profile.workerModelSelection !== undefined
+            ? { workerModelSelection: profile.workerModelSelection }
+            : {}),
         }
       : leadThreadId
         ? {
@@ -195,6 +206,7 @@ export function DropwaveBotEditor({
             ...(soul.trim() ? { soul: soul.trim() } : {}),
             leadThreadId,
             ...(role.trim() ? { role: role.trim() } : {}),
+            ...preserved,
           }
         : null;
 

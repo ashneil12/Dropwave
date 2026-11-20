@@ -17,7 +17,12 @@ import {
   DropwaveMemoryRemoveResult,
   DropwaveMemorySaveInput,
   DropwaveMemorySaveResult,
+  DropwaveMemorySetScopeInput,
+  DropwaveMemorySetScopeResult,
   DropwaveOperationError,
+  DropwavePersonaListResult,
+  DropwavePersonaUpsertInput,
+  DropwavePersonaUpsertResult,
 } from "./dropwave.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -620,6 +625,9 @@ export const WS_METHODS = {
   dropwaveMemoryList: "dropwave.memory.list",
   dropwaveMemorySave: "dropwave.memory.save",
   dropwaveMemoryRemove: "dropwave.memory.remove",
+  dropwaveMemorySetScope: "dropwave.memory.setScope",
+  dropwavePersonaList: "dropwave.persona.list",
+  dropwavePersonaUpsert: "dropwave.persona.upsert",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2309,6 +2317,24 @@ const WsDropwaveMemoryRemoveRpc = Rpc.make(WS_METHODS.dropwaveMemoryRemove, {
   error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
 });
 
+const WsDropwaveMemorySetScopeRpc = Rpc.make(WS_METHODS.dropwaveMemorySetScope, {
+  payload: DropwaveMemorySetScopeInput,
+  success: DropwaveMemorySetScopeResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwavePersonaListRpc = Rpc.make(WS_METHODS.dropwavePersonaList, {
+  payload: Schema.Struct({}),
+  success: DropwavePersonaListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwavePersonaUpsertRpc = Rpc.make(WS_METHODS.dropwavePersonaUpsert, {
+  payload: DropwavePersonaUpsertInput,
+  success: DropwavePersonaUpsertResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2592,4 +2618,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsDropwaveMemoryListRpc,
   WsDropwaveMemorySaveRpc,
   WsDropwaveMemoryRemoveRpc,
+  WsDropwaveMemorySetScopeRpc,
+  WsDropwavePersonaListRpc,
+  WsDropwavePersonaUpsertRpc,
 ).middleware(RpcScopeAuthorization);

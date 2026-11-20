@@ -26,6 +26,10 @@ import {
 } from "./askExtraction.ts";
 import * as DropwaveDocsService from "./DropwaveDocsService.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
+import {
+  DROPWAVE_FIRST_RUN_ONBOARDING,
+  DROPWAVE_PROJECT_ONBOARDING,
+} from "./personality/onboardingPrompts.ts";
 
 const projectA = ProjectId.make("project:alpha");
 const projectB = ProjectId.make("project:beta");
@@ -301,6 +305,8 @@ it("compiles risk posture, core loop, open asks, memory, and docs into pre-turn 
         id: "mem_1",
         projectId: projectA,
         botThreadId: leadThreadA,
+        scope: "project",
+        personaId: null,
         kind: "preference",
         text: "Ash wants plain English with recommendations",
         confidence: "confirmed",
@@ -328,4 +334,172 @@ it("compiles risk posture, core loop, open asks, memory, and docs into pre-turn 
   expect(rendered).toContain("<project_docs>");
   // Unused import guard check
   expect(ProviderDriverKind.make("claudeAgent")).toBe("claudeAgent");
+});
+
+it.effect(
+  "scopes memories across owner-global, persona-global, and project layers, and round-trips personas",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      // Global owner memory saved in project A is listed for a bot in project B.
+      yield* store.saveMemory({
+        projectId: projectA,
+        kind: "fact",
+        text: "Owner's name is Ash",
+        scope: "global",
+        personaId: null,
+      });
+      // Project memory in A stays in A.
+      const projectOnly = yield* store.saveMemory({
+        projectId: projectA,
+        botThreadId: leadThreadA,
+        kind: "preference",
+        text: "Alpha ships every Friday",
+      });
+      const betaMems = yield* store.listMemories({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+      });
+      expect(betaMems.some((m) => m.text === "Owner's name is Ash")).toBe(true);
+      expect(betaMems.some((m) => m.text === "Alpha ships every Friday")).toBe(false);
+
+      // Persona upsert/list round trip; new personas are seeded with the identity template.
+      const atlas = yield* store.upsertPersona({
+        name: "Atlas",
+        role: "chief_of_staff",
+        roleLabel: "Chief of Staff",
+        soul: "Dry, direct co-founder energy.",
+      });
+      expect(atlas.identity.length).toBeGreaterThan(0);
+      const quinn = yield* store.upsertPersona({
+        name: "Quinn",
+        role: "specialist",
+        roleLabel: "QA",
+      });
+      const renamed = yield* store.upsertPersona({ id: atlas.id, name: "Atlas Prime" });
+      expect(renamed.name).toBe("Atlas Prime");
+      const listed = yield* store.listPersonas();
+      expect(listed.map((p) => p.id).sort()).toEqual([atlas.id, quinn.id].sort());
+
+      // Global self memory for persona P is listed for P in B but not for Q.
+      yield* store.saveMemory({
+        projectId: projectA,
+        kind: "lesson",
+        text: "I push back when scope creeps silently",
+        scope: "global",
+        personaId: atlas.id,
+      });
+      const forAtlas = yield* store.listMemories({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+        personaId: atlas.id,
+      });
+      expect(forAtlas.some((m) => m.text.includes("scope creeps"))).toBe(true);
+      const forQuinn = yield* store.listMemories({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+        personaId: quinn.id,
+      });
+      expect(forQuinn.some((m) => m.text.includes("scope creeps"))).toBe(false);
+      // Persona-less listing never picks up persona-scoped memories.
+      expect(betaMems.some((m) => m.text.includes("scope creeps"))).toBe(false);
+
+      // setMemoryScope flips visibility both ways.
+      const promoted = yield* store.setMemoryScope(projectOnly.id, "global");
+      expect(promoted.scope).toBe("global");
+      const betaAfterPromote = yield* store.listMemories({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+      });
+      expect(betaAfterPromote.some((m) => m.text === "Alpha ships every Friday")).toBe(true);
+      const demoted = yield* store.setMemoryScope(projectOnly.id, "project");
+      expect(demoted.scope).toBe("project");
+      const betaAfterDemote = yield* store.listMemories({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+      });
+      expect(betaAfterDemote.some((m) => m.text === "Alpha ships every Friday")).toBe(false);
+    }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it("renders onboarding blocks only for the matching phase and all three memory sections", () => {
+  const now = DateTime.nowUnsafe();
+  const baseBot = {
+    kind: "lead" as const,
+    brief: "",
+    workflow: [],
+    rules: [],
+    riskLevel: "normal" as const,
+  };
+  const makeLead = (onboardingPhase?: "first_run" | "project"): OrchestrationV2AppThread => ({
+    id: leadThreadA,
+    projectId: projectA,
+    title: "Atlas",
+    dropwaveBot: {
+      ...baseBot,
+      ...(onboardingPhase !== undefined ? { onboardingPhase } : {}),
+    },
+    providerInstanceId: ProviderInstanceId.make("claude"),
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("claude"),
+      model: "claude-sonnet-4-6",
+    },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: leadThreadA },
+    forkedFrom: null,
+    createdBy: "user",
+    creationSource: "web",
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  });
+  const memory = (
+    id: string,
+    scope: "project" | "global",
+    personaId: string | null,
+    text: string,
+  ) => ({
+    id,
+    projectId: projectA,
+    botThreadId: leadThreadA,
+    scope,
+    personaId,
+    kind: "fact" as const,
+    text,
+    confidence: "learned" as const,
+    createdAt: "2026-11-20T00:00:00.000Z" as never,
+    updatedAt: "2026-11-20T00:00:00.000Z" as never,
+  });
+  const memories = [
+    memory("m-owner", "global", null, "Owner's name is Ash"),
+    memory("m-self", "global", "persona-1", "I keep reports short"),
+    memory("m-project", "project", null, "Alpha ships weekly"),
+  ];
+
+  const firstRun = dropwaveBotInstructions(makeLead("first_run"), [], { memories });
+  expect(firstRun).toContain("BOOTSTRAP.md");
+  expect(firstRun).toContain(DROPWAVE_FIRST_RUN_ONBOARDING);
+  expect(firstRun).toContain(DROPWAVE_PROJECT_ONBOARDING);
+  expect(firstRun).toContain("<owner_memory>");
+  expect(firstRun).toContain("<your_general_memory>");
+  expect(firstRun).toContain("<project_memory>");
+
+  const project = dropwaveBotInstructions(makeLead("project"), [], { memories });
+  expect(project).not.toContain("BOOTSTRAP.md");
+  expect(project).not.toContain(DROPWAVE_FIRST_RUN_ONBOARDING);
+  expect(project).toContain(DROPWAVE_PROJECT_ONBOARDING);
+
+  const steady = dropwaveBotInstructions(makeLead(), [], { memories });
+  expect(steady).not.toContain("BOOTSTRAP.md");
+  expect(steady).not.toContain(DROPWAVE_FIRST_RUN_ONBOARDING);
+  expect(steady).not.toContain(DROPWAVE_PROJECT_ONBOARDING);
 });

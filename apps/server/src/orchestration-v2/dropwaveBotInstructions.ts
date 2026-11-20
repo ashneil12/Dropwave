@@ -2,16 +2,26 @@ import type {
   DropwaveAsk,
   DropwaveDocSummary,
   DropwaveMemoryItem,
+  DropwavePersona,
   DropwaveRiskLevel,
   DropwaveSummaryNode,
   OrchestrationV2AppThread,
 } from "@t3tools/contracts";
+
+import {
+  composeDropwavePersonality,
+  type DropwaveLibraryRoot,
+  type DropwaveSkillEntry,
+} from "../dropwave/personality/composePersonality.ts";
 
 export interface DropwaveCompiledContext {
   readonly openAsks?: ReadonlyArray<DropwaveAsk> | undefined;
   readonly memories?: ReadonlyArray<DropwaveMemoryItem> | undefined;
   readonly docs?: ReadonlyArray<DropwaveDocSummary> | undefined;
   readonly summaryTree?: ReadonlyArray<DropwaveSummaryNode> | undefined;
+  readonly persona?: DropwavePersona | undefined;
+  readonly libraryRoots?: ReadonlyArray<DropwaveLibraryRoot> | undefined;
+  readonly skills?: ReadonlyArray<DropwaveSkillEntry> | undefined;
 }
 
 const RISK_GUIDANCE: Record<DropwaveRiskLevel, string> = {
@@ -21,6 +31,13 @@ const RISK_GUIDANCE: Record<DropwaveRiskLevel, string> = {
     "Risk level: NORMAL. Decide routine implementation, testing, and workflow steps yourself. Escalate ambiguous product calls and anything external.",
   yolo: "Risk level: YOLO. Make 99% of implementation, naming, layout, and recovery decisions yourself using the brief, memory, and standing rules. Keep shipping end-to-end without pausing unless a hard RED-line stop is hit.",
 };
+
+function renderMemoryLines(memories: ReadonlyArray<DropwaveMemoryItem>, cap: number): string {
+  return memories
+    .slice(0, cap)
+    .map((item) => `- [${item.kind}/${item.confidence}] ${item.text}`)
+    .join("\n");
+}
 
 export function dropwaveBotInstructions(
   thread: OrchestrationV2AppThread,
@@ -32,11 +49,31 @@ export function dropwaveBotInstructions(
 
   const brief = profile.brief.trim();
   const soul = profile.soul?.trim() ?? "";
+  const persona = compiled.persona;
   const role = profile.kind === "lead" ? "project lead" : "teammate";
   const instructions = [
     `Dropwave bot instructions for ${JSON.stringify(thread.title)}, the ${role}.`,
+    composeDropwavePersonality({
+      role: profile.kind === "lead" ? "lead" : "teammate",
+      botName: persona?.name ?? thread.title,
+      ...(persona !== undefined ? { identity: persona.identity } : {}),
+      ...(profile.kind === "lead" && profile.onboardingPhase !== undefined
+        ? { onboardingPhase: profile.onboardingPhase }
+        : {}),
+      libraryRoots: compiled.libraryRoots ?? [],
+      skills: compiled.skills ?? [],
+    }),
   ];
-  if (soul !== "") instructions.push(`<bot_soul>\n${soul}\n</bot_soul>`);
+  if (persona !== undefined && persona.soul.trim() !== "") {
+    instructions.push(`<persona_soul>\n${persona.soul.trim()}\n</persona_soul>`);
+  }
+  if (soul !== "") {
+    instructions.push(
+      persona !== undefined
+        ? `<project_tuning>\n${soul}\n</project_tuning>`
+        : `<bot_soul>\n${soul}\n</bot_soul>`,
+    );
+  }
   if (brief !== "") instructions.push(`Owner's brief:\n${brief}`);
 
   const lead =
@@ -83,15 +120,30 @@ export function dropwaveBotInstructions(
     }
   }
 
-  // Harness-compiled durable memory (OptMem) — strictly project-scoped.
+  // Harness-compiled durable memory (OptMem) — three layers: owner-global, persona-global, project.
   const memories = compiled.memories ?? [];
-  if (memories.length > 0) {
-    const lines = memories
-      .slice(0, 20)
-      .map((item) => `- [${item.kind}/${item.confidence}] ${item.text}`);
-    instructions.push(`<project_memory>\n${lines.join("\n")}\n</project_memory>`);
+  const ownerMemories = memories.filter(
+    (item) => item.scope === "global" && item.personaId === null,
+  );
+  const selfMemories = memories.filter(
+    (item) => item.scope === "global" && item.personaId !== null,
+  );
+  const projectMemories = memories.filter((item) => item.scope === "project");
+  if (ownerMemories.length > 0) {
+    instructions.push(
+      `<owner_memory>\nWhat you know about the owner, shared with every bot in every project:\n${renderMemoryLines(ownerMemories, 15)}\n</owner_memory>`,
+    );
   }
-
+  if (selfMemories.length > 0) {
+    instructions.push(
+      `<your_general_memory>\nYour own lessons that follow you into every project:\n${renderMemoryLines(selfMemories, 10)}\n</your_general_memory>`,
+    );
+  }
+  if (projectMemories.length > 0) {
+    instructions.push(
+      `<project_memory>\n${renderMemoryLines(projectMemories, 20)}\n</project_memory>`,
+    );
+  }
   // Harness-compiled open asks (Zero-Loss Ask Ledger) — survives compaction & session rotation.
   const openAsks = compiled.openAsks ?? [];
   if (openAsks.length > 0) {

@@ -294,6 +294,12 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                       size="sm"
                     />
                     <strong>{headerName}</strong>
+                    {activeBot?.source.dropwaveBot?.kind === "lead" &&
+                    activeBot.source.dropwaveBot.onboardingPhase !== undefined ? (
+                      <em data-dw-onboarding-chip="">
+                        <T>Onboarding</T>
+                      </em>
+                    ) : null}
                     {project ? <span>{project.title}</span> : null}
                   </button>
                 </div>

@@ -4954,3 +4954,23 @@
     border-bottom: 1px solid var(--dw-hairline);
   }
 }
+
+[data-dw-onboarding-chip] {
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 560;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgb(139 141 248 / 15%);
+  border: 1px solid rgb(139 141 248 / 30%);
+  color: #c8c6ff;
+}
+
+[data-dw-path-row] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+[data-dw-path-row] [data-dw-custom-answer] {
+  flex: 1;
+}

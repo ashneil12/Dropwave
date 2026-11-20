@@ -2052,6 +2052,48 @@ export const layerWsRpc = (
             Effect.flatMap((store) => store.removeMemory(input.id)),
             Effect.map((removed) => ({ removed })),
           ),
+        [WS_METHODS.dropwaveMemorySetScope]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.setMemoryScope(input.id, input.scope)),
+            Effect.map((item) => ({ item })),
+          ),
+        [WS_METHODS.dropwavePersonaList]: () =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.listPersonas()),
+            Effect.map((items) => ({ items })),
+          ),
+        [WS_METHODS.dropwavePersonaUpsert]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) =>
+              Effect.gen(function* () {
+                const before = input.id ? yield* store.getPersona(input.id) : undefined;
+                const item = yield* store.upsertPersona(input);
+                // Renaming a crew persona renames every active bot bound to it.
+                if (before !== undefined && before.name !== item.name) {
+                  const entries = yield* threadManagement
+                    .listProjectThreads({ includeSubagents: false })
+                    .pipe(Effect.orElseSucceed(() => []));
+                  for (const entry of entries) {
+                    const shell = yield* threadManagement
+                      .getThreadShell(entry.id)
+                      .pipe(Effect.orElseSucceed(() => null));
+                    if (shell?.dropwaveBot?.personaId !== item.id) continue;
+                    const commandId = yield* serverCommandId("dropwave-persona-rename");
+                    yield* threadManagement
+                      .dispatch({
+                        type: "thread.metadata.update",
+                        commandId,
+                        threadId: entry.id,
+                        title: item.name,
+                      })
+                      .pipe(Effect.ignore);
+                  }
+                }
+                return item;
+              }),
+            ),
+            Effect.map((item) => ({ item })),
+          ),
         [WS_METHODS.issuesList]: (input) => issues.list(input),
         [WS_METHODS.issuesDetail]: (input) => issues.detail(input),
         [WS_METHODS.issuesComments]: (input) => issues.comments(input),

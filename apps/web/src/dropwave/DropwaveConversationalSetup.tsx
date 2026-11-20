@@ -7,25 +7,16 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   DEFAULT_SERVER_SETTINGS,
   type DropwaveLoopStep,
+  type DropwavePersona,
   type DropwaveRiskLevel,
 } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
-import { T, Var, msg, useGT, useMessages } from "gt-react";
-import {
-  ArrowDownIcon,
-  ArrowLeftIcon,
-  ArrowRightIcon,
-  ArrowUpIcon,
-  CheckIcon,
-  FolderPlusIcon,
-  PlusIcon,
-  SendIcon,
-  XIcon,
-} from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { T, msg, useGT, useMessages } from "gt-react";
+import { ArrowLeftIcon, CheckIcon, FolderOpenIcon, LoaderIcon } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 
-import { openCommandPalette } from "../commandPaletteBus";
-import { newProjectId, newThreadId } from "../lib/utils";
+import { newProjectId, newMessageId, newThreadId } from "../lib/utils";
+import { readLocalApi } from "../localApi";
 import {
   providerInstanceEntriesFor,
   resolveProjectDefaultProviderModelSelection,
@@ -37,66 +28,40 @@ import { environmentServerConfigsAtom, serverEnvironment } from "../state/server
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
-import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { useDropwaveWorkspace } from "./workspaceContext";
-
-interface SetupStepDraft {
-  readonly id: string;
-  readonly title: string;
-  readonly owner: string;
-}
 
 const DEFAULT_SETUP_STEPS: ReadonlyArray<{
   readonly id: string;
-  readonly title: string;
-  readonly owner: string;
+  readonly title: ReturnType<typeof msg>;
 }> = [
-  { id: "s1", title: msg("Plan & split asks"), owner: "Main bot" },
-  { id: "s2", title: msg("Build in isolated worktrees"), owner: "Main bot" },
-  { id: "s3", title: msg("Verify & QA end-to-end"), owner: "QA bot" },
-  { id: "s4", title: msg("Fix issues & re-check"), owner: "Main bot" },
-  { id: "s5", title: msg("Ship & report proof"), owner: "Main bot" },
+  { id: "s1", title: msg("Plan & split asks") },
+  { id: "s2", title: msg("Build in isolated worktrees") },
+  { id: "s3", title: msg("Verify & QA end-to-end") },
+  { id: "s4", title: msg("Fix issues & re-check") },
+  { id: "s5", title: msg("Ship & report proof") },
 ];
 
-const SOUL_PRESETS: ReadonlyArray<{
-  readonly id: string;
-  readonly name: string;
-  readonly label: string;
-  readonly soul: string;
-}> = [
-  {
-    id: "first-mate",
-    name: "Atlas",
-    label: msg("Sharp First Mate"),
-    soul: msg(
-      "Direct, calm, loyal first mate. Speaks plain English with zero corporate fluff or sycophancy. Organizes messy founder dumps into airtight tracked asks, owns outcomes end-to-end, pushes back honestly when an approach is flawed, and never declares victory without real proof.",
-    ),
-  },
-  {
-    id: "builder",
-    name: "Forge",
-    label: msg("Relentless Builder"),
-    soul: msg(
-      "Bias toward shipping working software fast. Cuts scope creep, builds in clean isolated worktrees, fixes failing tests immediately instead of explaining them away, and surfaces concise evidence-first updates.",
-    ),
-  },
-  {
-    id: "operator",
-    name: "Nova",
-    label: msg("Calm Operator"),
-    soul: msg(
-      "Methodical, structured business operator. Keeps docs, memory, and decisions spotless across parallel tracks, anticipates bottlenecks early, and distills complex trade-offs into 1-sentence recommendations.",
-    ),
-  },
-];
+function slugify(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "new-project";
+}
+
+function dirnameOf(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const idx = trimmed.lastIndexOf("/");
+  return idx > 0 ? trimmed.slice(0, idx) : trimmed;
+}
 
 export function DropwaveConversationalSetup({
-  defaultRisk = "yolo",
   startAtNewProject = false,
+  defaultRisk = "normal",
   onCancel,
 }: {
-  defaultRisk?: DropwaveRiskLevel;
   startAtNewProject?: boolean;
+  defaultRisk?: DropwaveRiskLevel;
   onCancel: () => void;
 }) {
   const workspace = useDropwaveWorkspace();
@@ -109,183 +74,146 @@ export function DropwaveConversationalSetup({
       ? workspace.project
       : null;
 
-  // Step 1: Project Basics (pick unconfigured project OR create new project + folder in place)
-  const [boundProject, setBoundProject] = useState<EnvironmentProject | null>(
-    preselectedLiveProject,
-  );
-  const [newProjectTitle, setNewProjectTitle] = useState("");
-  const [newFolderPath, setNewFolderPath] = useState("");
-  const [createIfMissing, setCreateIfMissing] = useState(true);
-  const [creatingProject, setCreatingProject] = useState(false);
-
-  // Step 2: AI Chief of Staff Onboarding
-  const [doneBar, setDoneBar] = useState("");
-  const [doneSubmitted, setDoneSubmitted] = useState(false);
-  const [composerText, setComposerText] = useState("");
-  const [leadName, setLeadName] = useState("Atlas");
-  const [soulPresetId, setSoulPresetId] = useState(SOUL_PRESETS[0]!.id);
-  const [soulText, setSoulText] = useState(() => m(SOUL_PRESETS[0]!.soul));
-  const [steps, setSteps] = useState<Array<SetupStepDraft>>(() =>
-    DEFAULT_SETUP_STEPS.map((step) => ({ ...step, title: m(step.title) })),
-  );
-  const [wantQa, setWantQa] = useState(true);
-  const [wantSeo, setWantSeo] = useState(false);
-  const [riskLevel, setRiskLevel] = useState<DropwaveRiskLevel>(defaultRisk);
+  const [projectTitle, setProjectTitle] = useState("");
+  const [folderMode, setFolderMode] = useState<"new" | "existing">("new");
+  const [folderPath, setFolderPath] = useState("");
+  const [pathTouched, setPathTouched] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const wiringRef = useRef(false);
 
   const createProject = useOrchestrationCommand(projectEnvironment.create, {
     reportFailure: false,
   });
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
-  const writeDoc = useAtomCommand(serverEnvironment.dropwaveDocWrite, { reportFailure: false });
-  const saveMemory = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
+  const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
+  const listPersonas = useAtomCommand(serverEnvironment.dropwavePersonaList, {
+    reportFailure: false,
+  });
+  const upsertPersona = useAtomCommand(serverEnvironment.dropwavePersonaUpsert, {
+    reportFailure: false,
+  });
+
+  const parentDir = (() => {
+    const recent =
+      workspace?.project?.workspaceRoot ?? workspace?.projects.at(-1)?.workspaceRoot ?? "";
+    return recent ? dirnameOf(recent) : "";
+  })();
+
+  const autoPath = parentDir && projectTitle.trim() ? `${parentDir}/${slugify(projectTitle)}` : "";
+
+  // An existing project without a lead skips the sheet entirely and wires the
+  // Chief of Staff directly, the same path "Create" takes after project creation.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fires one-time lead wiring against the server for an unconfigured project
+  useEffect(() => {
+    if (!preselectedLiveProject || wiringRef.current) return;
+    wiringRef.current = true;
+    void wireChiefOfStaff(preselectedLiveProject);
+  }, [preselectedLiveProject, wireChiefOfStaff]);
 
   if (!workspace) return null;
 
-  const unconfiguredProjects = workspace.projects.filter(
-    (proj) =>
-      !workspace.bots.some(
-        (bot) =>
-          bot.projectId === proj.id &&
-          bot.environmentId === proj.environmentId &&
-          bot.source.dropwaveBot?.kind === "lead",
-      ),
-  );
-
-  // Resolve freshly created project from live entity store if available
-  const activeProject =
-    (boundProject
-      ? (workspace.projects.find(
-          (p) => p.id === boundProject.id && p.environmentId === boundProject.environmentId,
-        ) ?? boundProject)
-      : null) ?? null;
-
-  const handleCreateProject = async (event: FormEvent) => {
-    event.preventDefault();
-    const title = newProjectTitle.trim();
-    const workspaceRoot = newFolderPath.trim();
-    if (!title || !workspaceRoot || creatingProject) return;
+  const resolveChiefOfStaffPersona = async (): Promise<{
+    persona?: DropwavePersona;
+    firstRun?: boolean;
+    error?: string;
+  }> => {
     const envId = workspace.project?.environmentId ?? primaryEnvId;
-    if (!envId) {
-      setError(gt("No connected environment available yet."));
-      return;
+    if (!envId) return { error: gt("No connected environment available yet.") };
+    const listed = await listPersonas({ environmentId: envId, input: {} });
+    if (listed._tag === "Success") {
+      const chief = listed.value.items.find((persona) => persona.role === "chief_of_staff");
+      if (chief) return { persona: chief, firstRun: false };
     }
-    setError(null);
-    setCreatingProject(true);
-    const projectId = newProjectId();
-    const res = await createProject({
+    const existingLead = workspace.bots.find((bot) => bot.source.dropwaveBot?.kind === "lead");
+    if (existingLead) {
+      const created = await upsertPersona({
+        environmentId: envId,
+        input: {
+          name: existingLead.title,
+          role: "chief_of_staff",
+          roleLabel: gt("Chief of Staff"),
+          soul: existingLead.source.dropwaveBot?.soul ?? "",
+        },
+      });
+      if (created._tag === "Success") return { persona: created.value.item, firstRun: false };
+    }
+    const created = await upsertPersona({
       environmentId: envId,
+      // No soul or identity: the store seeds identity with the IDENTITY.md template.
       input: {
-        projectId,
-        title,
-        workspaceRoot,
-        createWorkspaceRootIfMissing: createIfMissing,
+        name: "Atlas",
+        role: "chief_of_staff",
+        roleLabel: gt("Chief of Staff"),
       },
     });
-    setCreatingProject(false);
-    if (res._tag === "Failure") {
-      if (!isAtomCommandInterrupted(res)) {
-        const cause = squashAtomCommandFailure(res);
-        setError(cause instanceof Error ? cause.message : gt("Could not create project folder."));
-      }
-      return;
+    if (created._tag !== "Success") {
+      const cause = squashAtomCommandFailure(created);
+      return {
+        error: cause instanceof Error ? cause.message : gt("Could not create your Chief of Staff."),
+      };
     }
-    setBoundProject({
-      environmentId: envId,
-      id: projectId,
-      title,
-      workspaceRoot,
-      isScratch: false,
-      defaultModelSelection: null,
-      scripts: [],
-      archivedAt: null,
-      deletedAt: null,
-    } as unknown as EnvironmentProject);
+    return { persona: created.value.item, firstRun: true };
   };
 
-  const handleChatSubmit = (event: FormEvent) => {
-    event.preventDefault();
-    const cleaned = composerText.trim();
-    if (!cleaned || doneSubmitted) return;
-    setDoneBar(cleaned);
-    setDoneSubmitted(true);
-    setComposerText("");
-  };
-
-  const moveStep = (index: number, delta: -1 | 1) => {
-    const next = index + delta;
-    if (next < 0 || next >= steps.length) return;
-    setSteps((prev) => {
-      const copy = [...prev];
-      const item = copy[index]!;
-      copy[index] = copy[next]!;
-      copy[next] = item;
-      return copy;
-    });
-  };
-
-  const launchLoop = async () => {
-    if (busy || !activeProject) return;
+  async function wireChiefOfStaff(project: EnvironmentProject) {
+    if (busy) return;
     setError(null);
-
-    const title = activeProject.title;
-    const shippedText =
-      doneBar.trim() || gt("Tested end-to-end with verified evidence before reporting done.");
-    const cleanedSteps = steps.filter((s) => s.title.trim().length > 0);
-    const botTitle = leadName.trim() || gt("Chief of Staff");
-    const finalSoul = soulText.trim();
-
-    const envId = activeProject.environmentId;
+    setBusy(true);
+    const envId = project.environmentId;
     const providers = readEnvironmentProviders(envId) ?? [];
     const settings =
       appAtomRegistry.get(environmentServerConfigsAtom).get(envId)?.settings ??
       DEFAULT_SERVER_SETTINGS;
-    const projectSettings = resolveProjectSettings(settings, activeProject.id).settings;
-    const configured = activeProject.defaultModelSelection;
-    const available = providerInstanceEntriesFor(providers, settings, activeProject.id);
+    const projectSettings = resolveProjectSettings(settings, project.id).settings;
+    const configured = project.defaultModelSelection;
+    const available = providerInstanceEntriesFor(providers, settings, project.id);
     const modelSelection =
       configured &&
       available.some(
         (entry) => entry.instanceId === configured.instanceId && entry.enabled && entry.isAvailable,
       )
         ? configured
-        : resolveProjectDefaultProviderModelSelection(providers, settings, activeProject.id);
+        : resolveProjectDefaultProviderModelSelection(providers, settings, project.id);
     if (!modelSelection) {
+      setBusy(false);
       setError(
         gt("Connect a provider in Settings -> Providers & Models first, then launch again."),
       );
       return;
     }
 
-    setBusy(true);
-    const leadId = newThreadId();
-    const qaId = wantQa ? newThreadId() : null;
-    const seoId = wantSeo ? newThreadId() : null;
+    const resolved = await resolveChiefOfStaffPersona();
+    if (!resolved.persona) {
+      setBusy(false);
+      setError(resolved.error ?? gt("Could not prepare your Chief of Staff."));
+      return;
+    }
+    const persona = resolved.persona;
+    const firstRun = resolved.firstRun === true;
 
-    const loopSteps: Array<DropwaveLoopStep> = cleanedSteps.map((step) => ({
+    const loopSteps: Array<DropwaveLoopStep> = DEFAULT_SETUP_STEPS.map((step) => ({
       id: step.id,
-      title: step.title.trim(),
-      ownerBotId:
-        step.owner === "QA bot" && qaId ? qaId : step.owner === "SEO bot" && seoId ? seoId : null,
+      title: m(step.title as string),
+      ownerBotId: null,
     }));
-
+    const leadId = newThreadId();
     const leadRes = await createThread({
       environmentId: envId,
       input: {
         threadId: leadId,
-        projectId: activeProject.id,
-        title: botTitle,
+        projectId: project.id,
+        title: persona.name,
         dropwaveBot: {
           kind: "lead",
-          brief: `${title}: ${shippedText}`,
-          ...(finalSoul ? { soul: finalSoul } : {}),
-          workflow: loopSteps.map((s) => s.title),
+          brief: "",
+          workflow: loopSteps.map((step) => step.title),
           rules: [],
-          riskLevel,
-          doneDefinition: shippedText,
+          riskLevel: defaultRisk,
           fixRoundCap: 3,
           loopSteps,
+          personaId: persona.id,
+          onboardingPhase: firstRun ? "first_run" : "project",
         },
         modelSelection,
         runtimeMode: projectSettings.defaultRuntimeMode,
@@ -303,96 +231,88 @@ export function DropwaveConversationalSetup({
       return;
     }
 
-    if (qaId) {
-      await createThread({
-        environmentId: envId,
-        input: {
-          threadId: qaId,
-          projectId: activeProject.id,
-          title: gt("{name} QA", { name: title }),
-          dropwaveBot: {
-            kind: "teammate",
-            leadThreadId: leadId,
-            role: gt("Verification & QA"),
-            soul: gt(
-              "Skeptical, thorough QA engineer. Never trusts claims without running real checks and inspecting real output. Reports exact pass/fail evidence concisely.",
-            ),
-            brief: gt("Verify work end-to-end against: {done}", { done: shippedText }),
-          },
-          modelSelection,
-          runtimeMode: projectSettings.defaultRuntimeMode,
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-        },
-      });
-    }
-    if (seoId) {
-      await createThread({
-        environmentId: envId,
-        input: {
-          threadId: seoId,
-          projectId: activeProject.id,
-          title: gt("{name} Growth", { name: title }),
-          dropwaveBot: {
-            kind: "teammate",
-            leadThreadId: leadId,
-            role: gt("SEO & Growth"),
-            soul: gt(
-              "Sharp growth writer grounded strictly in real product truth. Zero AI fluff, zero invented metrics, crisp positioning.",
-            ),
-            brief: gt("Own SEO, content, and launch assets for {name}.", { name: title }),
-          },
-          modelSelection,
-          runtimeMode: projectSettings.defaultRuntimeMode,
-          interactionMode: "default",
-          branch: null,
-          worktreePath: null,
-        },
-      });
-    }
-
-    await writeDoc({
-      environmentId: envId,
-      input: {
-        projectId: activeProject.id,
-        path: ".dropwave/docs/core-loop.md",
-        title: gt("Core loop & done bar"),
-        kind: "loop",
-        content: `# ${title} Core Loop\n\nLead agent: ${botTitle}\nShipped means: ${shippedText}\n\n## Steps\n${cleanedSteps
-          .map((s, idx) => `${idx + 1}. ${s.title} (${s.owner})`)
-          .join("\n")}\n\n## Autonomy\nRisk level: ${riskLevel.toUpperCase()}\n`,
-      },
-    }).catch(() => undefined);
-
-    if (finalSoul) {
-      await writeDoc({
-        environmentId: envId,
-        input: {
-          projectId: activeProject.id,
-          path: ".dropwave/docs/soul.md",
-          title: gt("{name} Soul", { name: botTitle }),
-          kind: "brief",
-          content: `# ${botTitle} Soul\n\n${finalSoul}\n`,
-        },
-      }).catch(() => undefined);
-    }
-
-    await saveMemory({
-      environmentId: envId,
-      input: {
-        projectId: activeProject.id,
-        botThreadId: leadId,
-        kind: "rule",
-        text: gt("Done bar: {done}", { done: shippedText }),
-        quote: shippedText,
-        confidence: "confirmed",
-      },
-    }).catch(() => undefined);
-
     setBusy(false);
+    if (!workspace) return;
     workspace.refreshOpenAsksCount();
     workspace.openThread(scopeThreadRef(envId, leadId));
+
+    if (!firstRun) {
+      // Project onboarding starts with the owner's first message so the lead can
+      // inspect the folder and greet by name.
+      await startTurn({
+        environmentId: envId,
+        input: {
+          threadId: leadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: gt("New project: {title} ({root}).", {
+              title: project.title,
+              root: project.workspaceRoot,
+            }),
+            attachments: [],
+          },
+          runtimeMode: projectSettings.defaultRuntimeMode,
+          interactionMode: "default",
+        },
+      });
+    }
+  }
+
+  const handleCreate = async (event: FormEvent) => {
+    event.preventDefault();
+    const title = projectTitle.trim();
+    const workspaceRoot = (
+      folderMode === "new" ? (pathTouched ? folderPath : autoPath) : folderPath
+    ).trim();
+    if (!title || !workspaceRoot || busy) return;
+    const envId = workspace.project?.environmentId ?? primaryEnvId;
+    if (!envId) {
+      setError(gt("No connected environment available yet."));
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    const projectId = newProjectId();
+    const res = await createProject({
+      environmentId: envId,
+      input: {
+        projectId,
+        title,
+        workspaceRoot,
+        createWorkspaceRootIfMissing: folderMode === "new",
+      },
+    });
+    if (res._tag === "Failure") {
+      setBusy(false);
+      if (!isAtomCommandInterrupted(res)) {
+        const cause = squashAtomCommandFailure(res);
+        setError(cause instanceof Error ? cause.message : gt("Could not create project folder."));
+      }
+      return;
+    }
+    const project = {
+      environmentId: envId,
+      id: projectId,
+      title,
+      workspaceRoot,
+      isScratch: false,
+      defaultModelSelection: null,
+      scripts: [],
+      archivedAt: null,
+      deletedAt: null,
+    } as unknown as EnvironmentProject;
+    await wireChiefOfStaff(project);
+  };
+
+  const browseFolder = async () => {
+    const picked = await readLocalApi()
+      ?.dialogs.pickFolder(parentDir ? { initialPath: parentDir } : undefined)
+      .catch(() => null);
+    if (picked) {
+      setFolderPath(picked);
+      setPathTouched(true);
+    }
   };
 
   return (
@@ -402,106 +322,120 @@ export function DropwaveConversationalSetup({
           <ArrowLeftIcon className="size-3.5" />
           <T>Back</T>
         </button>
-
         <div data-dw-step-indicator="">
-          <span data-active={!activeProject ? "true" : undefined}>
-            <T>1. Project & folder</T>
-          </span>
-          <span aria-hidden="true">→</span>
-          <span data-active={activeProject ? "true" : undefined}>
-            <T>2. AI Chief of Staff</T>
+          <span data-active="true">
+            <T>New project</T>
           </span>
         </div>
-
-        <div data-dw-head-actions="">
-          <button
-            type="button"
-            data-dw-header-pill=""
-            onClick={() => openCommandPalette({ open: "add-project" })}
-          >
-            <FolderPlusIcon className="size-3.5" />
-            <T>Browse folder</T>
-          </button>
-        </div>
+        <div data-dw-head-actions="" />
       </header>
 
       <div data-dw-stream="">
-        {/* STEP 1: Fast Project Basics — name + connect or create folder cleanly in glass */}
-        {!activeProject ? (
+        {preselectedLiveProject ? (
+          <div data-dw-onboard-basics="">
+            <h2>
+              <T>Wiring up your Chief of Staff…</T>
+            </h2>
+            <p>
+              <LoaderIcon className="size-4 animate-spin" />
+            </p>
+            {error ? (
+              <p data-dropwave-form-error="" role="alert">
+                {error}
+              </p>
+            ) : null}
+          </div>
+        ) : (
           <div data-dw-onboard-basics="">
             <h2>
               <T>Set up your project</T>
             </h2>
             <p>
               <T>
-                Name the project and connect an existing folder or create a fresh one. Next, your
-                Chief of Staff will walk you through soul, core loop, and helpers.
+                Name the project and pick a folder. Your Chief of Staff takes it from there and
+                onboards the project with you in chat.
               </T>
             </p>
 
-            {unconfiguredProjects.length > 0 ? (
-              <div data-dw-setup-card="">
-                <div data-dw-setup-card-head="">
-                  <span>
-                    <T>Existing projects ready for a Chief of Staff</T>
-                  </span>
-                </div>
-                <div data-dw-quick-chips="">
-                  {unconfiguredProjects.map((proj) => (
-                    <button
-                      key={proj.id}
-                      type="button"
-                      data-dw-quick-chip=""
-                      onClick={() => setBoundProject(proj)}
-                    >
-                      <strong>{proj.title}</strong>
-                      <small style={{ opacity: 0.55, marginLeft: 6 }}>{proj.workspaceRoot}</small>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <form data-dw-setup-card="" onSubmit={(e) => void handleCreateProject(e)}>
-              <div data-dw-setup-card-head="">
-                <span>
-                  <T>Or create / link a new project</T>
-                </span>
-              </div>
+            <form data-dw-setup-card="" onSubmit={(e) => void handleCreate(e)}>
               <label data-dw-field-label="">
                 <span>
                   <T>Project name</T>
                 </span>
                 <input
                   data-dw-custom-answer=""
-                  value={newProjectTitle}
-                  onChange={(e) => setNewProjectTitle(e.currentTarget.value)}
+                  value={projectTitle}
+                  onChange={(e) => setProjectTitle(e.currentTarget.value)}
                   placeholder={gt("e.g. Hivra, Nibbii, Pocket CRM")}
                   required
+                  autoFocus
                 />
               </label>
-              <label data-dw-field-label="">
+
+              <div data-dw-field-label="">
                 <span>
-                  <T>Folder path</T>
+                  <T>Folder</T>
                 </span>
-                <input
-                  data-dw-custom-answer=""
-                  value={newFolderPath}
-                  onChange={(e) => setNewFolderPath(e.currentTarget.value)}
-                  placeholder={gt("/Users/you/Projects/my-app")}
-                  required
-                />
-              </label>
-              <label data-dw-check-row="">
-                <input
-                  type="checkbox"
-                  checked={createIfMissing}
-                  onChange={(e) => setCreateIfMissing(e.currentTarget.checked)}
-                />
-                <span>
-                  <T>Create this folder automatically if it does not exist yet</T>
-                </span>
-              </label>
+                <div data-dw-risk-pills="">
+                  <button
+                    type="button"
+                    data-dw-risk-btn=""
+                    aria-pressed={folderMode === "new"}
+                    onClick={() => setFolderMode("new")}
+                  >
+                    <T>New folder</T>
+                  </button>
+                  <button
+                    type="button"
+                    data-dw-risk-btn=""
+                    aria-pressed={folderMode === "existing"}
+                    onClick={() => setFolderMode("existing")}
+                  >
+                    <T>Existing folder</T>
+                  </button>
+                </div>
+              </div>
+
+              {folderMode === "new" ? (
+                <label data-dw-field-label="">
+                  <span>
+                    <T>Path</T>
+                  </span>
+                  <input
+                    data-dw-custom-answer=""
+                    value={pathTouched ? folderPath : autoPath}
+                    onChange={(e) => {
+                      setPathTouched(true);
+                      setFolderPath(e.currentTarget.value);
+                    }}
+                    placeholder={gt("/Users/you/Projects/my-app")}
+                    required
+                  />
+                </label>
+              ) : (
+                <label data-dw-field-label="">
+                  <span>
+                    <T>Path</T>
+                  </span>
+                  <div data-dw-path-row="">
+                    <input
+                      data-dw-custom-answer=""
+                      value={folderPath}
+                      onChange={(e) => setFolderPath(e.currentTarget.value)}
+                      placeholder={gt("/Users/you/Projects/my-app")}
+                      required
+                    />
+                    <button
+                      type="button"
+                      data-dw-header-pill=""
+                      onClick={() => void browseFolder()}
+                    >
+                      <FolderOpenIcon className="size-3.5" />
+                      <T>Browse</T>
+                    </button>
+                  </div>
+                </label>
+              )}
 
               {error ? (
                 <p data-dropwave-form-error="" role="alert">
@@ -513,293 +447,20 @@ export function DropwaveConversationalSetup({
                 <button
                   type="submit"
                   data-dw-white-pill=""
-                  disabled={creatingProject || !newProjectTitle.trim() || !newFolderPath.trim()}
+                  disabled={
+                    busy ||
+                    !projectTitle.trim() ||
+                    !(folderMode === "new" ? autoPath : folderPath).trim()
+                  }
                 >
-                  {creatingProject ? <T>Creating…</T> : <T>Continue to AI onboarding</T>}
-                  <ArrowRightIcon className="size-3.5" />
+                  <CheckIcon className="size-3.5" />
+                  {busy ? <T>Creating…</T> : <T>Create</T>}
                 </button>
               </div>
             </form>
           </div>
-        ) : (
-          /* STEP 2: Conversational AI Chief of Staff Onboarding */
-          <>
-            <div data-dw-msg="bot">
-              <span data-dw-msg-avatar="bot">DW</span>
-              <div data-dw-msg-stack="">
-                <div data-dw-bubble="bot">
-                  <T>
-                    Connected to{" "}
-                    <strong>
-                      <Var>{activeProject.title}</Var>
-                    </strong>
-                    . What does shipped mean here? When can I call work done?
-                  </T>
-                </div>
-                {!doneSubmitted ? (
-                  <div data-dw-quick-chips="">
-                    <button
-                      type="button"
-                      data-dw-quick-chip=""
-                      onClick={() => {
-                        setDoneBar(gt("Tested live with screenshots and checks green"));
-                        setDoneSubmitted(true);
-                      }}
-                    >
-                      <T>Tested live with screenshots and checks green</T>
-                    </button>
-                    <button
-                      type="button"
-                      data-dw-quick-chip=""
-                      onClick={() => {
-                        setDoneBar(gt("PR reviewed, CI green, and merged cleanly"));
-                        setDoneSubmitted(true);
-                      }}
-                    >
-                      <T>PR reviewed, CI green, and merged cleanly</T>
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            {doneSubmitted ? (
-              <>
-                <div data-dw-msg="owner">
-                  <div data-dw-bubble="owner">{doneBar}</div>
-                </div>
-
-                <div data-dw-msg="bot">
-                  <span data-dw-msg-avatar="bot">DW</span>
-                  <div data-dw-msg-stack="">
-                    <div data-dw-bubble="bot">
-                      <T>
-                        Pick my name and soul, tweak the core loop for{" "}
-                        <Var>{activeProject.title}</Var>, and choose your specialist bots.
-                      </T>
-                    </div>
-
-                    <div data-dw-setup-card="">
-                      <div data-dw-setup-card-head="">
-                        <span>
-                          <T>Bot identity & soul</T>
-                        </span>
-                      </div>
-                      <div data-dw-soul-presets="">
-                        {SOUL_PRESETS.map((preset) => (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            data-dw-risk-btn=""
-                            aria-pressed={soulPresetId === preset.id}
-                            onClick={() => {
-                              setSoulPresetId(preset.id);
-                              setLeadName(preset.name);
-                              setSoulText(m(preset.soul));
-                            }}
-                          >
-                            {preset.name} · {m(preset.label)}
-                          </button>
-                        ))}
-                      </div>
-                      <input
-                        data-dw-custom-answer=""
-                        value={leadName}
-                        onChange={(e) => setLeadName(e.currentTarget.value)}
-                        placeholder={gt("Bot name (e.g. Atlas, Chief of Staff)")}
-                        aria-label={gt("Bot name")}
-                      />
-                      <textarea
-                        data-dw-soul-input=""
-                        rows={3}
-                        value={soulText}
-                        onChange={(e) => setSoulText(e.currentTarget.value)}
-                        placeholder={gt("How should this bot think, speak, and push back?")}
-                        aria-label={gt("Bot soul")}
-                      />
-                    </div>
-
-                    <div data-dw-setup-card="">
-                      <div data-dw-setup-card-head="">
-                        <span>
-                          <T>Core loop</T>
-                        </span>
-                        <button
-                          type="button"
-                          data-dw-inline-link=""
-                          onClick={() =>
-                            setSteps((prev) => [
-                              ...prev,
-                              { id: `s-${Date.now()}`, title: "", owner: "Main bot" },
-                            ])
-                          }
-                        >
-                          <PlusIcon className="size-3" />
-                          <T>Add step</T>
-                        </button>
-                      </div>
-                      <ol data-dw-setup-steps="">
-                        {steps.map((step, index) => (
-                          <li key={step.id}>
-                            <span data-dw-mono="dim">{index + 1}</span>
-                            <input
-                              value={step.title}
-                              onChange={(e) => {
-                                const val = e.currentTarget.value;
-                                setSteps((prev) =>
-                                  prev.map((item, idx) =>
-                                    idx === index ? { ...item, title: val } : item,
-                                  ),
-                                );
-                              }}
-                              placeholder={gt("Step name")}
-                            />
-                            <DropwaveSelect
-                              value={step.owner}
-                              options={
-                                [
-                                  { value: "Main bot", label: gt("Main bot") },
-                                  { value: "QA bot", label: gt("QA bot") },
-                                  { value: "SEO bot", label: gt("SEO bot") },
-                                ] satisfies ReadonlyArray<DropwaveSelectOption>
-                              }
-                              ariaLabel={gt("Step owner")}
-                              compact
-                              onChange={(val) => {
-                                setSteps((prev) =>
-                                  prev.map((item, idx) =>
-                                    idx === index ? { ...item, owner: val } : item,
-                                  ),
-                                );
-                              }}
-                            />
-                            <button
-                              type="button"
-                              data-dw-mini-icon=""
-                              aria-label={gt("Move up")}
-                              onClick={() => moveStep(index, -1)}
-                            >
-                              <ArrowUpIcon className="size-3" />
-                            </button>
-                            <button
-                              type="button"
-                              data-dw-mini-icon=""
-                              aria-label={gt("Move down")}
-                              onClick={() => moveStep(index, 1)}
-                            >
-                              <ArrowDownIcon className="size-3" />
-                            </button>
-                            <button
-                              type="button"
-                              data-dw-mini-icon=""
-                              aria-label={gt("Remove step")}
-                              onClick={() =>
-                                setSteps((prev) => prev.filter((_, idx) => idx !== index))
-                              }
-                            >
-                              <XIcon className="size-3" />
-                            </button>
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-
-                    <div data-dw-setup-card="">
-                      <div data-dw-setup-card-head="">
-                        <span>
-                          <T>Specialists & autonomy</T>
-                        </span>
-                      </div>
-                      <div data-dw-helper-checks="">
-                        <label data-dw-check-row="">
-                          <input
-                            type="checkbox"
-                            checked={wantQa}
-                            onChange={(e) => setWantQa(e.currentTarget.checked)}
-                          />
-                          <span data-dw-monogram="indigo">QA</span>
-                          <span>
-                            <T>QA bot (verifies builds & catches regressions)</T>
-                          </span>
-                        </label>
-                        <label data-dw-check-row="">
-                          <input
-                            type="checkbox"
-                            checked={wantSeo}
-                            onChange={(e) => setWantSeo(e.currentTarget.checked)}
-                          />
-                          <span data-dw-monogram="emerald">GR</span>
-                          <span>
-                            <T>Growth / SEO bot (pages, audits, launch assets)</T>
-                          </span>
-                        </label>
-                      </div>
-
-                      <div data-dw-risk-pills="">
-                        {(["careful", "normal", "yolo"] as const).map((level) => (
-                          <button
-                            key={level}
-                            type="button"
-                            data-dw-risk-btn=""
-                            aria-pressed={riskLevel === level}
-                            onClick={() => setRiskLevel(level)}
-                          >
-                            {level === "yolo"
-                              ? "YOLO"
-                              : level === "careful"
-                                ? gt("Careful")
-                                : gt("Normal")}
-                          </button>
-                        ))}
-                      </div>
-
-                      {error ? (
-                        <p data-dropwave-form-error="" role="alert">
-                          {error}
-                        </p>
-                      ) : null}
-
-                      <div data-dw-setup-submit="">
-                        <button
-                          type="button"
-                          data-dw-white-pill=""
-                          disabled={busy}
-                          onClick={() => void launchLoop()}
-                        >
-                          <CheckIcon className="size-3.5" />
-                          {busy ? <T>Launching…</T> : <T>Launch Chief of Staff</T>}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </>
-            ) : null}
-          </>
         )}
       </div>
-
-      {activeProject && !doneSubmitted ? (
-        <form data-dw-composer-wrap="" onSubmit={handleChatSubmit}>
-          <div data-dw-pill-composer="">
-            <input
-              value={composerText}
-              onChange={(e) => setComposerText(e.currentTarget.value)}
-              placeholder={gt("Describe what shipped means for {name}…", {
-                name: activeProject.title,
-              })}
-            />
-            <button
-              type="submit"
-              data-dw-send-btn=""
-              aria-label={gt("Send")}
-              disabled={!composerText.trim()}
-            >
-              <SendIcon className="size-3.5" />
-            </button>
-          </div>
-        </form>
-      ) : null}
     </div>
   );
 }
