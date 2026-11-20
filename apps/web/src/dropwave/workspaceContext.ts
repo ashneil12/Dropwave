@@ -26,11 +26,7 @@ export interface DropwaveSlotLayout {
   readonly bottomRight: DropwaveWidgetKind;
 }
 
-export type DropwaveMode = "preview" | "live";
-
 interface DropwaveWorkspaceState {
-  readonly mode: DropwaveMode;
-  readonly setMode: (mode: DropwaveMode) => void;
   readonly projects: ReadonlyArray<EnvironmentProject>;
   readonly project: EnvironmentProject | null;
   readonly threads: ReadonlyArray<EnvironmentThreadShell>;
@@ -53,9 +49,7 @@ interface DropwaveWorkspaceState {
   readonly setSlotWidget: (slot: keyof DropwaveSlotLayout, kind: DropwaveWidgetKind) => void;
   readonly focusMode: boolean;
   readonly setFocusMode: (focus: boolean) => void;
-  readonly highlightReviewId: string | null;
-  readonly jumpToReview: (reviewId: string) => void;
-  readonly openDecisionQueue: (reviewId?: string) => void;
+  readonly openDecisionQueue: () => void;
   readonly openSettings: () => void;
 }
 

@@ -88,6 +88,7 @@ export function DropwaveBotEditor({
   const [name, setName] = useState(existing?.title ?? (isLead ? "Chief of Staff" : ""));
   const [role, setRole] = useState(profile?.kind === "teammate" ? (profile.role ?? "") : "");
   const [brief, setBrief] = useState(profile?.brief ?? "");
+  const [soul, setSoul] = useState(profile?.soul ?? "");
   const [riskLevel, setRiskLevel] = useState<DropwaveRiskLevel>(
     profile?.kind === "lead" ? (profile.riskLevel ?? "yolo") : "yolo",
   );
@@ -179,6 +180,7 @@ export function DropwaveBotEditor({
       ? {
           kind: "lead",
           brief: brief.trim(),
+          ...(soul.trim() ? { soul: soul.trim() } : {}),
           workflow: cleanedSteps.map((step) => step.title),
           rules: finalRules.slice(-50),
           riskLevel,
@@ -190,6 +192,7 @@ export function DropwaveBotEditor({
         ? {
             kind: "teammate",
             brief: brief.trim(),
+            ...(soul.trim() ? { soul: soul.trim() } : {}),
             leadThreadId,
             ...(role.trim() ? { role: role.trim() } : {}),
           }
@@ -401,6 +404,19 @@ export function DropwaveBotEditor({
                       ? gt("What is this project and what should your main bot own?")
                       : gt("What work should this specialist handle end-to-end?")
                   }
+                />
+              </label>
+
+              <label hidden={Boolean(decision)}>
+                <T>Soul & voice</T>
+                <textarea
+                  rows={2}
+                  maxLength={4000}
+                  value={soul}
+                  onChange={(event) => setSoul(event.currentTarget.value)}
+                  placeholder={gt(
+                    "Personality, tone, and principles (e.g. sharp, plain English, skeptical of untested claims)",
+                  )}
                 />
               </label>
 

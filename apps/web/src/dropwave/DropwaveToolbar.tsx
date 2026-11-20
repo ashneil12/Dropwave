@@ -74,26 +74,6 @@ export function DropwaveToolbar({
 
   return (
     <div data-dw-topbar-right="">
-      <div data-dw-mode-switch="" role="group" aria-label={gt("Workspace data mode")}>
-        <button
-          type="button"
-          aria-pressed={workspace.mode === "preview"}
-          onClick={() => workspace.setMode("preview")}
-        >
-          <T>Preview</T>
-        </button>
-        <button
-          type="button"
-          aria-pressed={workspace.mode === "live"}
-          onClick={() => {
-            workspace.setMode("live");
-            if (!workspace.lead) workspace.setMainView("setup");
-          }}
-        >
-          <T>Live</T>
-        </button>
-      </div>
-
       <button
         type="button"
         data-dw-needs-pill={totalNeedsCount > 0 ? "urgent" : "clear"}

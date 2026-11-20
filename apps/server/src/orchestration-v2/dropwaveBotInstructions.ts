@@ -31,10 +31,12 @@ export function dropwaveBotInstructions(
   if (profile === undefined) return "";
 
   const brief = profile.brief.trim();
+  const soul = profile.soul?.trim() ?? "";
   const role = profile.kind === "lead" ? "project lead" : "teammate";
   const instructions = [
     `Dropwave bot instructions for ${JSON.stringify(thread.title)}, the ${role}.`,
   ];
+  if (soul !== "") instructions.push(`<bot_soul>\n${soul}\n</bot_soul>`);
   if (brief !== "") instructions.push(`Owner's brief:\n${brief}`);
 
   const lead =

@@ -17,13 +17,11 @@ import {
   type UploadChatAttachment,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
-import { T, Var, msg, useGT, useMessages } from "gt-react";
+import { T, Var, useGT } from "gt-react";
 import {
   ArrowUpIcon,
-  CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  ExpandIcon,
   FileTextIcon,
   MicIcon,
   MicOffIcon,
@@ -56,19 +54,10 @@ import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { workState } from "./model";
-import type { SamplePendingReview, SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 const EMPTY_PENDING_REQUESTS_ATOM = Atom.make(null);
 const EMPTY_CHILD_APPROVALS_ATOM = Atom.make<ReadonlyArray<ChildThreadApproval>>([]);
-
-/* oxlint-disable t3code/no-untranslated-copy -- model brand names */
-const PREVIEW_MODEL_OPTIONS: ReadonlyArray<DropwaveSelectOption> = [
-  { value: "claude:opus-4-6", label: "Claude Opus 4.6", hint: msg("Deep orchestration") },
-  { value: "claude:sonnet-4-6", label: "Claude Sonnet 4.6", hint: msg("Fast default") },
-  { value: "codex:gpt-5-4", label: "GPT-5.4 Codex", hint: msg("Heavy coding") },
-];
-/* oxlint-enable t3code/no-untranslated-copy */
 
 interface PendingImageAttachment {
   readonly id: string;
@@ -113,135 +102,6 @@ function formatClock(iso: string | Date): string {
   const date = typeof iso === "string" ? new Date(iso) : iso;
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function renderRichInline(text: string) {
-  const parts = text.split(/(#\d+)/g);
-  return parts.map((part, idx) =>
-    /^#\d+$/.test(part) ? (
-      <span key={`${part}-${idx === 0 ? "a" : "b"}`} data-dw-mono="emerald">
-        {part}
-      </span>
-    ) : (
-      part
-    ),
-  );
-}
-
-function ReviewDecisionCard({
-  review,
-  highlighted,
-  resolvedLabel,
-  onResolve,
-  onExpand,
-}: {
-  review: SamplePendingReview;
-  highlighted: boolean;
-  resolvedLabel?: string | undefined;
-  onResolve: (choiceLabel: string, alwaysDoThis: boolean) => void;
-  onExpand: () => void;
-}) {
-  const gt = useGT();
-  const defaultOpt = review.options.find((o) => o.recommended) ?? review.options[0];
-  const [selectedId, setSelectedId] = useState(defaultOpt?.id ?? "");
-  const [customText, setCustomText] = useState("");
-
-  if (resolvedLabel) {
-    return (
-      <div data-dw-resolved-pill="">
-        <CheckIcon className="size-3.5" data-dw-icon="emerald" />
-        <span>{resolvedLabel}</span>
-      </div>
-    );
-  }
-
-  const chosenLabel =
-    customText.trim() ||
-    review.options.find((opt) => opt.id === selectedId)?.label ||
-    defaultOpt?.label ||
-    "";
-
-  return (
-    <div
-      data-dw-needs-card=""
-      data-highlighted={highlighted ? "true" : undefined}
-      id={`review-${review.id}`}
-    >
-      <div data-dw-needs-card-head="">
-        <span data-dw-needs-tag="">
-          <span data-dw-dot="coral" data-pulse="" />
-          <T>Needs You</T>
-        </span>
-        <div data-dw-needs-head-right="">
-          <span data-dw-mono="muted">{review.sessionTag}</span>
-          <button
-            type="button"
-            data-dw-mini-icon=""
-            aria-label={gt("Expand full context")}
-            onClick={onExpand}
-          >
-            <ExpandIcon className="size-3.5" />
-          </button>
-        </div>
-      </div>
-      <div data-dw-needs-copy="">
-        <p>{renderRichInline(review.context)}</p>
-        <strong>{review.question}</strong>
-        <em>{review.ifDoNothing}</em>
-      </div>
-      <div data-dw-needs-options="">
-        {review.options.map((opt) => {
-          const isSelected = !customText.trim() && selectedId === opt.id;
-          return (
-            <button
-              key={opt.id}
-              type="button"
-              data-dw-option-row=""
-              aria-pressed={isSelected}
-              onClick={() => {
-                setSelectedId(opt.id);
-                setCustomText("");
-              }}
-            >
-              <span data-dw-option-left="">
-                <span data-dw-radio={isSelected ? "on" : "off"} />
-                <span>{opt.label}</span>
-              </span>
-              {opt.recommended ? (
-                <span data-dw-badge="emerald">
-                  <T>Recommended</T>
-                </span>
-              ) : null}
-            </button>
-          );
-        })}
-      </div>
-      <input
-        data-dw-custom-answer=""
-        value={customText}
-        onChange={(e) => setCustomText(e.currentTarget.value)}
-        placeholder={gt("Or type your own answer…")}
-      />
-      <div data-dw-needs-actions="">
-        <button
-          type="button"
-          data-dw-ghost-sm=""
-          disabled={!chosenLabel}
-          onClick={() => onResolve(chosenLabel, false)}
-        >
-          <T>Just this once</T>
-        </button>
-        <button
-          type="button"
-          data-dw-white-pill=""
-          disabled={!chosenLabel}
-          onClick={() => onResolve(chosenLabel, true)}
-        >
-          <T>Always do this</T>
-        </button>
-      </div>
-    </div>
-  );
 }
 
 function LiveApprovalCard({
@@ -460,41 +320,21 @@ function HelperChildApprovals({
   );
 }
 
-export function DropwaveChatPillar({
-  venture,
-  activePreviewAgentId,
-  resolvedReviews,
-  onResolvePreviewReview,
-  onSendPreviewMessage,
-  onOpenDoc,
-  onChangePreviewRisk,
-}: {
-  venture: SampleVenture | null;
-  activePreviewAgentId: string | null;
-  resolvedReviews: Readonly<Record<string, string>>;
-  onResolvePreviewReview: (reviewId: string, choiceLabel: string, alwaysDoThis: boolean) => void;
-  onSendPreviewMessage: (text: string) => void;
-  onOpenDoc: (docId: string) => void;
-  onChangePreviewRisk?: (risk: DropwaveRiskLevel) => void;
-}) {
+export function DropwaveChatPillar() {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
-  const m = useMessages();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Array<PendingImageAttachment>>([]);
-  const [expandedFolds, setExpandedFolds] = useState<Record<string, boolean>>({});
   const [workersFoldOpen, setWorkersFoldOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [previewModel, setPreviewModel] = useState(PREVIEW_MODEL_OPTIONS[0]!.value);
   const [recording, setRecording] = useState(false);
   const streamEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const speechRef = useRef<BrowserSpeechRecognition | null>(null);
 
-  const isPreview = workspace?.mode === "preview" && venture !== null;
-  const activeThread = !isPreview ? (workspace?.activeThread ?? workspace?.lead ?? null) : null;
+  const activeThread = workspace?.activeThread ?? workspace?.lead ?? null;
   const activeThreadRef = activeThread
     ? scopeThreadRef(activeThread.environmentId, activeThread.id)
     : null;
@@ -524,9 +364,7 @@ export function DropwaveChatPillar({
   });
   const saveMemory = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
 
-  const messageCount = isPreview
-    ? (venture?.messages.length ?? 0)
-    : (projection?.projection.messages.length ?? 0);
+  const messageCount = projection?.projection.messages.length ?? 0;
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps chat scrolled to latest message
   useEffect(() => {
@@ -553,51 +391,32 @@ export function DropwaveChatPillar({
 
   if (!workspace) return null;
 
-  const activePreviewAgent =
-    isPreview && activePreviewAgentId
-      ? (venture!.helpers.find((h) => h.id === activePreviewAgentId) ?? null)
-      : null;
+  const liveBot = workspace.activeBot ?? workspace.lead;
+  const headerName = activeThread?.title ?? liveBot?.title ?? gt("Chief of Staff");
+  const headerCode =
+    headerName
+      .split(/\s+/)
+      .map((w) => w[0] ?? "")
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "CS";
 
-  const liveBot = !isPreview ? (workspace.activeBot ?? workspace.lead) : null;
-  const headerName = isPreview
-    ? (activePreviewAgent?.name ?? venture!.leadName)
-    : (activeThread?.title ?? liveBot?.title ?? gt("Chief of Staff"));
-  const headerCode = isPreview
-    ? (activePreviewAgent?.code ?? venture!.leadCode)
-    : headerName
-        .split(/\s+/)
-        .map((w) => w[0] ?? "")
-        .join("")
-        .slice(0, 2)
-        .toUpperCase() || "CS";
-
-  const currentRisk: DropwaveRiskLevel = isPreview
-    ? venture!.riskLevel
-    : workspace.lead?.source.dropwaveBot?.kind === "lead"
+  const currentRisk: DropwaveRiskLevel =
+    workspace.lead?.source.dropwaveBot?.kind === "lead"
       ? (workspace.lead.source.dropwaveBot.riskLevel ?? "yolo")
       : "yolo";
 
-  const headerBadge = isPreview
-    ? activePreviewAgent
-      ? activePreviewAgent.role
-      : currentRisk === "yolo"
-        ? gt("Autonomous")
-        : gt("Guided")
-    : liveBot?.source.dropwaveBot?.kind === "lead"
+  const headerBadge =
+    liveBot?.source.dropwaveBot?.kind === "lead"
       ? currentRisk === "yolo"
         ? gt("Autonomous")
         : gt("Guided")
       : gt("Agent");
-  const headerSub = isPreview
-    ? activePreviewAgent
-      ? `${venture!.name} · ${activePreviewAgent.statusLine}`
-      : venture!.leadStatus
-    : `${workspace.project?.title ?? gt("Workspace")} · ${
-        activeThread ? workState(activeThread) : gt("Ready")
-      }`;
+  const headerSub = `${workspace.project?.title ?? gt("Workspace")} · ${
+    activeThread ? workState(activeThread) : gt("Ready")
+  }`;
 
-  const isLiveRunning = !isPreview && activeThread ? workState(activeThread) === "working" : false;
-  const openAsksBadge = isPreview ? venture!.objectives.length : workspace.openAsksCount;
+  const isLiveRunning = activeThread ? workState(activeThread) === "working" : false;
 
   const liveModelEntries: Array<{
     readonly key: string;
@@ -606,7 +425,7 @@ export function DropwaveChatPillar({
     readonly instanceId: NonNullable<typeof activeThread>["source"]["modelSelection"]["instanceId"];
     readonly model: string;
   }> = [];
-  if (!isPreview && activeThread) {
+  if (activeThread) {
     const settings =
       appAtomRegistry.get(environmentServerConfigsAtom).get(activeThread.environmentId)?.settings ??
       DEFAULT_SERVER_SETTINGS;
@@ -630,15 +449,8 @@ export function DropwaveChatPillar({
   const activeLiveModelKey = activeThread
     ? `${activeThread.source.modelSelection.instanceId}::${activeThread.source.modelSelection.model}`
     : "";
-  const resolvedPreviewModels: ReadonlyArray<DropwaveSelectOption> = PREVIEW_MODEL_OPTIONS.map(
-    (opt) => ({
-      ...opt,
-      ...(opt.hint ? { hint: m(opt.hint) } : {}),
-    }),
-  );
-  const modelOptions: ReadonlyArray<DropwaveSelectOption> = isPreview
-    ? resolvedPreviewModels
-    : liveModelEntries.length > 0
+  const modelOptions: ReadonlyArray<DropwaveSelectOption> =
+    liveModelEntries.length > 0
       ? liveModelEntries.map((entry) => ({
           value: entry.key,
           label: entry.label,
@@ -651,15 +463,9 @@ export function DropwaveChatPillar({
               label: activeThread.source.modelSelection.model,
             },
           ]
-        : resolvedPreviewModels;
-
-  const currentModelValue = isPreview ? previewModel : activeLiveModelKey;
+        : [{ value: "none", label: gt("Connect a provider") }];
 
   const handleModelChange = (nextKey: string) => {
-    if (isPreview) {
-      setPreviewModel(nextKey);
-      return;
-    }
     if (!activeThread) return;
     const found = liveModelEntries.find((e) => e.key === nextKey);
     if (!found) return;
@@ -682,10 +488,6 @@ export function DropwaveChatPillar({
   ];
 
   const handleRiskChange = (nextRisk: DropwaveRiskLevel) => {
-    if (isPreview) {
-      onChangePreviewRisk?.(nextRisk);
-      return;
-    }
     const lead = workspace.lead;
     if (!lead || lead.source.dropwaveBot?.kind !== "lead") return;
     void updateMetadataCmd({
@@ -775,13 +577,6 @@ export function DropwaveChatPillar({
       speechRef.current?.stop();
       speechRef.current = null;
       setRecording(false);
-    }
-
-    if (isPreview) {
-      onSendPreviewMessage(text || gt("[Attached screenshot]"));
-      setDraft("");
-      setAttachments([]);
-      return;
     }
 
     if (!activeThread || !activeThreadRef) {
@@ -897,7 +692,7 @@ export function DropwaveChatPillar({
     (s) => s.status === "running" || s.status === "pending" || s.status === "waiting",
   );
   const helperRefsForLead =
-    !isPreview && workspace.lead && activeThread && workspace.lead.id === activeThread.id
+    workspace.lead && activeThread && workspace.lead.id === activeThread.id
       ? workspace.bots
           .filter(
             (bot) =>
@@ -917,7 +712,7 @@ export function DropwaveChatPillar({
             data-dw-avatar-ring=""
             aria-label={gt("Bot and core loop settings")}
             onClick={() => {
-              if (!isPreview && liveBot) {
+              if (liveBot) {
                 workspace.openPanel({ kind: "profile", target: { kind: "edit", bot: liveBot } });
               }
             }}
@@ -929,7 +724,7 @@ export function DropwaveChatPillar({
               <h2>{headerName}</h2>
               <span data-dw-badge="violet">{headerBadge}</span>
             </div>
-            <p>{renderRichInline(headerSub)}</p>
+            <p>{headerSub}</p>
           </div>
         </div>
 
@@ -940,7 +735,7 @@ export function DropwaveChatPillar({
             onClick={() => workspace.openPanel({ kind: "asks" })}
           >
             <T>Asks</T>
-            <strong>{openAsksBadge}</strong>
+            <strong>{workspace.openAsksCount}</strong>
           </button>
           <button
             type="button"
@@ -954,123 +749,16 @@ export function DropwaveChatPillar({
       </header>
 
       <div data-dw-stream="">
-        {isPreview ? (
-          <>
-            {venture!.messages.map((msg) => {
-              if (msg.role === "owner") {
-                return (
-                  <div key={msg.id} data-dw-msg="owner">
-                    <div data-dw-bubble="owner">
-                      <p>{msg.text}</p>
-                      <span data-dw-msg-time="">{msg.time}</span>
-                    </div>
-                  </div>
-                );
-              }
-              const review = msg.reviewId
-                ? venture!.reviews.find((r) => r.id === msg.reviewId)
-                : undefined;
-              const isFoldOpen = Boolean(expandedFolds[msg.id]);
-
-              return (
-                <div key={msg.id} data-dw-msg="bot">
-                  <span data-dw-msg-avatar="bot">{msg.authorCode}</span>
-                  <div data-dw-msg-stack="">
-                    <div data-dw-bubble="bot">{renderRichInline(msg.text)}</div>
-
-                    {msg.folded ? (
-                      <div data-dw-fold-wrap="">
-                        <button
-                          type="button"
-                          data-dw-fold-pill=""
-                          onClick={() =>
-                            setExpandedFolds((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))
-                          }
-                        >
-                          <span data-dw-dot="emerald" />
-                          <strong>{msg.folded.title}</strong>
-                          <span data-dw-muted-sep="">· {msg.folded.summary}</span>
-                          {isFoldOpen ? (
-                            <ChevronUpIcon className="size-3" />
-                          ) : (
-                            <ChevronDownIcon className="size-3" />
-                          )}
-                        </button>
-                        {isFoldOpen ? (
-                          <div data-dw-fold-body="">
-                            {msg.folded.messages.map((fm) => (
-                              <div
-                                key={`${fm.sender}-${fm.text.slice(0, 18)}`}
-                                data-dw-fold-line=""
-                              >
-                                <strong>{fm.sender}</strong>
-                                <p>{fm.text}</p>
-                              </div>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-
-                    {msg.briefCard ? (
-                      <button
-                        type="button"
-                        data-dw-brief-card=""
-                        onClick={() => {
-                          onOpenDoc(msg.briefCard!.docId);
-                          workspace.setMainView("docs");
-                        }}
-                      >
-                        <div data-dw-brief-head="">
-                          <span>
-                            <FileTextIcon className="size-3.5" data-dw-icon="indigo" />
-                            <strong>{msg.briefCard.title}</strong>
-                          </span>
-                          <small>{msg.briefCard.byline}</small>
-                        </div>
-                        {msg.briefCard.rows.map((row) => (
-                          <div key={row.tier} data-dw-brief-row={row.highlight ? "hi" : ""}>
-                            <strong>{row.tier}</strong>
-                            <span>{row.cadence}</span>
-                            <span data-dw-mono={row.highlight ? "emerald" : "bright"}>
-                              {row.price}
-                            </span>
-                          </div>
-                        ))}
-                      </button>
-                    ) : null}
-
-                    {msg.reviewId && resolvedReviews[msg.reviewId] ? (
-                      <div data-dw-resolved-pill="">
-                        <CheckIcon className="size-3.5" data-dw-icon="emerald" />
-                        <span>{resolvedReviews[msg.reviewId]}</span>
-                      </div>
-                    ) : review ? (
-                      <ReviewDecisionCard
-                        review={review}
-                        highlighted={workspace.highlightReviewId === review.id}
-                        resolvedLabel={resolvedReviews[review.id]}
-                        onExpand={() => workspace.openDecisionQueue(review.id)}
-                        onResolve={(choice, always) =>
-                          onResolvePreviewReview(review.id, choice, always)
-                        }
-                      />
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })}
-          </>
-        ) : !activeThread ? (
+        {!activeThread ? (
           <div data-dw-empty-chat="">
             <div data-dw-avatar-ring="lg">DW</div>
             <h3>
-              <T>Ready to wire your Chief of Staff</T>
+              <T>Set up your Chief of Staff</T>
             </h3>
             <p>
               <T>
-                Set up your project and core loop through a quick conversation instead of a config
-                form.
+                Launch your project’s main agent with its own soul, core loop, and specialist team
+                through a quick conversation.
               </T>
             </p>
             <button
@@ -1101,23 +789,23 @@ export function DropwaveChatPillar({
                     onClick={() =>
                       setDraft(
                         gt(
-                          "Let us design our core loop together. Ask me what shipped means and wire the steps with dropwave_team.",
+                          "Let us refine our core loop together. Ask me what shipped means and wire the steps with dropwave_team.",
                         ),
                       )
                     }
                   >
-                    <T>Design core loop</T>
+                    <T>Refine core loop</T>
                   </button>
                   <button
                     type="button"
                     data-dw-quick-chip=""
                     onClick={() =>
                       setDraft(
-                        gt("Summarize where this project stands and what we should ship next."),
+                        gt("Audit this project right now and propose the top 3 things to ship."),
                       )
                     }
                   >
-                    <T>Plan next work</T>
+                    <T>Audit & plan next work</T>
                   </button>
                 </div>
               </div>
@@ -1143,7 +831,6 @@ export function DropwaveChatPillar({
               )
             )}
 
-            {/* Folded Live Delegated Worker Sessions */}
             {liveSubagents.length > 0 && activeThreadRef ? (
               <div data-dw-msg="bot">
                 <span data-dw-msg-avatar="bot">{headerCode}</span>
@@ -1239,7 +926,6 @@ export function DropwaveChatPillar({
               </div>
             ) : null}
 
-            {/* Inline direct approvals & user inputs */}
             {activeThreadRef
               ? liveApprovals.map((approval) => (
                   <div key={approval.requestId} data-dw-msg="bot">
@@ -1266,7 +952,6 @@ export function DropwaveChatPillar({
                 ))
               : null}
 
-            {/* Project-wide delegated child & helper approvals right inside Lead chat */}
             {directChildApprovals.map((entry) => (
               <div key={`${entry.thread.threadId}:${entry.approval.requestId}`} data-dw-msg="bot">
                 <span data-dw-msg-avatar="bot">{headerCode}</span>
@@ -1296,17 +981,12 @@ export function DropwaveChatPillar({
           <div data-dw-ticker-left="">
             <span
               data-dw-dot={recording ? "coral" : "emerald"}
-              data-pulse={isPreview || isLiveRunning || recording ? "" : undefined}
+              data-pulse={isLiveRunning || recording ? "" : undefined}
             />
             {recording ? (
               <span>
                 <T>Listening… speak naturally, click mic again when done</T>
               </span>
-            ) : isPreview ? (
-              <>
-                <strong>{venture!.liveTicker.bot}</strong>
-                <span>{venture!.liveTicker.text}</span>
-              </>
             ) : runningSubagent ? (
               <>
                 <strong>{runningSubagent.title || gt("Worker session")}</strong>
@@ -1348,7 +1028,6 @@ export function DropwaveChatPillar({
               </span>
             )}
           </div>
-          {isPreview ? <span data-dw-mono="dim">{venture!.liveTicker.age}</span> : null}
         </div>
 
         {sendError ? (
@@ -1406,7 +1085,7 @@ export function DropwaveChatPillar({
                 <PaperclipIcon className="size-4" />
               </button>
               <DropwaveSelect
-                value={currentModelValue}
+                value={activeLiveModelKey || "none"}
                 options={modelOptions}
                 ariaLabel={gt("Select model")}
                 compact

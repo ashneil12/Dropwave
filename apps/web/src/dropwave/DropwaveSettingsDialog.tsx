@@ -260,36 +260,6 @@ export function DropwaveSettingsDialog({
                       ))}
                     </div>
                   </section>
-
-                  <section data-dw-settings-group="">
-                    <h3>
-                      <T>Workspace Data Source</T>
-                    </h3>
-                    <p data-dw-settings-desc="">
-                      <T>
-                        Preview loads realistic sample ventures so you can test layouts; Live
-                        connects to your real repositories and agents.
-                      </T>
-                    </p>
-                    <div data-dw-risk-pills="">
-                      <button
-                        type="button"
-                        data-dw-risk-btn=""
-                        aria-pressed={workspace.mode === "preview"}
-                        onClick={() => workspace.setMode("preview")}
-                      >
-                        <T>Preview Showcase</T>
-                      </button>
-                      <button
-                        type="button"
-                        data-dw-risk-btn=""
-                        aria-pressed={workspace.mode === "live"}
-                        onClick={() => workspace.setMode("live")}
-                      >
-                        <T>Live Harness</T>
-                      </button>
-                    </div>
-                  </section>
                 </>
               ) : section === "layout" ? (
                 <section data-dw-settings-group="">

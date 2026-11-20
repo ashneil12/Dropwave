@@ -611,6 +611,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
   padding: 7px 9px;
   border-radius: 9px;
   background: rgb(255 255 255 / 2.5%);
@@ -627,7 +630,9 @@
   display: flex;
   align-items: center;
   gap: 7px;
+  flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 [data-dw-obj-left] > span:last-child {
   overflow: hidden;
@@ -3181,6 +3186,28 @@
   background: var(--dw-coral-bg);
   color: var(--dw-coral);
   box-shadow: 0 0 0 2px rgb(240 93 94 / 32%);
+}
+
+[data-dw-soul-presets] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+[data-dw-soul-input] {
+  width: 100%;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: rgb(11 12 19 / 65%);
+  border: 1px solid rgb(255 255 255 / 9%);
+  color: #f2f2f7;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  outline: none;
+}
+[data-dw-soul-input]:focus {
+  border-color: rgb(139 141 248 / 55%);
 }
 
 /* Responsive Tablet & Mobile */

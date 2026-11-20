@@ -14,7 +14,6 @@ import {
   workState,
   workStateLabel,
 } from "./model";
-import type { SampleVenture } from "./sampleData";
 import {
   useDropwaveWorkspace,
   type DropwaveSlotLayout,
@@ -34,14 +33,10 @@ const WIDGET_OPTIONS: ReadonlyArray<{
 ];
 
 export interface DropwaveWidgetData {
-  readonly venture: SampleVenture | null;
   readonly liveAsks: ReadonlyArray<DropwaveAsk>;
   readonly liveDocs: ReadonlyArray<DropwaveDocSummary>;
   readonly liveMemories: ReadonlyArray<DropwaveMemoryItem>;
-  readonly onSelectPreviewAgent?: (agentId: string | null) => void;
-  readonly activePreviewAgentId?: string | null;
-  readonly onIgnorePreviewReview?: (reviewId: string) => void;
-  readonly onOpenDoc?: (pathOrId: string) => void;
+  readonly onOpenDoc?: (path: string) => void;
 }
 
 export function DropwaveWidgetCard({
@@ -59,9 +54,6 @@ export function DropwaveWidgetCard({
   const [menuOpen, setMenuOpen] = useState(false);
 
   if (!workspace) return null;
-
-  const isPreview = workspace.mode === "preview" && data.venture !== null;
-  const venture = data.venture;
 
   const slotSwitcher = (
     <Popover open={menuOpen} onOpenChange={setMenuOpen}>
@@ -92,15 +84,13 @@ export function DropwaveWidgetCard({
     </Popover>
   );
 
-  // 1. Core Loop & Tracked Asks (replaces cryptic "Mission Control")
+  // 1. Core Loop & Asks
   if (kind === "asks") {
-    const loopSteps = isPreview
-      ? venture!.loopSteps.map((s) => s.title)
-      : workspace.lead?.source.dropwaveBot?.kind === "lead"
+    const loopSteps =
+      workspace.lead?.source.dropwaveBot?.kind === "lead"
         ? (workspace.lead.source.dropwaveBot.loopSteps?.map((s) => s.title) ??
           workspace.lead.source.dropwaveBot.workflow)
         : [];
-    const openCount = isPreview ? venture!.objectives.length : data.liveAsks.length;
 
     return (
       <section data-dw-card="" data-widget="asks">
@@ -137,46 +127,7 @@ export function DropwaveWidgetCard({
           ) : null}
 
           <div data-dw-obj-list="">
-            {isPreview ? (
-              venture!.objectives.map((obj) => (
-                <button
-                  key={obj.id}
-                  type="button"
-                  data-dw-obj-row=""
-                  onClick={() => {
-                    if (obj.status === "approval" && venture!.reviews[0]) {
-                      workspace.openDecisionQueue(venture!.reviews[0].id);
-                    } else {
-                      workspace.openPanel({ kind: "asks" });
-                    }
-                  }}
-                >
-                  <span data-dw-obj-left="">
-                    <span
-                      data-dw-dot={
-                        obj.status === "approval"
-                          ? "coral"
-                          : obj.status === "waiting"
-                            ? "amber"
-                            : "emerald"
-                      }
-                    />
-                    <span>{obj.title}</span>
-                  </span>
-                  <span
-                    data-dw-mono={
-                      obj.status === "approval"
-                        ? "coral"
-                        : obj.status === "live"
-                          ? "emerald"
-                          : "muted"
-                    }
-                  >
-                    {obj.badge}
-                  </span>
-                </button>
-              ))
-            ) : data.liveAsks.length > 0 ? (
+            {data.liveAsks.length > 0 ? (
               data.liveAsks.slice(0, 5).map((ask) => (
                 <button
                   key={ask.id}
@@ -210,7 +161,7 @@ export function DropwaveWidgetCard({
         <div data-dw-card-foot="">
           <span data-dw-muted-label="">
             <T>
-              <Var>{openCount}</Var> tracked asks
+              <Var>{data.liveAsks.length}</Var> tracked asks
             </T>
           </span>
           <button
@@ -225,7 +176,7 @@ export function DropwaveWidgetCard({
     );
   }
 
-  // 2. Team & Agents (Chief of Staff / Lead RIGHT AT TOP + specialist agents — 1-click switching!)
+  // 2. Team & Agents
   if (kind === "agents") {
     const liveHelpers = workspace.bots.filter(
       (bot) =>
@@ -233,9 +184,7 @@ export function DropwaveWidgetCard({
         bot.source.dropwaveBot?.kind === "teammate" &&
         bot.source.dropwaveBot.leadThreadId === workspace.lead.id,
     );
-    const totalAgents = isPreview
-      ? 1 + venture!.helpers.length
-      : (workspace.lead ? 1 : 0) + liveHelpers.length;
+    const totalAgents = (workspace.lead ? 1 : 0) + liveHelpers.length;
 
     return (
       <section data-dw-card="" data-widget="agents">
@@ -253,7 +202,7 @@ export function DropwaveWidgetCard({
                   <Var>{totalAgents}</Var>
                 </T>
               </span>
-              {!isPreview && workspace.lead && workspace.project ? (
+              {workspace.lead && workspace.project ? (
                 <button
                   type="button"
                   data-dw-slot-swap=""
@@ -277,47 +226,7 @@ export function DropwaveWidgetCard({
           </div>
 
           <div data-dw-helper-list="">
-            {isPreview ? (
-              <>
-                <button
-                  type="button"
-                  data-dw-helper-row=""
-                  aria-current={data.activePreviewAgentId === null ? "true" : undefined}
-                  onClick={() => data.onSelectPreviewAgent?.(null)}
-                >
-                  <span data-dw-monogram="violet">{venture!.leadCode}</span>
-                  <span data-dw-helper-info="">
-                    <span data-dw-helper-head="">
-                      <strong>{venture!.leadName}</strong>
-                      <span data-dw-badge="violet">
-                        <T>Lead</T>
-                      </span>
-                    </span>
-                    <small>{venture!.leadStatus}</small>
-                  </span>
-                </button>
-                {venture!.helpers.map((helper) => (
-                  <button
-                    key={helper.id}
-                    type="button"
-                    data-dw-helper-row=""
-                    aria-current={data.activePreviewAgentId === helper.id ? "true" : undefined}
-                    onClick={() => data.onSelectPreviewAgent?.(helper.id)}
-                  >
-                    <span data-dw-monogram={helper.tone}>{helper.code}</span>
-                    <span data-dw-helper-info="">
-                      <span data-dw-helper-head="">
-                        <strong>{helper.name}</strong>
-                        <span data-dw-mono={helper.state === "active" ? "emerald" : "amber"}>
-                          {helper.state}
-                        </span>
-                      </span>
-                      <small>{helper.statusLine}</small>
-                    </span>
-                  </button>
-                ))}
-              </>
-            ) : workspace.lead ? (
+            {workspace.lead ? (
               <>
                 <button
                   type="button"
@@ -329,7 +238,14 @@ export function DropwaveWidgetCard({
                     )
                   }
                 >
-                  <span data-dw-monogram="violet">CS</span>
+                  <span data-dw-monogram="violet">
+                    {workspace.lead.title
+                      .split(/\s+/)
+                      .map((w) => w[0] ?? "")
+                      .join("")
+                      .slice(0, 2)
+                      .toUpperCase() || "CS"}
+                  </span>
                   <span data-dw-helper-info="">
                     <span data-dw-helper-head="">
                       <strong>{workspace.lead.title}</strong>
@@ -401,7 +317,7 @@ export function DropwaveWidgetCard({
           <span data-dw-muted-label="">
             <T>Click any agent to chat</T>
           </span>
-          {!isPreview && workspace.lead ? (
+          {workspace.lead ? (
             <button
               type="button"
               data-dw-inline-link=""
@@ -420,11 +336,10 @@ export function DropwaveWidgetCard({
     );
   }
 
-  // 3. Pending Reviews (clicks expand into the full-context Decision Queue modal!)
+  // 3. Pending Reviews
   if (kind === "reviews") {
-    const reviews = isPreview ? venture!.reviews : [];
-    const liveNeeds = isPreview ? [] : workspace.needs;
-    const totalUrgent = isPreview ? reviews.length : liveNeeds.length;
+    const liveNeeds = workspace.needs;
+    const totalUrgent = liveNeeds.length;
 
     return (
       <section data-dw-card="" data-widget="reviews">
@@ -457,42 +372,7 @@ export function DropwaveWidgetCard({
           </div>
 
           <div data-dw-review-list="">
-            {isPreview ? (
-              reviews.length > 0 ? (
-                reviews.map((rev, index) => (
-                  <div key={rev.id} data-dw-review-item={index === 0 ? "urgent" : "normal"}>
-                    <div data-dw-review-head="">
-                      <strong>{rev.title}</strong>
-                      <span data-dw-mono={index === 0 ? "coral" : "muted"}>
-                        {rev.sessionTag.replace("Session ", "")}
-                      </span>
-                    </div>
-                    <p>{rev.summary}</p>
-                    <div data-dw-review-actions="">
-                      <button
-                        type="button"
-                        data-dw-coral-btn=""
-                        onClick={() => workspace.openDecisionQueue(rev.id)}
-                      >
-                        <ExpandIcon className="size-3" />
-                        <T>Review & decide</T>
-                      </button>
-                      <button
-                        type="button"
-                        data-dw-ghost-xs=""
-                        onClick={() => data.onIgnorePreviewReview?.(rev.id)}
-                      >
-                        <T>Ignore</T>
-                      </button>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p data-dw-card-empty="">
-                  <T>Nothing blocked. Your bots are running autonomously.</T>
-                </p>
-              )
-            ) : liveNeeds.length > 0 ? (
+            {liveNeeds.length > 0 ? (
               liveNeeds.slice(0, 3).map((thread, index) => (
                 <div
                   key={keyOfThread(thread)}
@@ -509,18 +389,26 @@ export function DropwaveWidgetCard({
                     <button
                       type="button"
                       data-dw-coral-btn=""
+                      onClick={() => workspace.openDecisionQueue()}
+                    >
+                      <ExpandIcon className="size-3" />
+                      <T>Review & decide</T>
+                    </button>
+                    <button
+                      type="button"
+                      data-dw-ghost-xs=""
                       onClick={() =>
                         workspace.openThread(scopeThreadRef(thread.environmentId, thread.id))
                       }
                     >
-                      <T>Resolve in Chat</T>
+                      <T>Open chat</T>
                     </button>
                   </div>
                 </div>
               ))
             ) : (
               <p data-dw-card-empty="">
-                <T>Nothing needs you right now.</T>
+                <T>Nothing blocked. Your agents are running autonomously.</T>
               </p>
             )}
           </div>
@@ -530,7 +418,7 @@ export function DropwaveWidgetCard({
           <span data-dw-muted-label="">
             {totalUrgent > 0 ? <T>Step through with full context</T> : <T>All clear</T>}
           </span>
-          {totalUrgent > 0 && isPreview ? (
+          {totalUrgent > 0 ? (
             <button
               type="button"
               data-dw-inline-link=""
@@ -547,25 +435,20 @@ export function DropwaveWidgetCard({
   // 4. Running Sessions
   if (kind === "sessions") {
     const owner = workspace.activeBot ?? workspace.lead;
-    const liveSessions =
-      !isPreview && owner
-        ? workFor(workspace.threads, scopeThreadRef(owner.environmentId, owner.id)).sort(
-            newestWorkFirst,
-          )
-        : [];
-    const activeCount = isPreview
-      ? venture!.sessions.filter((s) => s.status === "running" || s.status === "awaiting").length
-      : liveSessions.filter(isCurrentWork).length;
-    const queuedCount = isPreview
-      ? venture!.sessions.filter((s) => s.status === "queued").length
-      : liveSessions.filter((s) => workState(s) === "waiting").length;
+    const liveSessions = owner
+      ? workFor(workspace.threads, scopeThreadRef(owner.environmentId, owner.id)).sort(
+          newestWorkFirst,
+        )
+      : [];
+    const activeCount = liveSessions.filter(isCurrentWork).length;
+    const queuedCount = liveSessions.filter((s) => workState(s) === "waiting").length;
 
     return (
       <section data-dw-card="" data-widget="sessions">
         <div data-dw-card-top="">
           <div data-dw-card-head="">
             <span data-dw-card-title="">
-              <span data-dw-dot="emerald" data-pulse="" />
+              <span data-dw-dot="emerald" data-pulse={activeCount > 0 ? "" : undefined} />
               <span>
                 <T>Running Sessions</T>
               </span>
@@ -581,38 +464,7 @@ export function DropwaveWidgetCard({
           </div>
 
           <div data-dw-session-cards="">
-            {isPreview ? (
-              venture!.sessions.map((session) => (
-                <div key={session.id} data-dw-session-card={session.status}>
-                  <div data-dw-session-card-head="">
-                    <strong>{session.title}</strong>
-                    <span
-                      data-dw-mono={
-                        session.status === "awaiting"
-                          ? "coral-pill"
-                          : session.progress !== undefined
-                            ? "emerald"
-                            : "muted"
-                      }
-                    >
-                      {session.badge}
-                    </span>
-                  </div>
-                  {session.progress !== undefined ? (
-                    <div data-dw-progress-track="sm">
-                      <div
-                        data-dw-progress-fill="emerald"
-                        style={{ width: `${session.progress}%` }}
-                      />
-                    </div>
-                  ) : null}
-                  <div data-dw-session-card-sub="">
-                    <span>{session.subtitle}</span>
-                    {session.age ? <span data-dw-mono="dim">{session.age}</span> : null}
-                  </div>
-                </div>
-              ))
-            ) : liveSessions.length > 0 ? (
+            {liveSessions.length > 0 ? (
               liveSessions.slice(0, 4).map((session) => {
                 const state = workState(session);
                 const cardStatus =
@@ -667,11 +519,11 @@ export function DropwaveWidgetCard({
           <span data-dw-status-inline="muted">
             <span data-dw-dot="emerald" />
             <T>
-              <Var>{isPreview ? venture!.sessions.length : liveSessions.length}</Var> sessions
+              <Var>{liveSessions.length}</Var> sessions
             </T>
           </span>
           <span data-dw-mono="emerald">
-            <T>Nominal</T>
+            <T>Live</T>
           </span>
         </div>
       </section>
@@ -680,17 +532,6 @@ export function DropwaveWidgetCard({
 
   // 5. Docs & Briefs
   if (kind === "docs") {
-    const items = isPreview
-      ? venture!.docs.map((d) => ({
-          id: d.id,
-          title: d.title,
-          meta: `${d.kind} · ${d.updated}`,
-        }))
-      : data.liveDocs.map((d) => ({
-          id: d.path,
-          title: d.title,
-          meta: `${d.kind} · ${formatShortAge(d.updatedAt)}`,
-        }));
     return (
       <section data-dw-card="" data-widget="docs">
         <div data-dw-card-top="">
@@ -713,14 +554,14 @@ export function DropwaveWidgetCard({
             </div>
           </div>
           <div data-dw-obj-list="">
-            {items.length > 0 ? (
-              items.slice(0, 5).map((doc) => (
+            {data.liveDocs.length > 0 ? (
+              data.liveDocs.slice(0, 5).map((doc) => (
                 <button
-                  key={doc.id}
+                  key={doc.path}
                   type="button"
                   data-dw-obj-row=""
                   onClick={() => {
-                    data.onOpenDoc?.(doc.id);
+                    data.onOpenDoc?.(doc.path);
                     workspace.setMainView("docs");
                   }}
                 >
@@ -728,7 +569,9 @@ export function DropwaveWidgetCard({
                     <FileTextIcon className="size-3 shrink-0" data-dw-icon="indigo" />
                     <span>{doc.title}</span>
                   </span>
-                  <span data-dw-mono="muted">{doc.meta}</span>
+                  <span data-dw-mono="muted">
+                    {doc.kind} · {formatShortAge(doc.updatedAt)}
+                  </span>
                 </button>
               ))
             ) : (
@@ -742,20 +585,13 @@ export function DropwaveWidgetCard({
           <span data-dw-muted-label="">
             <T>Shared with bots</T>
           </span>
-          <span data-dw-mono="muted">{items.length}</span>
+          <span data-dw-mono="muted">{data.liveDocs.length}</span>
         </div>
       </section>
     );
   }
 
   // 6. Memory & Rules
-  const memItems = isPreview
-    ? venture!.memories
-    : data.liveMemories.map((item) => ({
-        id: item.id,
-        kind: item.kind,
-        text: item.text,
-      }));
   return (
     <section data-dw-card="" data-widget="memory">
       <div data-dw-card-top="">
@@ -778,8 +614,8 @@ export function DropwaveWidgetCard({
           </div>
         </div>
         <div data-dw-obj-list="">
-          {memItems.length > 0 ? (
-            memItems.slice(0, 4).map((mem) => (
+          {data.liveMemories.length > 0 ? (
+            data.liveMemories.slice(0, 4).map((mem) => (
               <div key={mem.id} data-dw-mem-chip="">
                 <span data-dw-badge="violet">{mem.kind}</span>
                 <p>{mem.text}</p>
@@ -796,7 +632,7 @@ export function DropwaveWidgetCard({
         <span data-dw-muted-label="">
           <T>Project-isolated</T>
         </span>
-        <span data-dw-mono="muted">{memItems.length}</span>
+        <span data-dw-mono="muted">{data.liveMemories.length}</span>
       </div>
     </section>
   );

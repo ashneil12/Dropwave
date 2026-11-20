@@ -3,57 +3,47 @@ import { expect } from "e2e";
 import { test, WEB } from "./t3.ts";
 
 test(
-  "Dropwave spatial cockpit runs Preview showcase and Live backend end-to-end",
+  "Dropwave runs 100% live spatial cockpit with Bot Soul, Docs, Asks, and Dropwave Settings",
   WEB,
   async ({ t3, screen }) => {
     await t3.project("Dropwave fixture", { "README.md": "# Disposable fixture" });
     await t3.open();
 
-    // No T3 chrome or filler labels.
+    // No T3 chrome, no filler labels, no Preview mode toggle.
     await expect(screen.getByRole("button", "All threads")).toHaveCount(0);
+    await expect(screen.getByRole("button", "Preview")).toHaveCount(0);
     await expect(screen.getByText("Active Target:")).toHaveCount(0);
-    await expect(screen.getByText("Solo Founder")).toHaveCount(0);
 
-    // Useful widgets visible in Preview showcase.
+    // Live widgets visible immediately.
     await expect(screen.getByText("Core Loop & Asks")).toBeVisible();
     await expect(screen.getByText("Team & Agents")).toBeVisible();
     await expect(screen.getByText("Pending Reviews")).toBeVisible();
     await expect(screen.getByText("Running Sessions")).toBeVisible();
 
-    // 1-click agent switching inside Team & Agents.
-    await screen.getByRole("button", /Hivra QA idle/).tap();
-    await expect(screen.getByRole("heading", "Hivra QA")).toBeVisible();
-    await screen.getByRole("button", /Chief of Staff Lead/).tap();
-    await expect(screen.getByRole("heading", "Chief of Staff")).toBeVisible();
-
-    // Custom Model Picker inside revamped composer pill.
-    await screen.getByRole("button", "Select model").tap();
-    await screen.getByRole("option", /GPT-5\.4 Codex/).tap();
-
-    // Decision Queue Focus Modal (1 of N) + Always do this.
-    await screen.getByRole("button", "Review & decide").first().tap();
-    await expect(screen.getByText("Decision Queue")).toBeVisible();
-    await screen.getByRole("button", "Always do this").last().tap();
-    await screen.getByRole("button", "Close decisions").tap();
-
-    // Switch to Live mode and run real Conversational Setup against backend orchestration-v2 + dropwave.sqlite!
-    await screen.getByRole("button", "Live").tap();
+    // Start conversational setup with Soul presets.
+    await screen.getByRole("button", "Start conversational setup").tap();
     await screen.getByRole("button", "Tested live with screenshots and checks green").tap();
+    await expect(screen.getByText("Bot identity & soul")).toBeVisible();
     await screen.getByRole("button", "Launch Chief of Staff").tap();
 
-    // Verify real Lead & QA agent created and visible in Live Team & Agents + seeded .dropwave/docs/core-loop.md in real Docs!
-    await expect(screen.getByRole("heading", "Chief of Staff").first()).toBeVisible();
+    // Verify real Lead ("Atlas") & QA agent created and 1-click switchable in Team & Agents.
+    await expect(screen.getByRole("heading", "Atlas").first()).toBeVisible();
     await expect(screen.getByRole("button", /Dropwave fixture QA/)).toBeVisible();
+    await screen.getByRole("button", /Dropwave fixture QA/).tap();
+    await expect(screen.getByRole("heading", "Dropwave fixture QA").first()).toBeVisible();
+    await screen.getByRole("button", /Atlas Lead/).tap();
 
+    // Verify seeded core-loop.md and soul.md appear in real live Docs.
     await screen.getByRole("button", "Docs").tap();
     await expect(screen.getByText("Dropwave fixture Core Loop")).toBeVisible();
+    await expect(screen.getByRole("button", /Atlas Soul/)).toBeVisible();
     await screen.getByRole("button", "Back to chat").tap();
 
     // Track a real ask directly into dropwave.sqlite via Asks drawer.
     await screen.getByRole("button", /Asks/).tap();
     await screen.getByRole("textbox").fill("Verify Canary pricing before launch");
     await screen.getByRole("button", "Add ask").tap();
-    await expect(screen.getByText("Verify Canary pricing before launch")).toBeVisible();
+    await expect(screen.getByText("Verify Canary pricing before launch").first()).toBeVisible();
     await screen.getByRole("button", "Close").tap();
 
     // Dropwave-first Settings dialog with separated Engine / T3 Backend section.

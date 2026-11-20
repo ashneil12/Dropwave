@@ -12,7 +12,6 @@ import type {
   DropwaveAsk,
   DropwaveDocSummary,
   DropwaveMemoryItem,
-  DropwaveRiskLevel,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -40,7 +39,6 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { DropwaveChatPillar } from "./DropwaveChatPillar";
 import { DropwaveConversationalSetup } from "./DropwaveConversationalSetup";
-import { DropwaveDecisionModal, type DecisionQueueItem } from "./DropwaveDecisionModal";
 import { DropwaveDocsView } from "./DropwaveDocsView";
 import { DropwaveLiveDecisionModal } from "./DropwaveLiveDecisionModal";
 import { DropwavePanels } from "./DropwavePanels";
@@ -49,16 +47,9 @@ import { DropwaveToolbar, useDropwaveAppearance } from "./DropwaveToolbar";
 import { DropwaveWidgetCard } from "./DropwaveWidgets";
 import { botOwner, isWorkspaceBot, keyOfThread, needsOwner, newestWorkFirst } from "./model";
 import {
-  INITIAL_SAMPLE_VENTURES,
-  type SampleDoc,
-  type SampleMemory,
-  type SampleVenture,
-} from "./sampleData";
-import {
   DropwaveModeContext,
   DropwaveWorkspaceContext,
   type DropwaveMainView,
-  type DropwaveMode,
   type DropwaveSlotLayout,
   type DropwaveWidgetKind,
   type WorkspacePanel,
@@ -87,9 +78,8 @@ const DEFAULT_SLOTS: DropwaveSlotLayout = {
   topRight: "reviews",
   bottomRight: "sessions",
 };
-const ModeOverrideSchema = Schema.NullOr(Schema.Literals(["preview", "live"]));
 const DefaultRiskSchema = Schema.Literals(["careful", "normal", "yolo"]);
-const MAX_TOPBAR_VENTURES = 4;
+const MAX_TOPBAR_PROJECTS = 4;
 
 function keyOfProject(project: EnvironmentProject) {
   return scopedProjectKey({ environmentId: project.environmentId, projectId: project.id });
@@ -135,11 +125,6 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     SlotLayoutSchema,
   );
   const [focusMode, setFocusMode] = useLocalStorage("dropwave:focus-mode", false, Schema.Boolean);
-  const [modeOverride, setModeOverride] = useLocalStorage(
-    "dropwave:workspace-mode",
-    null,
-    ModeOverrideSchema,
-  );
   const [defaultRisk, setDefaultRisk] = useLocalStorage(
     "dropwave:default-risk",
     "yolo",
@@ -149,28 +134,16 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
 
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
-  const [highlightReviewId, setHighlightReviewId] = useState<string | null>(null);
-  const [openDocId, setOpenDocId] = useState<string | null>(null);
+  const [openDocPath, setOpenDocPath] = useState<string | null>(null);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decisionModalOpen, setDecisionModalOpen] = useState(false);
-  const [decisionInitialIndex, setDecisionInitialIndex] = useState(0);
 
-  // Interactive Preview showcase state
-  const [ventures, setVentures] = useState<ReadonlyArray<SampleVenture>>(INITIAL_SAMPLE_VENTURES);
-  const [selectedVentureId, setSelectedVentureId] = useState(INITIAL_SAMPLE_VENTURES[0]!.id);
-  const [activePreviewAgentId, setActivePreviewAgentId] = useState<string | null>(null);
-  const [resolvedReviews, setResolvedReviews] = useState<Record<string, string>>({});
-
-  // Live Dropwave backend data for side widgets
   const [liveAsks, setLiveAsks] = useState<ReadonlyArray<DropwaveAsk>>([]);
   const [liveDocs, setLiveDocs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
   const [liveMemories, setLiveMemories] = useState<ReadonlyArray<DropwaveMemoryItem>>([]);
   const [refreshNonce, setRefreshNonce] = useState(0);
-
-  const hasAnyLiveLead = roster.some((b) => b.source.dropwaveBot?.kind === "lead");
-  const mode: DropwaveMode = modeOverride ?? (hasAnyLiveLead ? "live" : "preview");
 
   const activeBot = botOwner(byKey, activeThread);
   const routeProject = activeBot ?? activeThread ?? draft;
@@ -192,17 +165,15 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     )
     .sort(newestWorkFirst);
 
-  const activeVenture = ventures.find((v) => v.id === selectedVentureId) ?? ventures[0] ?? null;
-
   const listAsksCmd = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
   const listDocsCmd = useAtomCommand(serverEnvironment.dropwaveDocsList, { reportFailure: false });
   const listMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryList, { reportFailure: false });
 
   const activeUpdatedAt = activeThread?.updatedAt ?? null;
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live Dropwave asks, docs, and memories for the active project
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live asks, docs, and memories for active project
   useEffect(() => {
-    if (mode !== "live" || !project || refreshNonce < 0) return;
+    if (!project || refreshNonce < 0) return;
     if (activeUpdatedAt === "__never__") return;
     let cancelled = false;
     void listAsksCmd({
@@ -226,9 +197,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [activeUpdatedAt, listAsksCmd, listDocsCmd, listMemCmd, mode, project, refreshNonce]);
+  }, [activeUpdatedAt, listAsksCmd, listDocsCmd, listMemCmd, project, refreshNonce]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stamps dark glass root attributes for portals and Settings
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps obsidian dark tokens active across all portals
   useEffect(() => {
     const root = document.documentElement;
     const hadDark = root.classList.contains("dark");
@@ -240,7 +211,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains active bot delegated session family for live sessions widget
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains active bot delegated session family
   useEffect(() => {
     const owner = activeBot ?? lead;
     if (!owner) return;
@@ -250,7 +221,6 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   const openThread = (ref: ScopedThreadRef) => {
     setPanel(null);
     setMainView("chat");
-    setModeOverride("live");
     const panels = useRightPanelStore.getState();
     if (panels.threadPanelVisibilityByThreadKey[scopedThreadKey(ref)] === undefined) {
       panels.setThreadPanelOpen(ref, "inline", false);
@@ -269,228 +239,19 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     setSlots({ ...slots, [slot]: kind });
   };
 
-  const jumpToReview = (reviewId: string) => {
-    setMainView("chat");
-    setActivePreviewAgentId(null);
-    setHighlightReviewId(reviewId);
-    setTimeout(() => {
-      document.getElementById(`review-${reviewId}`)?.scrollIntoView({
-        behavior: "smooth",
-        block: "center",
-      });
-    }, 40);
-  };
-
-  // Build Decision Queue items across all ventures (Preview) or pending live threads
-  const decisionQueueItems: ReadonlyArray<DecisionQueueItem> =
-    mode === "preview"
-      ? ventures.flatMap((v) =>
-          v.reviews.map((rev) => ({
-            id: rev.id,
-            projectName: v.name,
-            sessionTag: rev.sessionTag,
-            title: rev.title,
-            summary: rev.summary,
-            context: rev.context,
-            question: rev.question,
-            ifDoNothing: rev.ifDoNothing,
-            evidence:
-              v.docs[0]?.excerpt ||
-              gt("Checked against active project brief and recent session output."),
-            options: rev.options,
-          })),
-        )
-      : needs.map((thread) => {
-          const ownerProj = projects.find((p) => projectIncludes(p, thread));
-          return {
-            id: keyOfThread(thread),
-            projectName: ownerProj?.title ?? gt("Project"),
-            sessionTag: thread.title,
-            title: thread.title,
-            summary: gt("Waiting on your decision or approval to continue."),
-            context: gt(
-              "This bot paused because it hit a decision or approval gate. Open it in chat to inspect the full turn or resolve it directly.",
-            ),
-            question: gt("Jump into {name} to answer?", { name: thread.title }),
-            ifDoNothing: gt("If you do nothing: this run stays paused."),
-            options: [{ id: "open", label: gt("Open in chat to resolve"), recommended: true }],
-          };
-        });
-
-  const openDecisionQueue = (reviewId?: string) => {
-    const idx = reviewId
-      ? Math.max(
-          0,
-          decisionQueueItems.findIndex((item) => item.id === reviewId),
-        )
-      : 0;
-    setDecisionInitialIndex(idx);
-    setDecisionModalOpen(true);
-  };
-
-  const handleResolvePreviewReview = (
-    reviewId: string,
-    choiceLabel: string,
-    alwaysDoThis: boolean,
-  ) => {
-    const ownerVenture = ventures.find((v) => v.reviews.some((r) => r.id === reviewId));
-    if (!ownerVenture) return;
-    setResolvedReviews((prev) => ({
-      ...prev,
-      [reviewId]: alwaysDoThis
-        ? gt("Saved rule & chose: {choice}", { choice: choiceLabel })
-        : gt("Chose: {choice} (just this once)", { choice: choiceLabel }),
-    }));
-    setVentures((prev) =>
-      prev.map((v) => {
-        if (v.id !== ownerVenture.id) return v;
-        const review = v.reviews.find((r) => r.id === reviewId);
-        return {
-          ...v,
-          reviews: v.reviews.filter((r) => r.id !== reviewId),
-          objectives: v.objectives.map((o) =>
-            o.status === "approval" ? { ...o, status: "live" as const, badge: "Resolved" } : o,
-          ),
-          memories:
-            alwaysDoThis && review
-              ? [
-                  {
-                    id: `mem-${Date.now()}`,
-                    kind: "rule",
-                    text: gt("Always: {choice} ({title})", {
-                      choice: choiceLabel,
-                      title: review.title,
-                    }),
-                    quote: review.question,
-                  },
-                  ...v.memories,
-                ]
-              : v.memories,
-        };
-      }),
-    );
-  };
-
-  const handleIgnorePreviewReview = (reviewId: string) => {
-    setVentures((prev) =>
-      prev.map((v) => ({
-        ...v,
-        reviews: v.reviews.filter((r) => r.id !== reviewId),
-      })),
-    );
-  };
-
-  const handleSendPreviewMessage = (text: string) => {
-    if (!activeVenture) return;
-    const nowTime = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    setVentures((prev) =>
-      prev.map((v) => {
-        if (v.id !== activeVenture.id) return v;
-        return {
-          ...v,
-          objectives: [
-            {
-              id: `ask-${Date.now()}`,
-              title: text.slice(0, 48),
-              status: "working",
-              badge: "Tracked",
-            },
-            ...v.objectives,
-          ],
-          messages: [
-            ...v.messages,
-            {
-              id: `u-${Date.now()}`,
-              role: "owner",
-              author: "Founder",
-              authorCode: "S",
-              time: nowTime,
-              text,
-            },
-            {
-              id: `b-${Date.now() + 1}`,
-              role: "bot",
-              author: v.leadName,
-              authorCode: v.leadCode,
-              time: nowTime,
-              text: gt(
-                "Tracked in Core Loop & Asks for {name}. Switch to Live in the top bar anytime to execute with real agents on your repos.",
-                { name: v.name },
-              ),
-            },
-          ],
-        };
-      }),
-    );
-  };
-
-  const handleChangePreviewRisk = (risk: DropwaveRiskLevel) => {
-    if (!activeVenture) return;
-    setVentures((prev) =>
-      prev.map((v) => (v.id === activeVenture.id ? { ...v, riskLevel: risk } : v)),
-    );
-  };
-
-  const handleSavePreviewDoc = (doc: SampleDoc) => {
-    if (!activeVenture) return;
-    setVentures((prev) =>
-      prev.map((v) => {
-        if (v.id !== activeVenture.id) return v;
-        const exists = v.docs.some((d) => d.id === doc.id);
-        return {
-          ...v,
-          docs: exists ? v.docs.map((d) => (d.id === doc.id ? doc : d)) : [doc, ...v.docs],
-        };
-      }),
-    );
-  };
-
-  const handleAddPreviewMemory = (mem: SampleMemory) => {
-    if (!activeVenture) return;
-    setVentures((prev) =>
-      prev.map((v) => (v.id === activeVenture.id ? { ...v, memories: [mem, ...v.memories] } : v)),
-    );
-  };
-
-  const handleRemovePreviewMemory = (id: string) => {
-    if (!activeVenture) return;
-    setVentures((prev) =>
-      prev.map((v) =>
-        v.id === activeVenture.id
-          ? { ...v, memories: v.memories.filter((item) => item.id !== id) }
-          : v,
-      ),
-    );
-  };
-
-  const totalNeedsCount = decisionQueueItems.length;
-
   const widgetData = {
-    venture: mode === "preview" ? activeVenture : null,
     liveAsks,
     liveDocs,
     liveMemories,
-    activePreviewAgentId,
-    onSelectPreviewAgent: (id: string | null) => {
-      setActivePreviewAgentId(id);
-      setMainView("chat");
-    },
-    onIgnorePreviewReview: handleIgnorePreviewReview,
-    onOpenDoc: (docId: string) => setOpenDocId(docId),
+    onOpenDoc: (path: string) => setOpenDocPath(path),
   };
 
-  const visiblePreviewVentures = ventures.slice(0, MAX_TOPBAR_VENTURES);
-  const visibleLiveProjects = projects.slice(0, MAX_TOPBAR_VENTURES);
+  const visibleProjects = projects.slice(0, MAX_TOPBAR_PROJECTS);
   const searchLower = projectSearch.trim().toLowerCase();
 
   return (
     <DropwaveWorkspaceContext
       value={{
-        mode,
-        setMode: (next) => {
-          setModeOverride(next);
-          setMainView("chat");
-        },
         projects,
         project,
         threads,
@@ -508,13 +269,11 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         selectedProjectKey: project ? keyOfProject(project) : null,
         mainView,
         setMainView,
-        openAsksCount:
-          mode === "preview" ? (activeVenture?.objectives.length ?? 0) : liveAsks.length,
+        openAsksCount: liveAsks.length,
         refreshOpenAsksCount: () => setRefreshNonce((n) => n + 1),
         selectProject: (chosen) => {
           setLastProject(keyOfProject(chosen));
           setPanel(null);
-          setModeOverride("live");
           const chosenLead = leadFor(chosen, roster);
           if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
             setMainView("chat");
@@ -530,15 +289,13 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         setSlotWidget,
         focusMode,
         setFocusMode,
-        highlightReviewId,
-        jumpToReview,
-        openDecisionQueue,
+        openDecisionQueue: () => setDecisionModalOpen(true),
         openSettings: () => setSettingsOpen(true),
       }}
     >
       <DropwaveModeContext value={true}>
         <div data-dw-cockpit="" style={appearance.style}>
-          {/* Top Venture Switcher Bar — clean, zero useless filler */}
+          {/* Top Venture Bar */}
           <header data-dw-topbar="">
             <div data-dw-topbar-left="">
               <Popover open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
@@ -560,75 +317,39 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                       />
                     </label>
                     <div data-dw-switcher-list="">
-                      {mode === "preview"
-                        ? ventures
-                            .filter(
-                              (v) => !searchLower || v.name.toLowerCase().includes(searchLower),
-                            )
-                            .map((v) => (
-                              <button
-                                key={v.id}
-                                type="button"
-                                data-dw-switcher-item=""
-                                aria-current={activeVenture?.id === v.id ? "true" : undefined}
-                                onClick={() => {
-                                  setSelectedVentureId(v.id);
-                                  setActivePreviewAgentId(null);
+                      {projects
+                        .filter((p) => !searchLower || p.title.toLowerCase().includes(searchLower))
+                        .map((proj) => {
+                          const key = keyOfProject(proj);
+                          const active = project !== null && keyOfProject(project) === key;
+                          return (
+                            <button
+                              key={key}
+                              type="button"
+                              data-dw-switcher-item=""
+                              aria-current={active ? "true" : undefined}
+                              onClick={() => {
+                                setLastProject(key);
+                                setProjectMenuOpen(false);
+                                const chosenLead = leadFor(proj, roster);
+                                if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
                                   setMainView("chat");
-                                  setProjectMenuOpen(false);
-                                }}
-                              >
-                                <span data-dw-switcher-left="">
-                                  <span
-                                    data-dw-dot={
-                                      v.reviews.length > 0
-                                        ? "coral"
-                                        : activeVenture?.id === v.id
-                                          ? "emerald"
-                                          : "dim"
-                                    }
-                                  />
-                                  <strong>{v.name}</strong>
-                                </span>
-                                {v.reviews.length > 0 ? (
-                                  <span data-dw-badge="coral">{v.reviews.length}</span>
-                                ) : null}
-                              </button>
-                            ))
-                        : projects
-                            .filter(
-                              (p) => !searchLower || p.title.toLowerCase().includes(searchLower),
-                            )
-                            .map((proj) => {
-                              const key = keyOfProject(proj);
-                              const active = project !== null && keyOfProject(project) === key;
-                              return (
-                                <button
-                                  key={key}
-                                  type="button"
-                                  data-dw-switcher-item=""
-                                  aria-current={active ? "true" : undefined}
-                                  onClick={() => {
-                                    setLastProject(key);
-                                    setProjectMenuOpen(false);
-                                    const chosenLead = leadFor(proj, roster);
-                                    if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
-                                      setMainView("chat");
-                                      openThread(
-                                        scopeThreadRef(chosenLead.environmentId, chosenLead.id),
-                                      );
-                                    } else {
-                                      setMainView("setup");
-                                    }
-                                  }}
-                                >
-                                  <span data-dw-switcher-left="">
-                                    <span data-dw-dot={active ? "emerald" : "dim"} />
-                                    <strong>{proj.title}</strong>
-                                  </span>
-                                </button>
-                              );
-                            })}
+                                  openThread(
+                                    scopeThreadRef(chosenLead.environmentId, chosenLead.id),
+                                  );
+                                } else {
+                                  setMainView("setup");
+                                  void navigate({ to: "/" });
+                                }
+                              }}
+                            >
+                              <span data-dw-switcher-left="">
+                                <span data-dw-dot={active ? "emerald" : "dim"} />
+                                <strong>{proj.title}</strong>
+                              </span>
+                            </button>
+                          );
+                        })}
                     </div>
                     <button
                       type="button"
@@ -648,76 +369,48 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
               <span data-dw-vdiv="" aria-hidden="true" />
 
               <nav data-dw-ventures="" aria-label={gt("Projects")}>
-                {mode === "preview"
-                  ? visiblePreviewVentures.map((v) => {
-                      const active = activeVenture?.id === v.id;
-                      const hasUrgent = v.reviews.length > 0;
-                      return (
-                        <button
-                          key={v.id}
-                          type="button"
-                          data-dw-venture-pill=""
-                          aria-current={active ? "true" : undefined}
-                          onClick={() => {
-                            setSelectedVentureId(v.id);
-                            setActivePreviewAgentId(null);
-                            setMainView("chat");
-                          }}
-                        >
-                          <span
-                            data-dw-dot={active ? "emerald" : hasUrgent ? "coral" : "dim"}
-                            data-pulse={active ? "" : undefined}
-                          />
-                          <span>{v.name}</span>
-                          {v.tag ? <small>{v.tag}</small> : null}
-                        </button>
-                      );
-                    })
-                  : visibleLiveProjects.map((proj) => {
-                      const key = keyOfProject(proj);
-                      const active = project !== null && keyOfProject(project) === key;
-                      const hasUrgent = needs.some((t) => {
-                        const owner = botOwner(byKey, t);
-                        return owner !== null && projectIncludes(proj, owner);
-                      });
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          data-dw-venture-pill=""
-                          aria-current={active ? "true" : undefined}
-                          onClick={() => {
-                            setLastProject(key);
-                            const chosenLead = leadFor(proj, roster);
-                            if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
-                              setMainView("chat");
-                              openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
-                            } else {
-                              setMainView("setup");
-                            }
-                          }}
-                        >
-                          <span
-                            data-dw-dot={active ? "emerald" : hasUrgent ? "coral" : "dim"}
-                            data-pulse={active ? "" : undefined}
-                          />
-                          <span>{proj.title}</span>
-                        </button>
-                      );
-                    })}
+                {visibleProjects.map((proj) => {
+                  const key = keyOfProject(proj);
+                  const active = project !== null && keyOfProject(project) === key;
+                  const hasUrgent = needs.some((t) => {
+                    const owner = botOwner(byKey, t);
+                    return owner !== null && projectIncludes(proj, owner);
+                  });
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      data-dw-venture-pill=""
+                      aria-current={active ? "true" : undefined}
+                      onClick={() => {
+                        setLastProject(key);
+                        const chosenLead = leadFor(proj, roster);
+                        if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
+                          setMainView("chat");
+                          openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
+                        } else {
+                          setMainView("setup");
+                          void navigate({ to: "/" });
+                        }
+                      }}
+                    >
+                      <span
+                        data-dw-dot={active ? "emerald" : hasUrgent ? "coral" : "dim"}
+                        data-pulse={active ? "" : undefined}
+                      />
+                      <span>{proj.title}</span>
+                    </button>
+                  );
+                })}
 
-                {(mode === "preview" ? ventures.length : projects.length) > MAX_TOPBAR_VENTURES ? (
+                {projects.length > MAX_TOPBAR_PROJECTS ? (
                   <button
                     type="button"
                     data-dw-venture-more=""
                     onClick={() => setProjectMenuOpen(true)}
                   >
                     <T>
-                      +
-                      <Var>
-                        {(mode === "preview" ? ventures.length : projects.length) -
-                          MAX_TOPBAR_VENTURES}
-                      </Var>
+                      +<Var>{projects.length - MAX_TOPBAR_PROJECTS}</Var>
                     </T>
                   </button>
                 ) : null}
@@ -726,17 +419,20 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                   type="button"
                   data-dw-venture-add=""
                   aria-label={gt("New project setup")}
-                  onClick={() => setMainView("setup")}
+                  onClick={() => {
+                    setMainView("setup");
+                    void navigate({ to: "/" });
+                  }}
                 >
                   <PlusIcon className="size-3.5" />
                 </button>
               </nav>
             </div>
 
-            <DropwaveToolbar appearance={appearance} totalNeedsCount={totalNeedsCount} />
+            <DropwaveToolbar appearance={appearance} totalNeedsCount={needs.length} />
           </header>
 
-          {/* Main Spatial 3-Zone Workspace — full remaining height (zero bottom footer!) */}
+          {/* Main Spatial 3-Zone Workspace */}
           <main data-dw-spatial="" data-focus={focusMode ? "true" : undefined}>
             {!focusMode ? (
               <div data-dw-wing="left">
@@ -748,32 +444,14 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
             <section data-dw-center-pillar="">
               {mainView === "setup" ? (
                 <DropwaveConversationalSetup
+                  key={project ? keyOfProject(project) : "new"}
+                  defaultRisk={defaultRisk}
                   onCancel={() => setMainView("chat")}
-                  onCreatedPreviewVenture={(newVenture) => {
-                    setVentures((prev) => [newVenture, ...prev]);
-                    setSelectedVentureId(newVenture.id);
-                    setActivePreviewAgentId(null);
-                    setMainView("chat");
-                  }}
                 />
               ) : mainView === "docs" ? (
-                <DropwaveDocsView
-                  venture={mode === "preview" ? activeVenture : null}
-                  initialDocId={openDocId}
-                  onSavePreviewDoc={handleSavePreviewDoc}
-                  onAddPreviewMemory={handleAddPreviewMemory}
-                  onRemovePreviewMemory={handleRemovePreviewMemory}
-                />
+                <DropwaveDocsView initialDocPath={openDocPath} />
               ) : (
-                <DropwaveChatPillar
-                  venture={mode === "preview" ? activeVenture : null}
-                  activePreviewAgentId={activePreviewAgentId}
-                  resolvedReviews={resolvedReviews}
-                  onResolvePreviewReview={handleResolvePreviewReview}
-                  onSendPreviewMessage={handleSendPreviewMessage}
-                  onOpenDoc={(docId) => setOpenDocId(docId)}
-                  onChangePreviewRisk={handleChangePreviewRisk}
-                />
+                <DropwaveChatPillar />
               )}
             </section>
 
@@ -785,49 +463,29 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
             ) : null}
           </main>
 
-          {/* Engine Settings modal route (when opened via Dropwave Settings -> Engine & Providers) */}
+          {/* Engine Settings route modal */}
           {modalOpen ? <SidebarProvider>{children}</SidebarProvider> : null}
         </div>
       </DropwaveModeContext>
 
-      {/* Decision Queue Focus Modal — live thread resolver in Live mode, showcase resolver in Preview mode */}
-      {mode === "live" ? (
-        <DropwaveLiveDecisionModal
-          open={decisionModalOpen}
-          needs={needs}
-          projects={projects}
-          leadsByProjectKey={
-            new Map(
-              roster
-                .filter((b) => b.source.dropwaveBot?.kind === "lead")
-                .map((b) => [`${b.environmentId}:${b.projectId}`, b] as const),
-            )
-          }
-          onClose={() => setDecisionModalOpen(false)}
-          onOpenThread={openThread}
-          onSavedRule={() => setRefreshNonce((n) => n + 1)}
-        />
-      ) : (
-        <DropwaveDecisionModal
-          open={decisionModalOpen}
-          items={decisionQueueItems}
-          initialIndex={decisionInitialIndex}
-          onClose={() => setDecisionModalOpen(false)}
-          onResolve={(item, choiceLabel, alwaysDoThis) => {
-            handleResolvePreviewReview(item.id, choiceLabel, alwaysDoThis);
-          }}
-          onIgnore={(item) => {
-            handleIgnorePreviewReview(item.id);
-          }}
-          onJumpToChat={(item) => {
-            const owner = ventures.find((v) => v.reviews.some((r) => r.id === item.id));
-            if (owner) setSelectedVentureId(owner.id);
-            jumpToReview(item.id);
-          }}
-        />
-      )}
+      {/* Live Decision Queue Modal */}
+      <DropwaveLiveDecisionModal
+        open={decisionModalOpen}
+        needs={needs}
+        projects={projects}
+        leadsByProjectKey={
+          new Map(
+            roster
+              .filter((b) => b.source.dropwaveBot?.kind === "lead")
+              .map((b) => [`${b.environmentId}:${b.projectId}`, b] as const),
+          )
+        }
+        onClose={() => setDecisionModalOpen(false)}
+        onOpenThread={openThread}
+        onSavedRule={() => setRefreshNonce((n) => n + 1)}
+      />
 
-      {/* Dropwave-first Settings Dialog */}
+      {/* Dropwave Settings Dialog */}
       <DropwaveSettingsDialog
         open={settingsOpen}
         onClose={() => setSettingsOpen(false)}

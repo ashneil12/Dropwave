@@ -32,6 +32,7 @@ export const DropwaveBotProfile = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("lead"),
     brief: Brief,
+    soul: Schema.optional(Brief),
     workflow: Workflow,
     rules: Rules,
     riskLevel: Schema.optional(DropwaveRiskLevel),
@@ -43,6 +44,7 @@ export const DropwaveBotProfile = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("teammate"),
     brief: Brief,
+    soul: Schema.optional(Brief),
     leadThreadId: ThreadId,
     role: Schema.optional(BotRole),
     avatarSeed: Schema.optional(Schema.Int),

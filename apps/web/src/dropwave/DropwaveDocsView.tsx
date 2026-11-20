@@ -25,84 +25,25 @@ import { useEffect, useState } from "react";
 import { requestConfirmDialog } from "../confirmDialog";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
+import { DropwaveMarkdown } from "./DropwaveMarkdown";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { formatShortAge } from "./model";
-import type { SampleDoc, SampleMemory, SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 type DocsTab = "docs" | "memory";
 
-function renderMarkdownBlocks(content: string) {
-  let offset = 0;
-  const blocks = content.split(/\r?\n/).map((line) => {
-    const id = `md-${offset}-${line.slice(0, 16)}`;
-    offset += line.length + 1;
-    return { id, line };
-  });
-  return blocks.map(({ id, line }) => {
-    if (line.startsWith("### ")) {
-      return (
-        <h4 key={id} data-dropwave-md-h3="">
-          {line.slice(4)}
-        </h4>
-      );
-    }
-    if (line.startsWith("## ")) {
-      return (
-        <h3 key={id} data-dropwave-md-h2="">
-          {line.slice(3)}
-        </h3>
-      );
-    }
-    if (line.startsWith("# ")) {
-      return (
-        <h2 key={id} data-dropwave-md-h1="">
-          {line.slice(2)}
-        </h2>
-      );
-    }
-    if (/^\s*[-*•]\s+/.test(line)) {
-      return (
-        <div key={id} data-dropwave-md-li="">
-          <span aria-hidden="true">·</span>
-          <span>{line.replace(/^\s*[-*•]\s+/, "")}</span>
-        </div>
-      );
-    }
-    if (!line.trim()) {
-      return <div key={id} data-dropwave-md-gap="" />;
-    }
-    return (
-      <p key={id} data-dropwave-md-p="">
-        {line}
-      </p>
-    );
-  });
-}
-
 export function DropwaveDocsView({
-  venture,
-  initialDocId,
-  onSavePreviewDoc,
-  onAddPreviewMemory,
-  onRemovePreviewMemory,
+  initialDocPath,
 }: {
-  venture?: SampleVenture | null;
-  initialDocId?: string | null;
-  onSavePreviewDoc?: (doc: SampleDoc) => void;
-  onAddPreviewMemory?: (mem: SampleMemory) => void;
-  onRemovePreviewMemory?: (id: string) => void;
+  initialDocPath?: string | null;
 } = {}) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
-  const isPreview = workspace?.mode === "preview" && venture != null;
   const project = workspace?.project ?? null;
   const [tab, setTab] = useState<DocsTab>("docs");
   const [query, setQuery] = useState("");
   const [docs, setDocs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
-  const [selectedPath, setSelectedPath] = useState<string | null>(
-    initialDocId ?? (isPreview ? (venture.docs[0]?.id ?? null) : null),
-  );
+  const [selectedPath, setSelectedPath] = useState<string | null>(initialDocPath ?? null);
   const [openDoc, setOpenDoc] = useState<DropwaveDoc | null>(null);
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
@@ -131,9 +72,9 @@ export function DropwaveDocsView({
   const [reloadNonce, setReloadNonce] = useState(0);
   const triggerReload = () => setReloadNonce((n) => n + 1);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- fetches live server docs or memory list when in live mode
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live server docs or memories
   useEffect(() => {
-    if (isPreview || !project || reloadNonce < 0) return;
+    if (!project || reloadNonce < 0) return;
     let cancelled = false;
     if (tab === "docs") {
       void listDocsCmd({
@@ -172,13 +113,11 @@ export function DropwaveDocsView({
     return () => {
       cancelled = true;
     };
-  }, [gt, isPreview, listDocsCmd, listMemCmd, project, query, reloadNonce, tab]);
+  }, [gt, listDocsCmd, listMemCmd, project, query, reloadNonce, tab]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads selected live markdown document content from server
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads selected markdown document content
   useEffect(() => {
-    if (isPreview || !project || !selectedPath || creatingNew) {
-      return;
-    }
+    if (!project || !selectedPath || creatingNew) return;
     let cancelled = false;
     void readDocCmd({
       environmentId: project.environmentId,
@@ -196,63 +135,43 @@ export function DropwaveDocsView({
     return () => {
       cancelled = true;
     };
-  }, [creatingNew, isPreview, project, readDocCmd, selectedPath]);
+  }, [creatingNew, project, readDocCmd, selectedPath]);
 
-  if (!workspace || (!isPreview && !project)) return null;
+  if (!workspace || !project) {
+    return (
+      <div data-dropwave-panel-empty="">
+        <FileTextIcon />
+        <p>
+          <T>Link a project folder to view and edit shared Docs & Memory.</T>
+        </p>
+      </div>
+    );
+  }
 
-  const displayProjectName = isPreview ? venture.name : project!.title;
-  const previewSelectedDoc = isPreview
-    ? (venture.docs.find((d) => d.id === selectedPath) ?? venture.docs[0] ?? null)
-    : null;
-
-  const activeDocView = creatingNew
-    ? null
-    : isPreview
-      ? previewSelectedDoc
-        ? {
-            path: previewSelectedDoc.path,
-            title: previewSelectedDoc.title,
-            kind: previewSelectedDoc.kind,
-            content: previewSelectedDoc.content,
-            id: previewSelectedDoc.id,
-          }
-        : null
-      : selectedPath && openDoc
-        ? openDoc
-        : null;
-
-  const listedDocs = isPreview
-    ? venture.docs.map((doc) => ({
-        key: doc.id,
-        title: doc.title,
-        kind: doc.kind,
-        meta: `${doc.kind} · ${doc.updated}`,
-        excerpt: doc.excerpt,
-        path: doc.path,
-      }))
-    : docs.map((doc) => ({
-        key: doc.path,
-        title: doc.title,
-        kind: doc.kind,
-        meta: `${doc.kind} · ${formatShortAge(doc.updatedAt)}`,
-        excerpt: doc.excerpt,
-        path: doc.path,
-      }));
-
+  const activeDocView = creatingNew || !selectedPath ? null : openDoc;
   const filteredDocs = query.trim()
-    ? listedDocs.filter(
+    ? docs.filter(
         (doc) =>
           doc.title.toLowerCase().includes(query.trim().toLowerCase()) ||
           doc.excerpt.toLowerCase().includes(query.trim().toLowerCase()) ||
           doc.path.toLowerCase().includes(query.trim().toLowerCase()),
       )
-    : listedDocs;
+    : docs;
 
-  const listedMemories = isPreview
-    ? venture.memories
-        .filter((m) => !query.trim() || m.text.toLowerCase().includes(query.trim().toLowerCase()))
-        .map((m) => ({ id: m.id, kind: m.kind, text: m.text, quote: m.quote }))
-    : memories.map((m) => ({ id: m.id, kind: m.kind, text: m.text, quote: m.quote }));
+  const docKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveDocKind>> = [
+    { value: "brief", label: gt("Brief") },
+    { value: "spec", label: gt("Spec") },
+    { value: "note", label: gt("Note") },
+    { value: "loop", label: gt("Core loop") },
+    { value: "memory", label: gt("Memory") },
+  ];
+  const memoryKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveMemoryKind>> = [
+    { value: "rule", label: gt("Rule") },
+    { value: "preference", label: gt("Preference") },
+    { value: "decision", label: gt("Decision") },
+    { value: "fact", label: gt("Fact") },
+    { value: "lesson", label: gt("Lesson") },
+  ];
 
   const startNewDoc = () => {
     setCreatingNew(true);
@@ -274,38 +193,12 @@ export function DropwaveDocsView({
 
   const saveDoc = async () => {
     if (busy || !draftTitle.trim()) return;
-    if (isPreview) {
-      const slug = draftTitle
-        .trim()
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-+|-+$/g, "");
-      const doc: SampleDoc = {
-        id: creatingNew ? `doc-${Date.now()}` : (activeDocView?.id ?? `doc-${Date.now()}`),
-        path: creatingNew
-          ? `.dropwave/docs/${slug || "note"}.md`
-          : (activeDocView?.path ?? `.dropwave/docs/${slug || "note"}.md`),
-        title: draftTitle.trim(),
-        kind: draftKind,
-        updated: "Just now",
-        excerpt: draftContent.split(/\r?\n/).find((l) => l.trim() && !l.startsWith("#")) ?? "",
-        content: draftContent.trimStart().startsWith("# ")
-          ? draftContent
-          : `# ${draftTitle.trim()}\n\n${draftContent}`,
-      };
-      onSavePreviewDoc?.(doc);
-      setCreatingNew(false);
-      setEditing(false);
-      setSelectedPath(doc.id);
-      return;
-    }
-
     setBusy(true);
     setError(null);
     const res = await writeDocCmd({
-      environmentId: project!.environmentId,
+      environmentId: project.environmentId,
       input: {
-        projectId: project!.id,
+        projectId: project.id,
         ...(creatingNew ? {} : openDoc ? { path: openDoc.path } : {}),
         title: draftTitle.trim(),
         kind: draftKind,
@@ -327,12 +220,12 @@ export function DropwaveDocsView({
   };
 
   const deleteCurrentDoc = async () => {
-    if (isPreview || !openDoc || busy) return;
+    if (!openDoc || busy) return;
     if (!(await requestConfirmDialog(gt("Delete this document?")))) return;
     setBusy(true);
     const res = await deleteDocCmd({
-      environmentId: project!.environmentId,
-      input: { projectId: project!.id, path: openDoc.path },
+      environmentId: project.environmentId,
+      input: { projectId: project.id, path: openDoc.path },
     });
     setBusy(false);
     if (res._tag === "Success") {
@@ -348,21 +241,12 @@ export function DropwaveDocsView({
 
   const addMemory = async () => {
     if (!newMemoryText.trim() || busy) return;
-    if (isPreview) {
-      onAddPreviewMemory?.({
-        id: `mem-${Date.now()}`,
-        kind: newMemoryKind === "lesson" ? "fact" : newMemoryKind,
-        text: newMemoryText.trim(),
-      });
-      setNewMemoryText("");
-      return;
-    }
     setBusy(true);
     setError(null);
     const res = await saveMemCmd({
-      environmentId: project!.environmentId,
+      environmentId: project.environmentId,
       input: {
-        projectId: project!.id,
+        projectId: project.id,
         botThreadId: workspace.lead?.id ?? null,
         kind: newMemoryKind,
         text: newMemoryText.trim(),
@@ -381,14 +265,10 @@ export function DropwaveDocsView({
   };
 
   const removeMemory = async (id: string) => {
-    if (isPreview) {
-      onRemovePreviewMemory?.(id);
-      return;
-    }
     if (busy) return;
     setBusy(true);
     const res = await removeMemCmd({
-      environmentId: project!.environmentId,
+      environmentId: project.environmentId,
       input: { id },
     });
     setBusy(false);
@@ -398,23 +278,7 @@ export function DropwaveDocsView({
     }
   };
 
-  const canDeleteOpenDoc =
-    !isPreview && (activeDocView?.path.startsWith(".dropwave/docs/") ?? false);
-
-  const docKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveDocKind>> = [
-    { value: "brief", label: gt("Brief") },
-    { value: "spec", label: gt("Spec") },
-    { value: "note", label: gt("Note") },
-    { value: "loop", label: gt("Core loop") },
-    { value: "memory", label: gt("Memory") },
-  ];
-  const memoryKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveMemoryKind>> = [
-    { value: "rule", label: gt("Rule") },
-    { value: "preference", label: gt("Preference") },
-    { value: "decision", label: gt("Decision") },
-    { value: "fact", label: gt("Fact") },
-    { value: "lesson", label: gt("Lesson") },
-  ];
+  const canDeleteOpenDoc = activeDocView?.path.startsWith(".dropwave/docs/") ?? false;
 
   return (
     <section data-dropwave-docs="" aria-label={gt("Project docs and memory")}>
@@ -464,7 +328,7 @@ export function DropwaveDocsView({
             <div data-dropwave-docs-heading="">
               <span>
                 <T>
-                  <Var>{displayProjectName}</Var> docs
+                  <Var>{project.title}</Var> docs
                 </T>
               </span>
               <button
@@ -478,22 +342,24 @@ export function DropwaveDocsView({
             </div>
             <ul data-dropwave-docs-list="">
               {filteredDocs.map((doc) => (
-                <li key={doc.key}>
+                <li key={doc.path}>
                   <button
                     type="button"
                     aria-current={
-                      !creatingNew && (selectedPath ?? listedDocs[0]?.key) === doc.key
+                      !creatingNew && (selectedPath ?? filteredDocs[0]?.path) === doc.path
                         ? "true"
                         : undefined
                     }
                     onClick={() => {
                       setCreatingNew(false);
                       setEditing(false);
-                      setSelectedPath(doc.key);
+                      setSelectedPath(doc.path);
                     }}
                   >
                     <strong>{doc.title}</strong>
-                    <small>{doc.meta}</small>
+                    <small>
+                      {doc.kind} · {formatShortAge(doc.updatedAt)}
+                    </small>
                   </button>
                 </li>
               ))}
@@ -508,7 +374,7 @@ export function DropwaveDocsView({
           <div data-dropwave-docs-heading="">
             <span>
               <T>
-                <Var>{displayProjectName}</Var> memory (<Var>{listedMemories.length}</Var>)
+                <Var>{project.title}</Var> memory (<Var>{memories.length}</Var>)
               </T>
             </span>
           </div>
@@ -593,7 +459,9 @@ export function DropwaveDocsView({
                   ) : null}
                 </div>
               </header>
-              <div data-dropwave-doc-body="">{renderMarkdownBlocks(activeDocView.content)}</div>
+              <div data-dropwave-doc-body="">
+                <DropwaveMarkdown text={activeDocView.content} />
+              </div>
             </article>
           ) : (
             <div data-dropwave-panel-empty="">
@@ -648,7 +516,7 @@ export function DropwaveDocsView({
               </button>
             </form>
             <ul data-dropwave-memory-list="">
-              {listedMemories.map((item) => (
+              {memories.map((item) => (
                 <li key={item.id}>
                   <div>
                     <span data-dropwave-doc-pill="">{item.kind}</span>
@@ -665,7 +533,7 @@ export function DropwaveDocsView({
                   </button>
                 </li>
               ))}
-              {listedMemories.length === 0 ? (
+              {memories.length === 0 ? (
                 <li data-dropwave-docs-empty="">
                   <T>
                     No project memories yet. Answer asks with “Always do this” or add rules above.

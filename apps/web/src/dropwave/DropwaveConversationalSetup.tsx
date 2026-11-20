@@ -35,7 +35,6 @@ import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
-import type { SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 interface SetupStepDraft {
@@ -56,19 +55,51 @@ const DEFAULT_SETUP_STEPS: ReadonlyArray<{
   { id: "s5", title: msg("Ship & report proof"), owner: "Main bot" },
 ];
 
+const SOUL_PRESETS: ReadonlyArray<{
+  readonly id: string;
+  readonly name: string;
+  readonly label: string;
+  readonly soul: string;
+}> = [
+  {
+    id: "first-mate",
+    name: "Atlas",
+    label: msg("Sharp First Mate"),
+    soul: msg(
+      "Direct, calm, loyal first mate. Speaks plain English with zero corporate fluff or sycophancy. Organizes messy founder dumps into airtight tracked asks, owns outcomes end-to-end, pushes back honestly when an approach is flawed, and never declares victory without real proof.",
+    ),
+  },
+  {
+    id: "builder",
+    name: "Forge",
+    label: msg("Relentless Builder"),
+    soul: msg(
+      "Bias toward shipping working software fast. Cuts scope creep, builds in clean isolated worktrees, fixes failing tests immediately instead of explaining them away, and surfaces concise evidence-first updates.",
+    ),
+  },
+  {
+    id: "operator",
+    name: "Nova",
+    label: msg("Calm Operator"),
+    soul: msg(
+      "Methodical, structured business operator. Keeps docs, memory, and decisions spotless across parallel tracks, anticipates bottlenecks early, and distills complex trade-offs into 1-sentence recommendations.",
+    ),
+  },
+];
+
 export function DropwaveConversationalSetup({
+  defaultRisk = "yolo",
   onCancel,
-  onCreatedPreviewVenture,
 }: {
+  defaultRisk?: DropwaveRiskLevel;
   onCancel: () => void;
-  onCreatedPreviewVenture: (venture: SampleVenture) => void;
 }) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
   const m = useMessages();
 
   const preselectedLiveProject =
-    workspace?.mode === "live" && workspace.project && !workspace.lead ? workspace.project : null;
+    workspace && workspace.project && !workspace.lead ? workspace.project : null;
 
   const [projectName, setProjectName] = useState(preselectedLiveProject?.title ?? "");
   const [nameSubmitted, setNameSubmitted] = useState(Boolean(preselectedLiveProject));
@@ -76,12 +107,16 @@ export function DropwaveConversationalSetup({
   const [doneSubmitted, setDoneSubmitted] = useState(false);
   const [composerText, setComposerText] = useState("");
 
+  const [leadName, setLeadName] = useState("Atlas");
+  const [soulPresetId, setSoulPresetId] = useState(SOUL_PRESETS[0]!.id);
+  const [soulText, setSoulText] = useState(() => m(SOUL_PRESETS[0]!.soul));
+
   const [steps, setSteps] = useState<Array<SetupStepDraft>>(() =>
     DEFAULT_SETUP_STEPS.map((step) => ({ ...step, title: m(step.title) })),
   );
   const [wantQa, setWantQa] = useState(true);
   const [wantSeo, setWantSeo] = useState(false);
-  const [riskLevel, setRiskLevel] = useState<DropwaveRiskLevel>("yolo");
+  const [riskLevel, setRiskLevel] = useState<DropwaveRiskLevel>(defaultRisk);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -102,14 +137,11 @@ export function DropwaveConversationalSetup({
   );
 
   const selectedLiveProject =
-    workspace.mode === "live"
-      ? (workspace.projects.find(
-          (p) => p.title.toLowerCase() === projectName.trim().toLowerCase(),
-        ) ??
-        preselectedLiveProject ??
-        unconfiguredProjects[0] ??
-        null)
-      : null;
+    workspace.projects.find((p) => p.title.toLowerCase() === projectName.trim().toLowerCase()) ??
+    preselectedLiveProject ??
+    unconfiguredProjects[0] ??
+    workspace.projects[0] ??
+    null;
 
   const handleChatSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -143,117 +175,18 @@ export function DropwaveConversationalSetup({
   const launchLoop = async () => {
     if (busy) return;
     setError(null);
-    const title = projectName.trim() || gt("New Venture");
-    const shippedText =
-      doneBar.trim() || gt("Tested end-to-end with verified evidence before reporting done.");
-    const cleanedSteps = steps.filter((s) => s.title.trim().length > 0);
-
-    if (workspace.mode === "preview" || !selectedLiveProject) {
-      const id = `venture-${Date.now()}`;
-      const code = title
-        .split(/\s+/)
-        .map((w) => w[0] ?? "")
-        .join("")
-        .slice(0, 2)
-        .toUpperCase();
-      const helpers: SampleVenture["helpers"] = [
-        ...(wantQa
-          ? [
-              {
-                id: `${id}-qa`,
-                code: "QA",
-                name: `${title} QA`,
-                role: "End-to-end verification",
-                state: "idle" as const,
-                statusLine: "Ready for first build",
-                tone: "indigo" as const,
-              },
-            ]
-          : []),
-        ...(wantSeo
-          ? [
-              {
-                id: `${id}-seo`,
-                code: "SEO",
-                name: `${title} Growth`,
-                role: "Distribution & SEO",
-                state: "idle" as const,
-                statusLine: "Ready for launch pages",
-                tone: "emerald" as const,
-              },
-            ]
-          : []),
-      ];
-      onCreatedPreviewVenture({
-        id,
-        name: title,
-        targetLine: gt("{name} Core Loop", { name: title }),
-        statusWord: riskLevel === "yolo" ? gt("Autonomous Execution") : gt("Loop Ready"),
-        riskLevel,
-        sprintTitle: gt("{name}: First Core Loop", { name: title }),
-        sprintProgress: 20,
-        budgetUsed: 0,
-        budgetLimit: 250,
-        leadName: gt("Chief of Staff"),
-        leadCode: code || "CS",
-        leadStatus: gt("{name} · core loop wired and ready", { name: title }),
-        liveTicker: {
-          bot: gt("Chief of Staff"),
-          text: gt("is ready for your first ask"),
-          age: gt("now"),
-        },
-        loopSteps: cleanedSteps.map((s) => ({ title: s.title, owner: s.owner })),
-        objectives: [
-          {
-            id: `${id}-o1`,
-            title: gt("Run first task through loop"),
-            status: "working",
-            badge: gt("Ready"),
-          },
-        ],
-        helpers,
-        branches: [],
-        reviews: [],
-        sessions: [],
-        messages: [
-          {
-            id: `${id}-m1`,
-            role: "bot",
-            author: gt("Chief of Staff"),
-            authorCode: code || "CS",
-            time: gt("Now"),
-            text: gt(
-              "Core loop is live for {name}. Shipped means: {done}. Drop your first idea or dump below and I will organize, delegate, and push it end-to-end.",
-              { name: title, done: shippedText },
-            ),
-          },
-        ],
-        docs: [
-          {
-            id: `${id}-doc-loop`,
-            path: ".dropwave/docs/core-loop.md",
-            title: gt("Core loop & done bar"),
-            kind: "loop",
-            updated: gt("Now"),
-            excerpt: shippedText,
-            content: `# ${title} Core Loop\n\nShipped means: ${shippedText}\n\n${cleanedSteps
-              .map((s, i) => `${i + 1}. ${s.title} (${s.owner})`)
-              .join("\n")}`,
-          },
-        ],
-        memories: [
-          {
-            id: `${id}-mem-1`,
-            kind: "rule",
-            text: gt("Done bar: {done}", { done: shippedText }),
-            quote: shippedText,
-          },
-        ],
-      });
+    if (!selectedLiveProject) {
+      setError(gt("Link a local project folder first using Link folder above."));
       return;
     }
 
-    // Live mode: create real Chief of Staff + selected Helper bots via orchestration-v2!
+    const title = projectName.trim() || selectedLiveProject.title;
+    const shippedText =
+      doneBar.trim() || gt("Tested end-to-end with verified evidence before reporting done.");
+    const cleanedSteps = steps.filter((s) => s.title.trim().length > 0);
+    const botTitle = leadName.trim() || gt("Chief of Staff");
+    const finalSoul = soulText.trim();
+
     const envId = selectedLiveProject.environmentId;
     const providers = readEnvironmentProviders(envId) ?? [];
     const settings =
@@ -291,10 +224,11 @@ export function DropwaveConversationalSetup({
       input: {
         threadId: leadId,
         projectId: selectedLiveProject.id,
-        title: gt("Chief of Staff"),
+        title: botTitle,
         dropwaveBot: {
           kind: "lead",
           brief: `${title}: ${shippedText}`,
+          ...(finalSoul ? { soul: finalSoul } : {}),
           workflow: loopSteps.map((s) => s.title),
           rules: [],
           riskLevel,
@@ -324,11 +258,14 @@ export function DropwaveConversationalSetup({
         input: {
           threadId: qaId,
           projectId: selectedLiveProject.id,
-          title: `${title} QA`,
+          title: gt("{name} QA", { name: title }),
           dropwaveBot: {
             kind: "teammate",
             leadThreadId: leadId,
             role: gt("Verification & QA"),
+            soul: gt(
+              "Skeptical, thorough QA engineer. Never trusts claims without running real checks and inspecting real output. Reports exact pass/fail evidence concisely.",
+            ),
             brief: gt("Verify work end-to-end against: {done}", { done: shippedText }),
           },
           modelSelection,
@@ -350,6 +287,9 @@ export function DropwaveConversationalSetup({
             kind: "teammate",
             leadThreadId: leadId,
             role: gt("SEO & Growth"),
+            soul: gt(
+              "Sharp growth writer grounded strictly in real product truth. Zero AI fluff, zero invented metrics, crisp positioning.",
+            ),
             brief: gt("Own SEO, content, and launch assets for {name}.", { name: title }),
           },
           modelSelection,
@@ -361,7 +301,6 @@ export function DropwaveConversationalSetup({
       });
     }
 
-    // Seed .dropwave/docs/core-loop.md and OptMem done bar immediately so Docs & Memory panels light up on Day 1.
     await writeDoc({
       environmentId: envId,
       input: {
@@ -369,11 +308,24 @@ export function DropwaveConversationalSetup({
         path: ".dropwave/docs/core-loop.md",
         title: gt("Core loop & done bar"),
         kind: "loop",
-        content: `# ${title} Core Loop\n\nShipped means: ${shippedText}\n\n## Steps\n${cleanedSteps
+        content: `# ${title} Core Loop\n\nLead agent: ${botTitle}\nShipped means: ${shippedText}\n\n## Steps\n${cleanedSteps
           .map((s, idx) => `${idx + 1}. ${s.title} (${s.owner})`)
           .join("\n")}\n\n## Autonomy\nRisk level: ${riskLevel.toUpperCase()}\n`,
       },
     }).catch(() => undefined);
+
+    if (finalSoul) {
+      await writeDoc({
+        environmentId: envId,
+        input: {
+          projectId: selectedLiveProject.id,
+          path: ".dropwave/docs/soul.md",
+          title: gt("{name} Soul", { name: botTitle }),
+          kind: "brief",
+          content: `# ${botTitle} Soul\n\n${finalSoul}\n`,
+        },
+      }).catch(() => undefined);
+    }
 
     await saveMemory({
       environmentId: envId,
@@ -400,16 +352,14 @@ export function DropwaveConversationalSetup({
           <T>Back</T>
         </button>
         <div data-dw-head-actions="">
-          {workspace.mode === "live" ? (
-            <button
-              type="button"
-              data-dw-header-pill=""
-              onClick={() => openCommandPalette({ open: "add-project" })}
-            >
-              <FolderPlusIcon className="size-3.5" />
-              <T>Link folder</T>
-            </button>
-          ) : null}
+          <button
+            type="button"
+            data-dw-header-pill=""
+            onClick={() => openCommandPalette({ open: "add-project" })}
+          >
+            <FolderPlusIcon className="size-3.5" />
+            <T>Link folder</T>
+          </button>
         </div>
       </header>
 
@@ -420,7 +370,7 @@ export function DropwaveConversationalSetup({
             <div data-dw-bubble="bot">
               <T>Hey, I am the main bot for whatever you set up next. What is the project?</T>
             </div>
-            {!nameSubmitted && workspace.mode === "live" && unconfiguredProjects.length > 0 ? (
+            {!nameSubmitted && unconfiguredProjects.length > 0 ? (
               <div data-dw-quick-chips="">
                 {unconfiguredProjects.map((proj) => (
                   <button
@@ -495,9 +445,50 @@ export function DropwaveConversationalSetup({
               <div data-dw-msg-stack="">
                 <div data-dw-bubble="bot">
                   <T>
-                    Here is the core loop I would run for <Var>{projectName}</Var>. Tweak the steps,
-                    pick any helpers, and choose how autonomous I should be.
+                    Give me a name and soul, tweak the core loop for <Var>{projectName}</Var>, and
+                    pick your helpers.
                   </T>
+                </div>
+
+                {/* Soul & Identity card */}
+                <div data-dw-setup-card="">
+                  <div data-dw-setup-card-head="">
+                    <span>
+                      <T>Bot identity & soul</T>
+                    </span>
+                  </div>
+                  <div data-dw-soul-presets="">
+                    {SOUL_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        data-dw-risk-btn=""
+                        aria-pressed={soulPresetId === preset.id}
+                        onClick={() => {
+                          setSoulPresetId(preset.id);
+                          setLeadName(preset.name);
+                          setSoulText(m(preset.soul));
+                        }}
+                      >
+                        {preset.name} · {m(preset.label)}
+                      </button>
+                    ))}
+                  </div>
+                  <input
+                    data-dw-custom-answer=""
+                    value={leadName}
+                    onChange={(e) => setLeadName(e.currentTarget.value)}
+                    placeholder={gt("Bot name (e.g. Atlas, Chief of Staff)")}
+                    aria-label={gt("Bot name")}
+                  />
+                  <textarea
+                    data-dw-soul-input=""
+                    rows={3}
+                    value={soulText}
+                    onChange={(e) => setSoulText(e.currentTarget.value)}
+                    placeholder={gt("How should this bot think, speak, and push back?")}
+                    aria-label={gt("Bot soul")}
+                  />
                 </div>
 
                 <div data-dw-setup-card="">
