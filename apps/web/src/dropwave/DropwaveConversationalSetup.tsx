@@ -3,6 +3,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import {
   DEFAULT_SERVER_SETTINGS,
   type DropwaveLoopStep,
@@ -13,6 +14,7 @@ import { T, Var, msg, useGT, useMessages } from "gt-react";
 import {
   ArrowDownIcon,
   ArrowLeftIcon,
+  ArrowRightIcon,
   ArrowUpIcon,
   CheckIcon,
   FolderPlusIcon,
@@ -23,13 +25,14 @@ import {
 import { useState, type FormEvent } from "react";
 
 import { openCommandPalette } from "../commandPaletteBus";
-import { newThreadId } from "../lib/utils";
+import { newProjectId, newThreadId } from "../lib/utils";
 import {
   providerInstanceEntriesFor,
   resolveProjectDefaultProviderModelSelection,
 } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { readEnvironmentProviders } from "../state/environments";
+import { readEnvironmentProviders, usePrimaryEnvironmentId } from "../state/environments";
+import { projectEnvironment } from "../state/projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -89,28 +92,39 @@ const SOUL_PRESETS: ReadonlyArray<{
 
 export function DropwaveConversationalSetup({
   defaultRisk = "yolo",
+  startAtNewProject = false,
   onCancel,
 }: {
   defaultRisk?: DropwaveRiskLevel;
+  startAtNewProject?: boolean;
   onCancel: () => void;
 }) {
   const workspace = useDropwaveWorkspace();
+  const primaryEnvId = usePrimaryEnvironmentId();
   const gt = useGT();
   const m = useMessages();
 
   const preselectedLiveProject =
-    workspace && workspace.project && !workspace.lead ? workspace.project : null;
+    !startAtNewProject && workspace && workspace.project && !workspace.lead
+      ? workspace.project
+      : null;
 
-  const [projectName, setProjectName] = useState(preselectedLiveProject?.title ?? "");
-  const [nameSubmitted, setNameSubmitted] = useState(Boolean(preselectedLiveProject));
+  // Step 1: Project Basics (pick unconfigured project OR create new project + folder in place)
+  const [boundProject, setBoundProject] = useState<EnvironmentProject | null>(
+    preselectedLiveProject,
+  );
+  const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newFolderPath, setNewFolderPath] = useState("");
+  const [createIfMissing, setCreateIfMissing] = useState(true);
+  const [creatingProject, setCreatingProject] = useState(false);
+
+  // Step 2: AI Chief of Staff Onboarding
   const [doneBar, setDoneBar] = useState("");
   const [doneSubmitted, setDoneSubmitted] = useState(false);
   const [composerText, setComposerText] = useState("");
-
   const [leadName, setLeadName] = useState("Atlas");
   const [soulPresetId, setSoulPresetId] = useState(SOUL_PRESETS[0]!.id);
   const [soulText, setSoulText] = useState(() => m(SOUL_PRESETS[0]!.soul));
-
   const [steps, setSteps] = useState<Array<SetupStepDraft>>(() =>
     DEFAULT_SETUP_STEPS.map((step) => ({ ...step, title: m(step.title) })),
   );
@@ -120,6 +134,9 @@ export function DropwaveConversationalSetup({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const createProject = useOrchestrationCommand(projectEnvironment.create, {
+    reportFailure: false,
+  });
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
   const writeDoc = useAtomCommand(serverEnvironment.dropwaveDocWrite, { reportFailure: false });
   const saveMemory = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
@@ -136,28 +153,64 @@ export function DropwaveConversationalSetup({
       ),
   );
 
-  const selectedLiveProject =
-    workspace.projects.find((p) => p.title.toLowerCase() === projectName.trim().toLowerCase()) ??
-    preselectedLiveProject ??
-    unconfiguredProjects[0] ??
-    workspace.projects[0] ??
-    null;
+  // Resolve freshly created project from live entity store if available
+  const activeProject =
+    (boundProject
+      ? (workspace.projects.find(
+          (p) => p.id === boundProject.id && p.environmentId === boundProject.environmentId,
+        ) ?? boundProject)
+      : null) ?? null;
+
+  const handleCreateProject = async (event: FormEvent) => {
+    event.preventDefault();
+    const title = newProjectTitle.trim();
+    const workspaceRoot = newFolderPath.trim();
+    if (!title || !workspaceRoot || creatingProject) return;
+    const envId = workspace.project?.environmentId ?? primaryEnvId;
+    if (!envId) {
+      setError(gt("No connected environment available yet."));
+      return;
+    }
+    setError(null);
+    setCreatingProject(true);
+    const projectId = newProjectId();
+    const res = await createProject({
+      environmentId: envId,
+      input: {
+        projectId,
+        title,
+        workspaceRoot,
+        createWorkspaceRootIfMissing: createIfMissing,
+      },
+    });
+    setCreatingProject(false);
+    if (res._tag === "Failure") {
+      if (!isAtomCommandInterrupted(res)) {
+        const cause = squashAtomCommandFailure(res);
+        setError(cause instanceof Error ? cause.message : gt("Could not create project folder."));
+      }
+      return;
+    }
+    setBoundProject({
+      environmentId: envId,
+      id: projectId,
+      title,
+      workspaceRoot,
+      isScratch: false,
+      defaultModelSelection: null,
+      scripts: [],
+      archivedAt: null,
+      deletedAt: null,
+    } as unknown as EnvironmentProject);
+  };
 
   const handleChatSubmit = (event: FormEvent) => {
     event.preventDefault();
     const cleaned = composerText.trim();
-    if (!cleaned) return;
-    if (!nameSubmitted) {
-      setProjectName(cleaned);
-      setNameSubmitted(true);
-      setComposerText("");
-      return;
-    }
-    if (!doneSubmitted) {
-      setDoneBar(cleaned);
-      setDoneSubmitted(true);
-      setComposerText("");
-    }
+    if (!cleaned || doneSubmitted) return;
+    setDoneBar(cleaned);
+    setDoneSubmitted(true);
+    setComposerText("");
   };
 
   const moveStep = (index: number, delta: -1 | 1) => {
@@ -173,37 +226,35 @@ export function DropwaveConversationalSetup({
   };
 
   const launchLoop = async () => {
-    if (busy) return;
+    if (busy || !activeProject) return;
     setError(null);
-    if (!selectedLiveProject) {
-      setError(gt("Link a local project folder first using Link folder above."));
-      return;
-    }
 
-    const title = projectName.trim() || selectedLiveProject.title;
+    const title = activeProject.title;
     const shippedText =
       doneBar.trim() || gt("Tested end-to-end with verified evidence before reporting done.");
     const cleanedSteps = steps.filter((s) => s.title.trim().length > 0);
     const botTitle = leadName.trim() || gt("Chief of Staff");
     const finalSoul = soulText.trim();
 
-    const envId = selectedLiveProject.environmentId;
+    const envId = activeProject.environmentId;
     const providers = readEnvironmentProviders(envId) ?? [];
     const settings =
       appAtomRegistry.get(environmentServerConfigsAtom).get(envId)?.settings ??
       DEFAULT_SERVER_SETTINGS;
-    const projectSettings = resolveProjectSettings(settings, selectedLiveProject.id).settings;
-    const configured = selectedLiveProject.defaultModelSelection;
-    const available = providerInstanceEntriesFor(providers, settings, selectedLiveProject.id);
+    const projectSettings = resolveProjectSettings(settings, activeProject.id).settings;
+    const configured = activeProject.defaultModelSelection;
+    const available = providerInstanceEntriesFor(providers, settings, activeProject.id);
     const modelSelection =
       configured &&
       available.some(
         (entry) => entry.instanceId === configured.instanceId && entry.enabled && entry.isAvailable,
       )
         ? configured
-        : resolveProjectDefaultProviderModelSelection(providers, settings, selectedLiveProject.id);
+        : resolveProjectDefaultProviderModelSelection(providers, settings, activeProject.id);
     if (!modelSelection) {
-      setError(gt("Connect an agent provider in Settings first, then click launch again."));
+      setError(
+        gt("Connect a provider in Settings -> Providers & Models first, then launch again."),
+      );
       return;
     }
 
@@ -223,7 +274,7 @@ export function DropwaveConversationalSetup({
       environmentId: envId,
       input: {
         threadId: leadId,
-        projectId: selectedLiveProject.id,
+        projectId: activeProject.id,
         title: botTitle,
         dropwaveBot: {
           kind: "lead",
@@ -257,7 +308,7 @@ export function DropwaveConversationalSetup({
         environmentId: envId,
         input: {
           threadId: qaId,
-          projectId: selectedLiveProject.id,
+          projectId: activeProject.id,
           title: gt("{name} QA", { name: title }),
           dropwaveBot: {
             kind: "teammate",
@@ -281,7 +332,7 @@ export function DropwaveConversationalSetup({
         environmentId: envId,
         input: {
           threadId: seoId,
-          projectId: selectedLiveProject.id,
+          projectId: activeProject.id,
           title: gt("{name} Growth", { name: title }),
           dropwaveBot: {
             kind: "teammate",
@@ -304,7 +355,7 @@ export function DropwaveConversationalSetup({
     await writeDoc({
       environmentId: envId,
       input: {
-        projectId: selectedLiveProject.id,
+        projectId: activeProject.id,
         path: ".dropwave/docs/core-loop.md",
         title: gt("Core loop & done bar"),
         kind: "loop",
@@ -318,7 +369,7 @@ export function DropwaveConversationalSetup({
       await writeDoc({
         environmentId: envId,
         input: {
-          projectId: selectedLiveProject.id,
+          projectId: activeProject.id,
           path: ".dropwave/docs/soul.md",
           title: gt("{name} Soul", { name: botTitle }),
           kind: "brief",
@@ -330,7 +381,7 @@ export function DropwaveConversationalSetup({
     await saveMemory({
       environmentId: envId,
       input: {
-        projectId: selectedLiveProject.id,
+        projectId: activeProject.id,
         botThreadId: leadId,
         kind: "rule",
         text: gt("Done bar: {done}", { done: shippedText }),
@@ -351,6 +402,17 @@ export function DropwaveConversationalSetup({
           <ArrowLeftIcon className="size-3.5" />
           <T>Back</T>
         </button>
+
+        <div data-dw-step-indicator="">
+          <span data-active={!activeProject ? "true" : undefined}>
+            <T>1. Project & folder</T>
+          </span>
+          <span aria-hidden="true">→</span>
+          <span data-active={activeProject ? "true" : undefined}>
+            <T>2. AI Chief of Staff</T>
+          </span>
+        </div>
+
         <div data-dw-head-actions="">
           <button
             type="button"
@@ -358,51 +420,120 @@ export function DropwaveConversationalSetup({
             onClick={() => openCommandPalette({ open: "add-project" })}
           >
             <FolderPlusIcon className="size-3.5" />
-            <T>Link folder</T>
+            <T>Browse folder</T>
           </button>
         </div>
       </header>
 
       <div data-dw-stream="">
-        <div data-dw-msg="bot">
-          <span data-dw-msg-avatar="bot">DW</span>
-          <div data-dw-msg-stack="">
-            <div data-dw-bubble="bot">
-              <T>Hey, I am the main bot for whatever you set up next. What is the project?</T>
-            </div>
-            {!nameSubmitted && unconfiguredProjects.length > 0 ? (
-              <div data-dw-quick-chips="">
-                {unconfiguredProjects.map((proj) => (
-                  <button
-                    key={proj.id}
-                    type="button"
-                    data-dw-quick-chip=""
-                    onClick={() => {
-                      setProjectName(proj.title);
-                      setNameSubmitted(true);
-                    }}
-                  >
-                    {proj.title}
-                  </button>
-                ))}
+        {/* STEP 1: Fast Project Basics — name + connect or create folder cleanly in glass */}
+        {!activeProject ? (
+          <div data-dw-onboard-basics="">
+            <h2>
+              <T>Set up your project</T>
+            </h2>
+            <p>
+              <T>
+                Name the project and connect an existing folder or create a fresh one. Next, your
+                Chief of Staff will walk you through soul, core loop, and helpers.
+              </T>
+            </p>
+
+            {unconfiguredProjects.length > 0 ? (
+              <div data-dw-setup-card="">
+                <div data-dw-setup-card-head="">
+                  <span>
+                    <T>Existing projects ready for a Chief of Staff</T>
+                  </span>
+                </div>
+                <div data-dw-quick-chips="">
+                  {unconfiguredProjects.map((proj) => (
+                    <button
+                      key={proj.id}
+                      type="button"
+                      data-dw-quick-chip=""
+                      onClick={() => setBoundProject(proj)}
+                    >
+                      <strong>{proj.title}</strong>
+                      <small style={{ opacity: 0.55, marginLeft: 6 }}>{proj.workspaceRoot}</small>
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
+
+            <form data-dw-setup-card="" onSubmit={(e) => void handleCreateProject(e)}>
+              <div data-dw-setup-card-head="">
+                <span>
+                  <T>Or create / link a new project</T>
+                </span>
+              </div>
+              <label data-dw-field-label="">
+                <span>
+                  <T>Project name</T>
+                </span>
+                <input
+                  data-dw-custom-answer=""
+                  value={newProjectTitle}
+                  onChange={(e) => setNewProjectTitle(e.currentTarget.value)}
+                  placeholder={gt("e.g. Hivra, Nibbii, Pocket CRM")}
+                  required
+                />
+              </label>
+              <label data-dw-field-label="">
+                <span>
+                  <T>Folder path</T>
+                </span>
+                <input
+                  data-dw-custom-answer=""
+                  value={newFolderPath}
+                  onChange={(e) => setNewFolderPath(e.currentTarget.value)}
+                  placeholder={gt("/Users/you/Projects/my-app")}
+                  required
+                />
+              </label>
+              <label data-dw-check-row="">
+                <input
+                  type="checkbox"
+                  checked={createIfMissing}
+                  onChange={(e) => setCreateIfMissing(e.currentTarget.checked)}
+                />
+                <span>
+                  <T>Create this folder automatically if it does not exist yet</T>
+                </span>
+              </label>
+
+              {error ? (
+                <p data-dropwave-form-error="" role="alert">
+                  {error}
+                </p>
+              ) : null}
+
+              <div data-dw-setup-submit="">
+                <button
+                  type="submit"
+                  data-dw-white-pill=""
+                  disabled={creatingProject || !newProjectTitle.trim() || !newFolderPath.trim()}
+                >
+                  {creatingProject ? <T>Creating…</T> : <T>Continue to AI onboarding</T>}
+                  <ArrowRightIcon className="size-3.5" />
+                </button>
+              </div>
+            </form>
           </div>
-        </div>
-
-        {nameSubmitted ? (
+        ) : (
+          /* STEP 2: Conversational AI Chief of Staff Onboarding */
           <>
-            <div data-dw-msg="owner">
-              <div data-dw-bubble="owner">{projectName}</div>
-            </div>
-
             <div data-dw-msg="bot">
               <span data-dw-msg-avatar="bot">DW</span>
               <div data-dw-msg-stack="">
                 <div data-dw-bubble="bot">
                   <T>
-                    Got it, <Var>{projectName}</Var>. What does shipped mean here? When can I call
-                    work done?
+                    Connected to{" "}
+                    <strong>
+                      <Var>{activeProject.title}</Var>
+                    </strong>
+                    . What does shipped mean here? When can I call work done?
                   </T>
                 </div>
                 {!doneSubmitted ? (
@@ -431,245 +562,232 @@ export function DropwaveConversationalSetup({
                 ) : null}
               </div>
             </div>
-          </>
-        ) : null}
 
-        {doneSubmitted ? (
-          <>
-            <div data-dw-msg="owner">
-              <div data-dw-bubble="owner">{doneBar}</div>
-            </div>
-
-            <div data-dw-msg="bot">
-              <span data-dw-msg-avatar="bot">DW</span>
-              <div data-dw-msg-stack="">
-                <div data-dw-bubble="bot">
-                  <T>
-                    Give me a name and soul, tweak the core loop for <Var>{projectName}</Var>, and
-                    pick your helpers.
-                  </T>
+            {doneSubmitted ? (
+              <>
+                <div data-dw-msg="owner">
+                  <div data-dw-bubble="owner">{doneBar}</div>
                 </div>
 
-                {/* Soul & Identity card */}
-                <div data-dw-setup-card="">
-                  <div data-dw-setup-card-head="">
-                    <span>
-                      <T>Bot identity & soul</T>
-                    </span>
-                  </div>
-                  <div data-dw-soul-presets="">
-                    {SOUL_PRESETS.map((preset) => (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        data-dw-risk-btn=""
-                        aria-pressed={soulPresetId === preset.id}
-                        onClick={() => {
-                          setSoulPresetId(preset.id);
-                          setLeadName(preset.name);
-                          setSoulText(m(preset.soul));
-                        }}
-                      >
-                        {preset.name} · {m(preset.label)}
-                      </button>
-                    ))}
-                  </div>
-                  <input
-                    data-dw-custom-answer=""
-                    value={leadName}
-                    onChange={(e) => setLeadName(e.currentTarget.value)}
-                    placeholder={gt("Bot name (e.g. Atlas, Chief of Staff)")}
-                    aria-label={gt("Bot name")}
-                  />
-                  <textarea
-                    data-dw-soul-input=""
-                    rows={3}
-                    value={soulText}
-                    onChange={(e) => setSoulText(e.currentTarget.value)}
-                    placeholder={gt("How should this bot think, speak, and push back?")}
-                    aria-label={gt("Bot soul")}
-                  />
-                </div>
-
-                <div data-dw-setup-card="">
-                  <div data-dw-setup-card-head="">
-                    <span>
-                      <T>Core loop</T>
-                    </span>
-                    <button
-                      type="button"
-                      data-dw-inline-link=""
-                      onClick={() =>
-                        setSteps((prev) => [
-                          ...prev,
-                          { id: `s-${Date.now()}`, title: "", owner: "Main bot" },
-                        ])
-                      }
-                    >
-                      <PlusIcon className="size-3" />
-                      <T>Add step</T>
-                    </button>
-                  </div>
-                  <ol data-dw-setup-steps="">
-                    {steps.map((step, index) => (
-                      <li key={step.id}>
-                        <span data-dw-mono="dim">{index + 1}</span>
-                        <input
-                          value={step.title}
-                          onChange={(e) => {
-                            const val = e.currentTarget.value;
-                            setSteps((prev) =>
-                              prev.map((item, idx) =>
-                                idx === index ? { ...item, title: val } : item,
-                              ),
-                            );
-                          }}
-                          placeholder={gt("Step name")}
-                        />
-                        <DropwaveSelect
-                          value={step.owner}
-                          options={
-                            [
-                              { value: "Main bot", label: gt("Main bot") },
-                              { value: "QA bot", label: gt("QA bot") },
-                              { value: "SEO bot", label: gt("SEO bot") },
-                            ] satisfies ReadonlyArray<DropwaveSelectOption>
-                          }
-                          ariaLabel={gt("Step owner")}
-                          compact
-                          onChange={(val) => {
-                            setSteps((prev) =>
-                              prev.map((item, idx) =>
-                                idx === index ? { ...item, owner: val } : item,
-                              ),
-                            );
-                          }}
-                        />
-                        <button
-                          type="button"
-                          data-dw-mini-icon=""
-                          aria-label={gt("Move up")}
-                          onClick={() => moveStep(index, -1)}
-                        >
-                          <ArrowUpIcon className="size-3" />
-                        </button>
-                        <button
-                          type="button"
-                          data-dw-mini-icon=""
-                          aria-label={gt("Move down")}
-                          onClick={() => moveStep(index, 1)}
-                        >
-                          <ArrowDownIcon className="size-3" />
-                        </button>
-                        <button
-                          type="button"
-                          data-dw-mini-icon=""
-                          aria-label={gt("Remove step")}
-                          onClick={() => setSteps((prev) => prev.filter((_, idx) => idx !== index))}
-                        >
-                          <XIcon className="size-3" />
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-
-                <div data-dw-setup-card="">
-                  <div data-dw-setup-card-head="">
-                    <span>
-                      <T>Helpers & autonomy</T>
-                    </span>
-                  </div>
-                  <div data-dw-helper-checks="">
-                    <label data-dw-check-row="">
-                      <input
-                        type="checkbox"
-                        checked={wantQa}
-                        onChange={(e) => setWantQa(e.currentTarget.checked)}
-                      />
-                      <span data-dw-monogram="indigo">QA</span>
-                      <span>
-                        <T>QA bot (verifies builds & catches regressions)</T>
-                      </span>
-                    </label>
-                    <label data-dw-check-row="">
-                      <input
-                        type="checkbox"
-                        checked={wantSeo}
-                        onChange={(e) => setWantSeo(e.currentTarget.checked)}
-                      />
-                      <span data-dw-monogram="emerald">GR</span>
-                      <span>
-                        <T>Growth / SEO bot (pages, audits, launch assets)</T>
-                      </span>
-                    </label>
-                  </div>
-
-                  <div data-dw-risk-pills="">
-                    {(["careful", "normal", "yolo"] as const).map((level) => (
-                      <button
-                        key={level}
-                        type="button"
-                        data-dw-risk-btn=""
-                        aria-pressed={riskLevel === level}
-                        onClick={() => setRiskLevel(level)}
-                      >
-                        {level === "yolo"
-                          ? "YOLO"
-                          : level === "careful"
-                            ? gt("Careful")
-                            : gt("Normal")}
-                      </button>
-                    ))}
-                  </div>
-                  <p data-dw-risk-note="">
-                    {riskLevel === "yolo" ? (
+                <div data-dw-msg="bot">
+                  <span data-dw-msg-avatar="bot">DW</span>
+                  <div data-dw-msg-stack="">
+                    <div data-dw-bubble="bot">
                       <T>
-                        Decides 99% end-to-end. Stops only for money, keys, public posts, or
-                        irreversible prod.
+                        Pick my name and soul, tweak the core loop for{" "}
+                        <Var>{activeProject.title}</Var>, and choose your specialist bots.
                       </T>
-                    ) : riskLevel === "careful" ? (
-                      <T>Checks in before meaningful product or architecture decisions.</T>
-                    ) : (
-                      <T>Handles routine execution; asks when product direction is ambiguous.</T>
-                    )}
-                  </p>
+                    </div>
 
-                  {error ? (
-                    <p data-dropwave-form-error="" role="alert">
-                      {error}
-                    </p>
-                  ) : null}
+                    <div data-dw-setup-card="">
+                      <div data-dw-setup-card-head="">
+                        <span>
+                          <T>Bot identity & soul</T>
+                        </span>
+                      </div>
+                      <div data-dw-soul-presets="">
+                        {SOUL_PRESETS.map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            data-dw-risk-btn=""
+                            aria-pressed={soulPresetId === preset.id}
+                            onClick={() => {
+                              setSoulPresetId(preset.id);
+                              setLeadName(preset.name);
+                              setSoulText(m(preset.soul));
+                            }}
+                          >
+                            {preset.name} · {m(preset.label)}
+                          </button>
+                        ))}
+                      </div>
+                      <input
+                        data-dw-custom-answer=""
+                        value={leadName}
+                        onChange={(e) => setLeadName(e.currentTarget.value)}
+                        placeholder={gt("Bot name (e.g. Atlas, Chief of Staff)")}
+                        aria-label={gt("Bot name")}
+                      />
+                      <textarea
+                        data-dw-soul-input=""
+                        rows={3}
+                        value={soulText}
+                        onChange={(e) => setSoulText(e.currentTarget.value)}
+                        placeholder={gt("How should this bot think, speak, and push back?")}
+                        aria-label={gt("Bot soul")}
+                      />
+                    </div>
 
-                  <div data-dw-setup-submit="">
-                    <button
-                      type="button"
-                      data-dw-white-pill=""
-                      disabled={busy}
-                      onClick={() => void launchLoop()}
-                    >
-                      <CheckIcon className="size-3.5" />
-                      {busy ? <T>Launching…</T> : <T>Launch Chief of Staff</T>}
-                    </button>
+                    <div data-dw-setup-card="">
+                      <div data-dw-setup-card-head="">
+                        <span>
+                          <T>Core loop</T>
+                        </span>
+                        <button
+                          type="button"
+                          data-dw-inline-link=""
+                          onClick={() =>
+                            setSteps((prev) => [
+                              ...prev,
+                              { id: `s-${Date.now()}`, title: "", owner: "Main bot" },
+                            ])
+                          }
+                        >
+                          <PlusIcon className="size-3" />
+                          <T>Add step</T>
+                        </button>
+                      </div>
+                      <ol data-dw-setup-steps="">
+                        {steps.map((step, index) => (
+                          <li key={step.id}>
+                            <span data-dw-mono="dim">{index + 1}</span>
+                            <input
+                              value={step.title}
+                              onChange={(e) => {
+                                const val = e.currentTarget.value;
+                                setSteps((prev) =>
+                                  prev.map((item, idx) =>
+                                    idx === index ? { ...item, title: val } : item,
+                                  ),
+                                );
+                              }}
+                              placeholder={gt("Step name")}
+                            />
+                            <DropwaveSelect
+                              value={step.owner}
+                              options={
+                                [
+                                  { value: "Main bot", label: gt("Main bot") },
+                                  { value: "QA bot", label: gt("QA bot") },
+                                  { value: "SEO bot", label: gt("SEO bot") },
+                                ] satisfies ReadonlyArray<DropwaveSelectOption>
+                              }
+                              ariaLabel={gt("Step owner")}
+                              compact
+                              onChange={(val) => {
+                                setSteps((prev) =>
+                                  prev.map((item, idx) =>
+                                    idx === index ? { ...item, owner: val } : item,
+                                  ),
+                                );
+                              }}
+                            />
+                            <button
+                              type="button"
+                              data-dw-mini-icon=""
+                              aria-label={gt("Move up")}
+                              onClick={() => moveStep(index, -1)}
+                            >
+                              <ArrowUpIcon className="size-3" />
+                            </button>
+                            <button
+                              type="button"
+                              data-dw-mini-icon=""
+                              aria-label={gt("Move down")}
+                              onClick={() => moveStep(index, 1)}
+                            >
+                              <ArrowDownIcon className="size-3" />
+                            </button>
+                            <button
+                              type="button"
+                              data-dw-mini-icon=""
+                              aria-label={gt("Remove step")}
+                              onClick={() =>
+                                setSteps((prev) => prev.filter((_, idx) => idx !== index))
+                              }
+                            >
+                              <XIcon className="size-3" />
+                            </button>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+
+                    <div data-dw-setup-card="">
+                      <div data-dw-setup-card-head="">
+                        <span>
+                          <T>Specialists & autonomy</T>
+                        </span>
+                      </div>
+                      <div data-dw-helper-checks="">
+                        <label data-dw-check-row="">
+                          <input
+                            type="checkbox"
+                            checked={wantQa}
+                            onChange={(e) => setWantQa(e.currentTarget.checked)}
+                          />
+                          <span data-dw-monogram="indigo">QA</span>
+                          <span>
+                            <T>QA bot (verifies builds & catches regressions)</T>
+                          </span>
+                        </label>
+                        <label data-dw-check-row="">
+                          <input
+                            type="checkbox"
+                            checked={wantSeo}
+                            onChange={(e) => setWantSeo(e.currentTarget.checked)}
+                          />
+                          <span data-dw-monogram="emerald">GR</span>
+                          <span>
+                            <T>Growth / SEO bot (pages, audits, launch assets)</T>
+                          </span>
+                        </label>
+                      </div>
+
+                      <div data-dw-risk-pills="">
+                        {(["careful", "normal", "yolo"] as const).map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            data-dw-risk-btn=""
+                            aria-pressed={riskLevel === level}
+                            onClick={() => setRiskLevel(level)}
+                          >
+                            {level === "yolo"
+                              ? "YOLO"
+                              : level === "careful"
+                                ? gt("Careful")
+                                : gt("Normal")}
+                          </button>
+                        ))}
+                      </div>
+
+                      {error ? (
+                        <p data-dropwave-form-error="" role="alert">
+                          {error}
+                        </p>
+                      ) : null}
+
+                      <div data-dw-setup-submit="">
+                        <button
+                          type="button"
+                          data-dw-white-pill=""
+                          disabled={busy}
+                          onClick={() => void launchLoop()}
+                        >
+                          <CheckIcon className="size-3.5" />
+                          {busy ? <T>Launching…</T> : <T>Launch Chief of Staff</T>}
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            </div>
+              </>
+            ) : null}
           </>
-        ) : null}
+        )}
       </div>
 
-      {!doneSubmitted ? (
+      {activeProject && !doneSubmitted ? (
         <form data-dw-composer-wrap="" onSubmit={handleChatSubmit}>
           <div data-dw-pill-composer="">
             <input
               value={composerText}
               onChange={(e) => setComposerText(e.currentTarget.value)}
-              placeholder={
-                !nameSubmitted
-                  ? gt("Name your project or describe what you are building…")
-                  : gt("Describe what shipped means for this project…")
-              }
+              placeholder={gt("Describe what shipped means for {name}…", {
+                name: activeProject.title,
+              })}
             />
             <button
               type="submit"

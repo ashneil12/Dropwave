@@ -19,9 +19,16 @@ import * as Schema from "effect/Schema";
 import * as ProjectService from "../project/ProjectService.ts";
 
 const DOCS_DIR_RELATIVE = ".dropwave/docs";
+const HUBS_DIR_RELATIVE = ".dropwave/hubs";
 const MAX_DOC_BYTES = 250_000;
 const ALLOWED_EXT = new Set([".md", ".mdx", ".txt"]);
+const ALLOWED_HUB_EXT = new Set([".html"]);
 const isDropwaveError = Schema.is(DropwaveOperationError);
+
+function isHubPath(relPath: string): boolean {
+  const norm = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  return norm.startsWith(`${HUBS_DIR_RELATIVE}/`);
+}
 
 function slugifyTitle(title: string): string {
   const slug = title
@@ -33,6 +40,7 @@ function slugifyTitle(title: string): string {
 }
 
 function inferKindFromPath(relPath: string): DropwaveDocKind {
+  if (isHubPath(relPath)) return "hub";
   const lower = relPath.toLowerCase();
   if (lower.includes("loop") || lower.includes("workflow")) return "loop";
   if (lower.includes("memory") || lower.includes("rules")) return "memory";
@@ -44,6 +52,10 @@ function inferKindFromPath(relPath: string): DropwaveDocKind {
 }
 
 function extractTitle(relPath: string, content: string): string {
+  if (isHubPath(relPath)) {
+    const titleMatch = /<title>([^<]{1,160})<\/title>/i.exec(content);
+    if (titleMatch?.[1]?.trim()) return titleMatch[1].trim();
+  }
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (trimmed.startsWith("# ")) return trimmed.slice(2).trim().slice(0, 160);
@@ -53,6 +65,13 @@ function extractTitle(relPath: string, content: string): string {
 }
 
 function extractExcerpt(content: string): string {
+  if (content.trimStart().startsWith("<")) {
+    const metaDesc = /<meta[^>]+name=["']description["'][^>]+content=["']([^"']{1,140})["']/i.exec(
+      content,
+    );
+    if (metaDesc?.[1]) return metaDesc[1];
+    return "Interactive custom Dropwave Hub";
+  }
   for (const line of content.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#") || trimmed.startsWith("---")) continue;
@@ -74,10 +93,13 @@ function resolveSafeDocPath(
     });
   }
   const ext = NodePath.extname(cleaned).toLowerCase();
-  if (!ALLOWED_EXT.has(ext)) {
+  const allowed = isHubPath(cleaned) ? ALLOWED_HUB_EXT.has(ext) : ALLOWED_EXT.has(ext);
+  if (!allowed) {
     return new DropwaveOperationError({
       code: "invalid_input",
-      message: "Dropwave docs support .md, .mdx, and .txt files.",
+      message: isHubPath(cleaned)
+        ? "Dropwave hubs support .html files inside .dropwave/hubs/."
+        : "Dropwave docs support .md, .mdx, and .txt files.",
     });
   }
   const rootResolved = NodePath.resolve(workspaceRoot);
@@ -114,8 +136,11 @@ function collectMarkdownFiles(
     const rel = dirRelative ? `${dirRelative}/${entry.name}` : entry.name;
     if (entry.isDirectory()) {
       if (maxDepth > 0) collectMarkdownFiles(rootDir, rel, maxDepth - 1, out);
-    } else if (entry.isFile() && ALLOWED_EXT.has(NodePath.extname(entry.name).toLowerCase())) {
-      out.push(rel);
+    } else if (entry.isFile()) {
+      const ext = NodePath.extname(entry.name).toLowerCase();
+      if (isHubPath(rel) ? ALLOWED_HUB_EXT.has(ext) : ALLOWED_EXT.has(ext)) {
+        out.push(rel);
+      }
     }
   }
 }
@@ -204,6 +229,7 @@ export const layer: Layer.Layer<DropwaveDocsService, never, ProjectService.Proje
           try: () => {
             const candidates: Array<string> = [];
             collectMarkdownFiles(root, DOCS_DIR_RELATIVE, 2, candidates);
+            collectMarkdownFiles(root, HUBS_DIR_RELATIVE, 1, candidates);
             const topDocs = ["README.md", "VISION.md", "SPEC.md", "PLAN.md"];
             for (const file of topDocs) {
               if (NodeFS.existsSync(NodePath.join(root, file))) {
@@ -290,15 +316,21 @@ export const layer: Layer.Layer<DropwaveDocsService, never, ProjectService.Proje
       }) {
         const root = yield* resolveProjectRoot(input.projectId);
         const targetRel =
-          input.path?.trim() || `${DOCS_DIR_RELATIVE}/${slugifyTitle(input.title)}.md`;
+          input.path?.trim() ||
+          (input.kind === "hub"
+            ? `${HUBS_DIR_RELATIVE}/${slugifyTitle(input.title)}.html`
+            : `${DOCS_DIR_RELATIVE}/${slugifyTitle(input.title)}.md`);
         const safe = resolveSafeDocPath(root, targetRel);
         if (isDropwaveError(safe)) return yield* safe;
         return yield* Effect.try({
           try: (): DropwaveDoc => {
             NodeFS.mkdirSync(NodePath.dirname(safe.absolute), { recursive: true });
-            const body = input.content.trimStart().startsWith("# ")
+            const isHtmlHub = isHubPath(safe.normalized);
+            const body = isHtmlHub
               ? input.content
-              : `# ${input.title.trim()}\n\n${input.content}`;
+              : input.content.trimStart().startsWith("# ")
+                ? input.content
+                : `# ${input.title.trim()}\n\n${input.content}`;
             NodeFS.writeFileSync(safe.absolute, body, "utf8");
             const stat = NodeFS.statSync(safe.absolute);
             return {
@@ -327,7 +359,10 @@ export const layer: Layer.Layer<DropwaveDocsService, never, ProjectService.Proje
         const root = yield* resolveProjectRoot(projectId);
         const safe = resolveSafeDocPath(root, path);
         if (isDropwaveError(safe)) return yield* safe;
-        if (!safe.normalized.startsWith(`${DOCS_DIR_RELATIVE}/`)) {
+        if (
+          !safe.normalized.startsWith(`${DOCS_DIR_RELATIVE}/`) &&
+          !safe.normalized.startsWith(`${HUBS_DIR_RELATIVE}/`)
+        ) {
           return yield* new DropwaveOperationError({
             code: "forbidden",
             message: "Only Dropwave workspace docs under .dropwave/docs/ can be deleted here.",

@@ -9,10 +9,13 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ImageIcon,
+  KanbanIcon,
+  LayoutGridIcon,
   PanelLeftCloseIcon,
   PinIcon,
   PinOffIcon,
   PlusIcon,
+  RepeatIcon,
   SearchIcon,
   SettingsIcon,
   UploadIcon,
@@ -22,6 +25,12 @@ import { useState } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { DropwaveBotAvatar, type BotAvatarStatus } from "./DropwaveBotAvatar";
+import {
+  BUILTIN_KANBAN_HUB_ID,
+  BUILTIN_SHIP_GATE_HUB_ID,
+  PINNED_HUBS_KEY,
+  PinnedHubsSchema,
+} from "./DropwaveHubsView";
 import type { useDropwaveAppearance } from "./DropwaveToolbar";
 import {
   formatShortAge,
@@ -81,6 +90,7 @@ export function DropwaveSidebar({
     [],
     PinnedProjectsSchema,
   );
+  const [pinnedHubs] = useLocalStorage(PINNED_HUBS_KEY, [BUILTIN_KANBAN_HUB_ID], PinnedHubsSchema);
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
 
@@ -302,7 +312,7 @@ export function DropwaveSidebar({
             aria-label={gt("New project setup")}
             onClick={() => {
               setProjectsExpanded(false);
-              workspace.setMainView("setup");
+              workspace.setMainView("setup", { newProject: true });
             }}
           >
             <PlusIcon className="size-4 opacity-70" />
@@ -495,6 +505,54 @@ export function DropwaveSidebar({
         </div>
       </div>
 
+      {/* Pinned Hubs (1-click access to Kanban or agent-built custom mods) */}
+      {pinnedHubs.length > 0 ? (
+        <div data-dw-rail-section="">
+          <div data-dw-rail-head="">
+            <span>
+              <T>Pinned Hubs</T>
+            </span>
+            <button
+              type="button"
+              data-dw-rail-plus=""
+              aria-label={gt("Browse all hubs")}
+              onClick={() => workspace.setMainView("hubs")}
+            >
+              <LayoutGridIcon className="size-3" />
+            </button>
+          </div>
+          <div data-dw-pinned-hubs="">
+            {pinnedHubs.slice(0, 4).map((hubId) => {
+              const label =
+                hubId === BUILTIN_KANBAN_HUB_ID
+                  ? gt("Asks Kanban")
+                  : hubId === BUILTIN_SHIP_GATE_HUB_ID
+                    ? gt("Ship Gate")
+                    : (hubId
+                        .split("/")
+                        .pop()
+                        ?.replace(/\.html$/i, "")
+                        .replace(/[-_]+/g, " ") ?? hubId);
+              return (
+                <button
+                  key={hubId}
+                  type="button"
+                  data-dw-pinned-hub-btn=""
+                  onClick={() => workspace.openHub(hubId)}
+                >
+                  {hubId === BUILTIN_KANBAN_HUB_ID ? (
+                    <KanbanIcon className="size-3.5 shrink-0 opacity-75" />
+                  ) : (
+                    <LayoutGridIcon className="size-3.5 shrink-0 opacity-75" />
+                  )}
+                  <span>{label}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
       {/* Section 3: Sessions (DevinBot-style clean grouped list — Active & Recent) */}
       <div data-dw-rail-sessions="">
         {activeSessions.length > 0 ? (
@@ -578,8 +636,26 @@ export function DropwaveSidebar({
         </div>
       </div>
 
-      {/* Clean minimal footer — Settings only (no bottom Asks clutter!) */}
+      {/* Clean minimal footer — Habits, Hubs & Settings */}
       <footer data-dw-rail-foot="">
+        <button
+          type="button"
+          data-dw-rail-foot-btn=""
+          aria-current={workspace.mainView === "habits" ? "true" : undefined}
+          onClick={() => workspace.setMainView("habits")}
+        >
+          <RepeatIcon className="size-3.5" />
+          <T>Habits</T>
+        </button>
+        <button
+          type="button"
+          data-dw-rail-foot-btn=""
+          aria-current={workspace.mainView === "hubs" ? "true" : undefined}
+          onClick={() => workspace.setMainView("hubs")}
+        >
+          <LayoutGridIcon className="size-3.5" />
+          <T>Hubs</T>
+        </button>
         <button type="button" data-dw-rail-foot-btn="" onClick={() => workspace.openSettings()}>
           <SettingsIcon className="size-3.5" />
           <T>Settings</T>

@@ -68,6 +68,14 @@ export function dropwaveBotInstructions(
     if (projectProfile.doneDefinition?.trim()) {
       instructions.push(`Definition of done:\n${projectProfile.doneDefinition.trim()}`);
     }
+    if (projectProfile.workerModelSelection) {
+      instructions.push(
+        `Child worker model (Child Capability): ${projectProfile.workerModelSelection.model} (${projectProfile.workerModelSelection.instanceId}). Delegated tasks automatically route here unless overridden.`,
+      );
+    }
+    instructions.push(
+      `Custom Hubs (agent-built UI mods): when the owner asks for a custom dashboard, tracker, calculator, or visual tool, write a single self-contained HTML file to ".dropwave/hubs/<slug>.html" using dropwave_docs (kind: "hub"). Style it cleanly for Dropwave dark glass (--ink: #f4f3ef, --muted: rgba(244,243,239,0.58), --line: rgba(255,255,255,0.10), --surface: rgba(255,255,255,0.06), transparent body background).`,
+    );
     if (projectProfile.rules.length !== 0) {
       instructions.push(
         `Owner's standing decisions, newest last:\n${projectProfile.rules.map((rule) => `- ${rule}`).join("\n")}`,

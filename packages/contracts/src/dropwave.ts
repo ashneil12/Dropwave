@@ -96,7 +96,7 @@ export const DropwaveAskMutationResult = Schema.Struct({
 });
 export type DropwaveAskMutationResult = typeof DropwaveAskMutationResult.Type;
 
-export const DropwaveDocKind = Schema.Literals(["brief", "spec", "note", "loop", "memory"]);
+export const DropwaveDocKind = Schema.Literals(["brief", "spec", "note", "loop", "memory", "hub"]);
 export type DropwaveDocKind = typeof DropwaveDocKind.Type;
 
 export const DropwaveDocSummary = Schema.Struct({

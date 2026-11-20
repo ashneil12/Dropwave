@@ -15,7 +15,7 @@ export type WorkspacePanel =
   | { kind: "work"; owner: ScopedThreadRef }
   | { kind: "profile"; target: BotEditorTarget };
 
-export type DropwaveMainView = "chat" | "docs" | "asks" | "setup";
+export type DropwaveMainView = "chat" | "docs" | "asks" | "hubs" | "habits" | "setup";
 
 interface DropwaveWorkspaceState {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -30,7 +30,11 @@ interface DropwaveWorkspaceState {
   readonly needsProject: (project: EnvironmentProject) => boolean;
   readonly selectedProjectKey: string | null;
   readonly mainView: DropwaveMainView;
-  readonly setMainView: (view: DropwaveMainView) => void;
+  readonly setMainView: (
+    view: DropwaveMainView,
+    options?: { readonly newProject?: boolean },
+  ) => void;
+  readonly openHub: (hubId: string) => void;
   readonly openAsksCount: number;
   readonly refreshOpenAsksCount: () => void;
   readonly selectProject: (project: EnvironmentProject) => void;

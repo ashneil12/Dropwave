@@ -3992,6 +3992,10 @@
   color: #fff;
 }
 [data-dw-btn-solid] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   padding: 8px 15px;
   border-radius: 10px;
   background: #f4f3ef;
@@ -4514,6 +4518,412 @@
 }
 [data-dw-embedded-providers] {
   min-width: 0;
+}
+
+/* ================================================================
+   TRACK 2: CHILD CAPABILITY, 2-STEP ONBOARDING, HABITS & HUBS
+   ================================================================ */
+[data-dw-child-cap-btn] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+[data-dw-step-indicator] {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgb(244 243 239 / 42%);
+}
+[data-dw-step-indicator] span[data-active="true"] {
+  color: #fff;
+  font-weight: 560;
+}
+[data-dw-onboard-basics] {
+  width: min(100%, 560px);
+  margin: 12px auto 24px;
+  display: grid;
+  gap: 14px;
+}
+[data-dw-onboard-basics] h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+[data-dw-onboard-basics] > p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.56;
+  color: rgb(244 243 239 / 66%);
+}
+[data-dw-field-label] {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: rgb(244 243 239 / 68%);
+}
+
+/* Sidebar Pinned Hubs & Multi-Action Footer */
+[data-dw-pinned-hubs] {
+  display: grid;
+  gap: 3px;
+}
+[data-dw-pinned-hub-btn] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  color: rgb(244 243 239 / 78%);
+  text-align: start;
+}
+[data-dw-pinned-hub-btn]:hover {
+  background: rgb(255 255 255 / 8%);
+  color: #fff;
+}
+[data-dw-pinned-hub-btn] span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-dw-rail-foot] {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+[data-dw-rail-foot-btn] {
+  justify-content: center;
+  padding: 7px 6px;
+  font-size: 11.5px;
+}
+[data-dw-rail-foot-btn][aria-current="true"] {
+  background: rgb(255 255 255 / 10%);
+  color: #fff;
+}
+
+/* Habits View (Scheduled Tasks) */
+[data-dw-habits-view] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 26px 34px 36px;
+  width: min(100%, 820px);
+  margin: 0 auto;
+  display: grid;
+  gap: 20px;
+  align-content: start;
+}
+[data-dw-habits-head] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+[data-dw-habits-head] h2 {
+  margin: 0 0 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+[data-dw-habits-head] p {
+  margin: 0;
+  font-size: 13px;
+  color: rgb(244 243 239 / 60%);
+  max-width: 52ch;
+}
+[data-dw-habit-form] {
+  padding: 16px;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 4%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 10%);
+  display: grid;
+  gap: 10px;
+}
+[data-dw-habit-form-top] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+[data-dw-habit-list] {
+  display: grid;
+  gap: 10px;
+}
+[data-dw-habit-card] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 4%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 9%);
+}
+[data-dw-habit-card][data-paused="true"] {
+  opacity: 0.62;
+}
+[data-dw-habit-info] {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+[data-dw-habit-title-row] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+[data-dw-habit-title-row] strong {
+  font-size: 13.5px;
+  font-weight: 580;
+}
+[data-dw-habit-info] p {
+  margin: 0;
+  font-size: 12.5px;
+  color: rgb(244 243 239 / 66%);
+  line-height: 1.48;
+}
+[data-dw-habit-info] small {
+  font-size: 11px;
+  color: rgb(244 243 239 / 44%);
+}
+[data-dw-habit-actions] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+[data-dw-habit-actions] [data-dw-btn-ghost] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+/* Hubs View (Shipped Kanban + Ship Gate + Sandboxed Agent HTML Mods) */
+[data-dw-hubs-view] {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  overflow: hidden;
+}
+[data-dw-hubs-rail] {
+  padding: 16px 12px;
+  border-inline-end: 0.5px solid rgb(255 255 255 / 8%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+}
+[data-dw-hub-list] {
+  display: grid;
+  gap: 3px;
+}
+[data-dw-hub-item] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 10px;
+  padding-inline-end: 4px;
+}
+[data-dw-hub-item]:hover,
+[data-dw-hub-item][data-active="true"] {
+  background: rgb(255 255 255 / 9%);
+}
+[data-dw-hub-pick] {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  font-size: 12.5px;
+  color: rgb(244 243 239 / 84%);
+  text-align: start;
+}
+[data-dw-hub-pick] span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-dw-hub-builder] {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 0.5px solid rgb(255 255 255 / 8%);
+  display: grid;
+  gap: 8px;
+}
+[data-dw-hub-builder] input {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 9px;
+  background: rgb(0 0 0 / 28%);
+  border: 0.5px solid rgb(255 255 255 / 10%);
+  color: #fff;
+  font-size: 12px;
+  outline: none;
+}
+[data-dw-hub-builder] [data-dw-btn-solid] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+[data-dw-hubs-stage] {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+}
+[data-dw-kanban-wrap] {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  flex: 1;
+}
+[data-dw-kanban-add] {
+  display: flex;
+  gap: 8px;
+}
+[data-dw-kanban-add] input {
+  flex: 1;
+  padding: 9px 13px;
+  border-radius: 11px;
+  background: rgb(255 255 255 / 5%);
+  border: 0.5px solid rgb(255 255 255 / 11%);
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+[data-dw-kanban-add] [data-dw-btn-solid] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+[data-dw-kanban-grid] {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+[data-dw-kanban-col] {
+  padding: 12px;
+  border-radius: 15px;
+  background: rgb(255 255 255 / 3.5%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 8%);
+  display: grid;
+  gap: 10px;
+}
+[data-dw-kanban-col-head] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+}
+[data-dw-kanban-col-head] > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+[data-dw-kanban-cards] {
+  display: grid;
+  gap: 8px;
+}
+[data-dw-kanban-card] {
+  padding: 10px 11px;
+  border-radius: 11px;
+  background: rgb(16 18 28 / 72%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 9%);
+  display: grid;
+  gap: 6px;
+}
+[data-dw-kanban-card-top] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+[data-dw-kanban-card] p {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgb(244 243 239 / 90%);
+}
+[data-dw-kanban-card] small {
+  font-size: 11px;
+  color: rgb(92 214 141 / 82%);
+  line-height: 1.4;
+}
+[data-dw-ship-gate] {
+  width: min(100%, 540px);
+  margin: 12px auto;
+  padding: 20px;
+  border-radius: 16px;
+  background: rgb(255 255 255 / 4%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 10%);
+  display: grid;
+  gap: 14px;
+}
+[data-dw-ship-gate-head] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+[data-dw-ship-gate-head] h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+[data-dw-ship-gate-list] {
+  display: grid;
+  gap: 10px;
+}
+[data-dw-custom-hub-frame] {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 15px;
+  overflow: hidden;
+  background: rgb(12 13 20 / 48%);
+  box-shadow: 0 0 0 0.5px rgb(255 255 255 / 10%);
+}
+[data-dw-custom-hub-head] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 0.5px solid rgb(255 255 255 / 8%);
+  font-size: 12.5px;
+}
+[data-dw-custom-hub-head] > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+[data-dw-custom-hub-frame] iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  background: transparent;
 }
 
 /* Responsive Tablet & Mobile */

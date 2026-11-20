@@ -2844,9 +2844,24 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      const leadWorkerModel =
+        parent.thread.dropwaveBot?.kind === "lead"
+          ? parent.thread.dropwaveBot.workerModelSelection
+          : undefined;
+      const effectiveTarget =
+        leadWorkerModel &&
+        input.target?.model === undefined &&
+        input.target?.providerInstanceId === undefined &&
+        input.target?.driverKind === undefined
+          ? {
+              ...input.target,
+              providerInstanceId: leadWorkerModel.instanceId,
+              model: leadWorkerModel.model,
+            }
+          : input.target;
       const target = yield* resolveTargetRechecking({
         parent,
-        target: input.target,
+        target: effectiveTarget,
         providers,
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,

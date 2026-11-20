@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ModelSelection } from "./modelSelection.ts";
 import type { OrchestrationV2AppThread } from "./orchestrationV2.ts";
 
 const Brief = Schema.String.check(Schema.isMaxLength(4000));
@@ -39,6 +40,7 @@ export const DropwaveBotProfile = Schema.Union([
     doneDefinition: Schema.optional(DoneDefinition),
     fixRoundCap: Schema.optional(FixRoundCap),
     loopSteps: Schema.optional(Schema.Array(DropwaveLoopStep).check(Schema.isMaxLength(12))),
+    workerModelSelection: Schema.optional(ModelSelection),
     avatarSeed: Schema.optional(Schema.Int),
   }),
   Schema.Struct({

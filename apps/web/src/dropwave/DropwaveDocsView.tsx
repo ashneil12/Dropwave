@@ -84,11 +84,12 @@ export function DropwaveDocsView({
         if (cancelled) return;
         if (res._tag === "Success") {
           setError(null);
-          setDocs(res.value.docs);
+          const onlyDocs = res.value.docs.filter(
+            (doc) => doc.kind !== "hub" && !doc.path.startsWith(".dropwave/hubs/"),
+          );
+          setDocs(onlyDocs);
           setSelectedPath((prev) =>
-            prev && res.value.docs.some((doc) => doc.path === prev)
-              ? prev
-              : (res.value.docs[0]?.path ?? null),
+            prev && onlyDocs.some((doc) => doc.path === prev) ? prev : (onlyDocs[0]?.path ?? null),
           );
         } else if (!isAtomCommandInterrupted(res)) {
           const cause = squashAtomCommandFailure(res);

@@ -36,6 +36,8 @@ import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
 import { DropwaveChatPillar } from "./DropwaveChatPillar";
 import { DropwaveConversationalSetup } from "./DropwaveConversationalSetup";
 import { DropwaveDocsView } from "./DropwaveDocsView";
+import { DropwaveHabitsView } from "./DropwaveHabitsView";
+import { DropwaveHubsView } from "./DropwaveHubsView";
 import { DropwaveLiveDecisionModal } from "./DropwaveLiveDecisionModal";
 import { DropwavePanels } from "./DropwavePanels";
 import { DropwaveSettingsDialog } from "./DropwaveSettingsDialog";
@@ -106,7 +108,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
 
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
+  const [setupNewProject, setSetupNewProject] = useState(false);
   const [openDocPath, setOpenDocPath] = useState<string | null>(null);
+  const [activeHubId, setActiveHubId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decisionModalOpen, setDecisionModalOpen] = useState(false);
   const [openAsksCount, setOpenAsksCount] = useState(0);
@@ -224,11 +228,16 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         needs,
         selectedProjectKey: project ? keyOfProject(project) : null,
         mainView,
-        setMainView: (next) => {
+        setMainView: (next, options) => {
+          setSetupNewProject(Boolean(options?.newProject));
           setMainView(next);
           if (next === "setup") {
             void navigate({ to: "/" });
           }
+        },
+        openHub: (hubId) => {
+          setActiveHubId(hubId);
+          setMainView("hubs");
         },
         openAsksCount,
         refreshOpenAsksCount: () => setRefreshNonce((n) => n + 1),
@@ -332,6 +341,22 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                       <T>Asks</T>
                       {openAsksCount > 0 ? <em data-dw-tab-count="">{openAsksCount}</em> : null}
                     </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={mainView === "hubs"}
+                      onClick={() => setMainView("hubs")}
+                    >
+                      <T>Hubs</T>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={mainView === "habits"}
+                      onClick={() => setMainView("habits")}
+                    >
+                      <T>Habits</T>
+                    </button>
                   </div>
                 </div>
               </header>
@@ -339,8 +364,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
               <div data-dw-canvas-body="">
                 {mainView === "setup" ? (
                   <DropwaveConversationalSetup
-                    key={project ? keyOfProject(project) : "new"}
+                    key={setupNewProject ? "new" : project ? keyOfProject(project) : "new"}
                     defaultRisk={defaultRisk}
+                    startAtNewProject={setupNewProject}
                     onCancel={() => setMainView("chat")}
                   />
                 ) : mainView === "docs" ? (
@@ -349,6 +375,13 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                   <div data-dw-asks-canvas="">
                     <DropwaveAsksPanel />
                   </div>
+                ) : mainView === "hubs" ? (
+                  <DropwaveHubsView
+                    initialHubId={activeHubId}
+                    onSelectHubId={(id) => setActiveHubId(id)}
+                  />
+                ) : mainView === "habits" ? (
+                  <DropwaveHabitsView />
                 ) : (
                   <DropwaveChatPillar
                     onOpenDocPath={(docPath) => {
