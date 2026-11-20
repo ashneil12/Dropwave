@@ -494,7 +494,8 @@ it.live.each([10, 20])(
           const active = yield* Queue.take(started);
           assert.equal(active.turn.threadId, continuingTask.threadId);
           assert.equal(active.turn.runOrdinal, index + 2);
-          assert.equal(active.turn.message.text, message);
+          assert.include(active.turn.message.text, parentThreadId);
+          assert.isTrue(active.turn.message.text.endsWith(`\n\n${message}`));
           yield* active.finish(index === 0 ? "Reviewed answer" : continuingTask.reply);
         }
 
