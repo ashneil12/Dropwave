@@ -3621,6 +3621,8 @@
   "2e54c9d636c7d212": "에이전트가 끝나면 답변을 표시합니다.",
   "d5db39feffc9d626": "완성된 단락",
   "875890264aa547fc": "각 단락이나 코드 블록이 완성될 때마다 표시합니다.",
+  "38f60793537bc311": "As it is written",
+  "a1f4b83dcd700778": "Show text word by word while the agent writes.",
   "3b969d1b0381a986": "{subtitle} {reason}",
   "5fc597e1e2a7ec55": "연결된 환경에 체크아웃이 있는 프로젝트를 선택하세요.",
   "83b95c78e73eaa43": "위 필터를 사용해 연결된 환경을 선택하세요.",

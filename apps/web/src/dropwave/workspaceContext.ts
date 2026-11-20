@@ -11,9 +11,11 @@ export type BotEditorTarget =
   | { kind: "edit"; bot: EnvironmentThreadShell; decision?: string };
 
 export type WorkspacePanel =
-  | { kind: "team" | "activity" }
+  | { kind: "team" | "activity" | "asks" }
   | { kind: "work"; owner: ScopedThreadRef }
   | { kind: "profile"; target: BotEditorTarget };
+
+export type DropwaveMainView = "chat" | "docs";
 
 interface DropwaveWorkspaceState {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -27,10 +29,13 @@ interface DropwaveWorkspaceState {
   readonly needs: ReadonlyArray<EnvironmentThreadShell>;
   readonly needsProject: (project: EnvironmentProject) => boolean;
   readonly selectedProjectKey: string | null;
+  readonly mainView: DropwaveMainView;
+  readonly setMainView: (view: DropwaveMainView) => void;
+  readonly openAsksCount: number;
+  readonly refreshOpenAsksCount: () => void;
   readonly selectProject: (project: EnvironmentProject) => void;
   readonly openThread: (thread: ScopedThreadRef) => void;
-  readonly openPanel: (panel: WorkspacePanel) => void;
-  readonly showClassicSidebar: () => void;
+  readonly openPanel: (panel: WorkspacePanel | null) => void;
 }
 
 export const DropwaveWorkspaceContext = createContext<DropwaveWorkspaceState | null>(null);

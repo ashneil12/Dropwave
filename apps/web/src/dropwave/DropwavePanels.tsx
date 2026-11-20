@@ -1,19 +1,21 @@
-import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { useAtomValue } from "@effect/atom-react";
-import { Link } from "@tanstack/react-router";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { AuthOrchestrationOperateScope, type ScopedThreadRef } from "@t3tools/contracts";
+import { Link } from "@tanstack/react-router";
+import { T, Var, useGT, useMessages } from "gt-react";
 import {
   ActivityIcon,
   ArrowUpRightIcon,
   CheckIcon,
+  ListChecksIcon,
   ListTodoIcon,
   PlusIcon,
   XIcon,
 } from "lucide-react";
 import { useEffect } from "react";
 
+import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { Button } from "../components/ui/button";
 import {
   Sheet,
@@ -23,11 +25,14 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { threadFamilies } from "../state/threads";
 import { useEnvironmentScope } from "../state/session";
+import { threadFamilies } from "../state/threads";
+import { DropwaveAsksPanel } from "./DropwaveAsksPanel";
 import { DropwaveBotEditor } from "./DropwaveBotEditor";
 import {
+  attentionFirst,
   botOwner,
+  formatShortAge,
   isCurrentWork,
   keyOfThread,
   newestWorkFirst,
@@ -39,11 +44,12 @@ import {
 import { useDropwaveWorkspace, type WorkspacePanel } from "./workspaceContext";
 
 function Status({ thread }: { thread: EnvironmentThreadShell }) {
+  const m = useMessages();
   const state = workState(thread);
   return (
     <span data-dropwave-status="" data-status={state}>
       <span aria-hidden="true" />
-      {workStateLabel[state]}
+      {m(workStateLabel[state])}
     </span>
   );
 }
@@ -51,12 +57,15 @@ function Status({ thread }: { thread: EnvironmentThreadShell }) {
 function Row({
   thread,
   onOpen,
+  showAge = false,
   children,
 }: {
   thread: EnvironmentThreadShell;
   onOpen: () => void;
+  showAge?: boolean;
   children?: React.ReactNode;
 }) {
+  const gt = useGT();
   const profile = threadParentKey(thread) === null ? thread.source.dropwaveBot : undefined;
   const pullRequest = thread.pullRequests[0] ?? thread.linkedPullRequest;
   return (
@@ -66,13 +75,14 @@ function Row({
         {profile?.brief ? <span data-dropwave-row-subtitle="">{profile.brief}</span> : null}
       </button>
       <Status thread={thread} />
+      {showAge ? <span data-dropwave-row-age="">{formatShortAge(thread.updatedAt)}</span> : null}
       {pullRequest ? (
         <a
           data-dropwave-pr=""
           href={pullRequest.url}
           target="_blank"
           rel="noreferrer"
-          aria-label={`Pull request ${pullRequest.number}`}
+          aria-label={gt("Pull request {number}", { number: pullRequest.number })}
         >
           <PullRequestGlyph.pullRequest /> #{pullRequest.number}
           <ArrowUpRightIcon />
@@ -86,20 +96,35 @@ function Row({
 function WorkList({
   threads,
   onOpenThread,
+  orderByAttention = false,
+  preferLead = false,
 }: {
   threads: ReadonlyArray<EnvironmentThreadShell>;
   onOpenThread?: () => void;
+  orderByAttention?: boolean;
+  preferLead?: boolean;
 }) {
   const workspace = useDropwaveWorkspace();
   if (!workspace) return null;
+  const sorted = [...threads].sort(orderByAttention ? attentionFirst : newestWorkFirst);
   return (
     <ul data-dropwave-list="">
-      {[...threads].sort(newestWorkFirst).map((thread) => (
+      {sorted.map((thread) => (
         <Row
           key={keyOfThread(thread)}
           thread={thread}
+          showAge={orderByAttention}
           onOpen={() => {
             onOpenThread?.();
+            if (preferLead) {
+              const project = workspace.projects.find(
+                (p) => p.id === thread.projectId && p.environmentId === thread.environmentId,
+              );
+              if (project) {
+                workspace.selectProject(project);
+                return;
+              }
+            }
             workspace.openThread(scopeThreadRef(thread.environmentId, thread.id));
           }}
         />
@@ -122,14 +147,20 @@ function WorkGroups({
     <>
       <section data-dropwave-group="">
         <h3>
-          Right now <span>{current.length}</span>
+          <T>Right now</T> <span>{current.length}</span>
         </h3>
-        {current.length > 0 ? <WorkList threads={current} /> : <p>No sessions running.</p>}
+        {current.length > 0 ? (
+          <WorkList threads={current} />
+        ) : (
+          <p>
+            <T>No sessions running.</T>
+          </p>
+        )}
       </section>
       {finished.length > 0 ? (
         <section data-dropwave-group="">
           <h3>
-            Done <span>{finished.length}</span>
+            <T>Done</T> <span>{finished.length}</span>
           </h3>
           <WorkList threads={finished} />
         </section>
@@ -153,6 +184,7 @@ function SessionFamily({ thread }: { thread: EnvironmentThreadShell }) {
 
 function Activity() {
   const workspace = useDropwaveWorkspace();
+  const gt = useGT();
   if (!workspace) return null;
   const byKey = new Map(workspace.threads.map((thread) => [keyOfThread(thread), thread]));
   const recent = workspace.threads.filter(
@@ -164,23 +196,34 @@ function Activity() {
         <SessionFamily key={keyOfThread(bot)} thread={bot} />
       ))}
       {recent.length > 0 ? (
-        <WorkList threads={recent} />
+        <WorkList threads={recent} orderByAttention />
       ) : (
-        <Empty icon={<ActivityIcon />} text="Activity will appear when a bot starts working." />
+        <Empty
+          icon={<ActivityIcon />}
+          text={gt("Activity appears here as bots and sessions run.")}
+        />
       )}
     </>
   );
 }
 
 export function DropwaveDesktopActivity({ onClose }: { onClose: () => void }) {
+  const gt = useGT();
   return (
-    <aside data-dropwave-activity="" aria-label="Activity">
+    <aside data-dropwave-activity="" aria-label={gt("Activity")}>
       <header>
-        <h2>Activity</h2>
+        <div>
+          <h2>
+            <T>Activity</T>
+          </h2>
+          <small>
+            <T>Everything running, live</T>
+          </small>
+        </div>
         <button
           type="button"
           data-dropwave-icon-button=""
-          aria-label="Close activity"
+          aria-label={gt("Close activity")}
           onClick={onClose}
         >
           <XIcon />
@@ -195,35 +238,43 @@ export function DropwaveDesktopActivity({ onClose }: { onClose: () => void }) {
 
 export function DropwaveNeeds({ onOpenThread }: { onOpenThread: () => void }) {
   const workspace = useDropwaveWorkspace();
+  const gt = useGT();
   if (!workspace) return null;
   return workspace.needs.length > 0 ? (
-    <WorkList threads={workspace.needs} onOpenThread={onOpenThread} />
+    <WorkList threads={workspace.needs} onOpenThread={onOpenThread} preferLead />
   ) : (
-    <Empty icon={<CheckIcon />} text="Nothing needs you right now." />
+    <Empty icon={<CheckIcon />} text={gt("Nothing needs you right now.")} />
   );
 }
 
 function BotWork({ owner }: { owner: ScopedThreadRef }) {
   const workspace = useDropwaveWorkspace();
+  const gt = useGT();
   const { environmentId, threadId } = owner;
   const family = useAtomValue(threadFamilies.familyAtom(environmentId, threadId));
   useSessionFamily(owner);
   if (!workspace) return null;
   const work = workFor(workspace.threads, owner);
   if (work.length === 0 && family._tag === "Initial") {
-    return <p role="status">Loading this bot’s work…</p>;
+    return (
+      <p role="status">
+        <T>Loading this bot’s work…</T>
+      </p>
+    );
   }
   if (work.length === 0 && family._tag === "Failure") {
     return (
       <div data-dropwave-team-empty="">
-        <p>This bot’s sessions couldn’t be loaded.</p>
+        <p>
+          <T>This bot’s sessions couldn’t be loaded.</T>
+        </p>
         <Button onClick={() => threadFamilies.refresh(appAtomRegistry, environmentId, threadId)}>
-          Try again
+          <T>Try again</T>
         </Button>
       </div>
     );
   }
-  return <WorkGroups threads={work} emptyText="This bot hasn’t started any sessions yet." />;
+  return <WorkGroups threads={work} emptyText={gt("This bot hasn’t started any sessions yet.")} />;
 }
 
 function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
@@ -237,6 +288,7 @@ function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
 
 function Team() {
   const workspace = useDropwaveWorkspace();
+  const gt = useGT();
   const canOperate = useEnvironmentScope(
     workspace?.project?.environmentId ?? null,
     AuthOrchestrationOperateScope,
@@ -246,22 +298,30 @@ function Team() {
   if (leadHidden) {
     return (
       <div data-dropwave-team-empty="">
-        <p>The lead is hidden by your thread filters.</p>
-        <Button render={<Link to="/settings/threads" />}>Thread settings</Button>
+        <p>
+          <T>The Chief of Staff is hidden by your thread filters.</T>
+        </p>
+        <Button render={<Link to="/settings/threads" />}>
+          <T>Thread settings</T>
+        </Button>
       </div>
     );
   }
   if (lead === null) {
     return (
       <div data-dropwave-team-empty="">
-        <p>Set up a lead for {project.title} before adding teammates.</p>
+        <p>
+          <T>
+            Set up a Chief of Staff for <Var>{project.title}</Var> before adding helper bots.
+          </T>
+        </p>
         <Button
           disabled={!canOperate}
           onClick={() =>
             workspace.openPanel({ kind: "profile", target: { kind: "new-lead", project } })
           }
         >
-          Create lead
+          <T>Set up Chief of Staff</T>
         </Button>
       </div>
     );
@@ -281,23 +341,27 @@ function Team() {
       <button
         type="button"
         data-dropwave-small-button=""
-        aria-label={`Edit ${bot.title}`}
+        aria-label={gt("Edit {name}", { name: bot.title })}
         disabled={!canOperate}
         onClick={() => workspace.openPanel({ kind: "profile", target: { kind: "edit", bot } })}
       >
-        Edit
+        <T>Edit</T>
       </button>
     </Row>
   );
   return (
     <>
       <section data-dropwave-group="">
-        <h3>Project lead</h3>
+        <h3>
+          <T>Main bot</T>
+        </h3>
         <ul data-dropwave-list="">{teamRow(lead)}</ul>
       </section>
       <section data-dropwave-group="">
         <div data-dropwave-group-heading="">
-          <h3>Teammates</h3>
+          <h3>
+            <T>Helper bots</T>
+          </h3>
           <Button
             variant="outline"
             size="sm"
@@ -309,13 +373,15 @@ function Team() {
               })
             }
           >
-            <PlusIcon /> Add teammate
+            <PlusIcon /> <T>Add helper</T>
           </Button>
         </div>
         {teammates.length > 0 ? (
           <ul data-dropwave-list="">{teammates.map(teamRow)}</ul>
         ) : (
-          <p>Add a teammate when you need a specialist, such as QA or design.</p>
+          <p>
+            <T>Add a helper when you want a dedicated specialist like QA or SEO.</T>
+          </p>
         )}
       </section>
     </>
@@ -324,6 +390,7 @@ function Team() {
 
 export function DropwavePanels({ panel, onClose }: { panel: WorkspacePanel; onClose: () => void }) {
   const workspace = useDropwaveWorkspace();
+  const gt = useGT();
   if (!workspace) return null;
   if (panel.kind === "profile") {
     return <DropwaveBotEditor target={panel.target} onClose={onClose} />;
@@ -332,30 +399,37 @@ export function DropwavePanels({ panel, onClose }: { panel: WorkspacePanel; onCl
   let title: string;
   let description: string;
   let body: React.ReactNode;
+  let Icon = ListTodoIcon;
   switch (panel.kind) {
     case "team":
-      title = "Team";
-      description = workspace.project?.title ?? "Project team";
+      title = gt("Team");
+      description = workspace.project?.title ?? gt("Project team");
       body = <Team />;
+      break;
+    case "asks":
+      title = gt("Tracked asks");
+      description = workspace.project?.title ?? gt("Zero-loss ask ledger");
+      body = <DropwaveAsksPanel />;
+      Icon = ListChecksIcon;
       break;
     case "work": {
       const bot = workspace.bots.find(
         (thread) =>
           thread.environmentId === panel.owner.environmentId && thread.id === panel.owner.threadId,
       );
-      title = "Work";
-      description = bot?.title ?? "Bot sessions";
+      title = gt("Work");
+      description = bot?.title ?? gt("Bot sessions");
       body = <BotWork owner={panel.owner} />;
       break;
     }
     case "activity": {
-      title = "Activity";
-      description = "Recent work across your projects";
+      title = gt("Activity");
+      description = gt("Recent work across your projects");
       body = <Activity />;
+      Icon = ActivityIcon;
       break;
     }
   }
-  const Icon = panel.kind === "activity" ? ActivityIcon : ListTodoIcon;
   return (
     <Sheet
       open

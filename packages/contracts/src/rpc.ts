@@ -1,4 +1,25 @@
 import {
+  DropwaveAskAddInput,
+  DropwaveAskMutationResult,
+  DropwaveAsksListInput,
+  DropwaveAsksListResult,
+  DropwaveAskUpdateInput,
+  DropwaveDocDeleteInput,
+  DropwaveDocDeleteResult,
+  DropwaveDocReadInput,
+  DropwaveDocReadResult,
+  DropwaveDocsListInput,
+  DropwaveDocsListResult,
+  DropwaveDocWriteInput,
+  DropwaveMemoryListInput,
+  DropwaveMemoryListResult,
+  DropwaveMemoryRemoveInput,
+  DropwaveMemoryRemoveResult,
+  DropwaveMemorySaveInput,
+  DropwaveMemorySaveResult,
+  DropwaveOperationError,
+} from "./dropwave.ts";
+import {
   OrchestrationV2SearchThreadError,
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -588,6 +609,17 @@ export const WS_METHODS = {
   guestShareCreate: "guestShare.create",
   scheduledTasksListWebhookDeliveries: "scheduledTasks.listWebhookDeliveries",
   scheduledTasksGetWebhookDelivery: "scheduledTasks.getWebhookDelivery",
+
+  dropwaveAsksList: "dropwave.asks.list",
+  dropwaveAskAdd: "dropwave.asks.add",
+  dropwaveAskUpdate: "dropwave.asks.update",
+  dropwaveDocsList: "dropwave.docs.list",
+  dropwaveDocRead: "dropwave.docs.read",
+  dropwaveDocWrite: "dropwave.docs.write",
+  dropwaveDocDelete: "dropwave.docs.delete",
+  dropwaveMemoryList: "dropwave.memory.list",
+  dropwaveMemorySave: "dropwave.memory.save",
+  dropwaveMemoryRemove: "dropwave.memory.remove",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2217,6 +2249,66 @@ const WsSecretsAnswerRequestRpc = Rpc.make(WS_METHODS.secretsAnswerRequest, {
   error: Schema.Union([SecretRequestError, EnvironmentAuthorizationError]),
 });
 
+const WsDropwaveAsksListRpc = Rpc.make(WS_METHODS.dropwaveAsksList, {
+  payload: DropwaveAsksListInput,
+  success: DropwaveAsksListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveAskAddRpc = Rpc.make(WS_METHODS.dropwaveAskAdd, {
+  payload: DropwaveAskAddInput,
+  success: DropwaveAskMutationResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveAskUpdateRpc = Rpc.make(WS_METHODS.dropwaveAskUpdate, {
+  payload: DropwaveAskUpdateInput,
+  success: DropwaveAskMutationResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveDocsListRpc = Rpc.make(WS_METHODS.dropwaveDocsList, {
+  payload: DropwaveDocsListInput,
+  success: DropwaveDocsListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveDocReadRpc = Rpc.make(WS_METHODS.dropwaveDocRead, {
+  payload: DropwaveDocReadInput,
+  success: DropwaveDocReadResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveDocWriteRpc = Rpc.make(WS_METHODS.dropwaveDocWrite, {
+  payload: DropwaveDocWriteInput,
+  success: DropwaveDocReadResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveDocDeleteRpc = Rpc.make(WS_METHODS.dropwaveDocDelete, {
+  payload: DropwaveDocDeleteInput,
+  success: DropwaveDocDeleteResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemoryListRpc = Rpc.make(WS_METHODS.dropwaveMemoryList, {
+  payload: DropwaveMemoryListInput,
+  success: DropwaveMemoryListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemorySaveRpc = Rpc.make(WS_METHODS.dropwaveMemorySave, {
+  payload: DropwaveMemorySaveInput,
+  success: DropwaveMemorySaveResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemoryRemoveRpc = Rpc.make(WS_METHODS.dropwaveMemoryRemove, {
+  payload: DropwaveMemoryRemoveInput,
+  success: DropwaveMemoryRemoveResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2490,4 +2582,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
   WsOrchestrationV2SubscribePromptSuggestionRpc,
+  WsDropwaveAsksListRpc,
+  WsDropwaveAskAddRpc,
+  WsDropwaveAskUpdateRpc,
+  WsDropwaveDocsListRpc,
+  WsDropwaveDocReadRpc,
+  WsDropwaveDocWriteRpc,
+  WsDropwaveDocDeleteRpc,
+  WsDropwaveMemoryListRpc,
+  WsDropwaveMemorySaveRpc,
+  WsDropwaveMemoryRemoveRpc,
 ).middleware(RpcScopeAuthorization);

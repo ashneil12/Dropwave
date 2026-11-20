@@ -4054,8 +4054,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (command.dropwaveBot !== undefined) {
+      const allowedAgentHelper =
+        command.dropwaveBot.kind === "teammate" &&
+        command.createdBy === "agent" &&
+        command.creationSource === "mcp";
       if (
-        command.createdBy !== "user" ||
+        (command.createdBy !== "user" && !allowedAgentHelper) ||
         command.linkOrigin !== undefined ||
         command.delegatedFrom != null
       ) {

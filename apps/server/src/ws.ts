@@ -1,10 +1,12 @@
-import { OrchestrationDispatchCommandError } from "@t3tools/contracts";
+import { DropwaveOperationError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
 import * as NodeCrypto from "node:crypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DropwaveDocsService from "./dropwave/DropwaveDocsService.ts";
+import * as DropwaveStore from "./dropwave/DropwaveStore.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
@@ -1592,6 +1594,28 @@ export const layerWsRpc = (
       // The panel's reads for a pull request the user opened go out during a rate-limit pause.
       const openedPullRequestRead = Effect.provideService(SourceControlRateLimit.Interactive, true);
       const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
+      const dropwaveStoreOpt = yield* Effect.serviceOption(DropwaveStore.DropwaveStore);
+      const dropwaveDocsOpt = yield* Effect.serviceOption(DropwaveDocsService.DropwaveDocsService);
+      const requireDropwaveStore = () =>
+        Effect.fromOption(dropwaveStoreOpt).pipe(
+          Effect.mapError(
+            () =>
+              new DropwaveOperationError({
+                code: "storage_error",
+                message: "Dropwave store is unavailable.",
+              }),
+          ),
+        );
+      const requireDropwaveDocs = () =>
+        Effect.fromOption(dropwaveDocsOpt).pipe(
+          Effect.mapError(
+            () =>
+              new DropwaveOperationError({
+                code: "storage_error",
+                message: "Dropwave docs service is unavailable.",
+              }),
+          ),
+        );
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const triage = yield* TriageService.TriageService;
@@ -1978,6 +2002,56 @@ export const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
+        [WS_METHODS.dropwaveAsksList]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.listAsks(input)),
+            Effect.map((asks) => ({ asks })),
+          ),
+        [WS_METHODS.dropwaveAskAdd]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.addAsk(input)),
+            Effect.map((ask) => ({ ask })),
+          ),
+        [WS_METHODS.dropwaveAskUpdate]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.updateAsk({ ...input, actor: "owner" })),
+            Effect.map((ask) => ({ ask })),
+          ),
+        [WS_METHODS.dropwaveDocsList]: (input) =>
+          requireDropwaveDocs().pipe(
+            Effect.flatMap((docs) => docs.listDocs(input.projectId)),
+            Effect.map((docs) => ({ docs })),
+          ),
+        [WS_METHODS.dropwaveDocRead]: (input) =>
+          requireDropwaveDocs().pipe(
+            Effect.flatMap((docs) => docs.readDoc(input.projectId, input.path)),
+            Effect.map((doc) => ({ doc })),
+          ),
+        [WS_METHODS.dropwaveDocWrite]: (input) =>
+          requireDropwaveDocs().pipe(
+            Effect.flatMap((docs) => docs.writeDoc(input)),
+            Effect.map((doc) => ({ doc })),
+          ),
+        [WS_METHODS.dropwaveDocDelete]: (input) =>
+          requireDropwaveDocs().pipe(
+            Effect.flatMap((docs) => docs.deleteDoc(input.projectId, input.path)),
+            Effect.map((deleted) => ({ deleted })),
+          ),
+        [WS_METHODS.dropwaveMemoryList]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.listMemories(input)),
+            Effect.map((items) => ({ items })),
+          ),
+        [WS_METHODS.dropwaveMemorySave]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.saveMemory(input)),
+            Effect.map((item) => ({ item })),
+          ),
+        [WS_METHODS.dropwaveMemoryRemove]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.removeMemory(input.id)),
+            Effect.map((removed) => ({ removed })),
+          ),
         [WS_METHODS.issuesList]: (input) => issues.list(input),
         [WS_METHODS.issuesDetail]: (input) => issues.detail(input),
         [WS_METHODS.issuesComments]: (input) => issues.comments(input),

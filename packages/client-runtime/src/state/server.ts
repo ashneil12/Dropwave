@@ -1892,6 +1892,46 @@ export function createServerEnvironmentAtoms<R, E>(
         key: ({ environmentId }) => environmentId,
       },
     }),
+    dropwaveAsksList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:asks:list",
+      tag: WS_METHODS.dropwaveAsksList,
+    }),
+    dropwaveAskAdd: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:asks:add",
+      tag: WS_METHODS.dropwaveAskAdd,
+    }),
+    dropwaveAskUpdate: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:asks:update",
+      tag: WS_METHODS.dropwaveAskUpdate,
+    }),
+    dropwaveDocsList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:docs:list",
+      tag: WS_METHODS.dropwaveDocsList,
+    }),
+    dropwaveDocRead: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:docs:read",
+      tag: WS_METHODS.dropwaveDocRead,
+    }),
+    dropwaveDocWrite: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:docs:write",
+      tag: WS_METHODS.dropwaveDocWrite,
+    }),
+    dropwaveDocDelete: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:docs:delete",
+      tag: WS_METHODS.dropwaveDocDelete,
+    }),
+    dropwaveMemoryList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:list",
+      tag: WS_METHODS.dropwaveMemoryList,
+    }),
+    dropwaveMemorySave: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:save",
+      tag: WS_METHODS.dropwaveMemorySave,
+    }),
+    dropwaveMemoryRemove: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:remove",
+      tag: WS_METHODS.dropwaveMemoryRemove,
+    }),
     checkOtlpEndpoint: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:check-otlp-endpoint",
       tag: WS_METHODS.serverCheckOtlpEndpoint,

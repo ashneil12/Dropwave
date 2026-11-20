@@ -48,6 +48,8 @@ import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts"
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { canForkBusySourceNatively, isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
+import * as DropwaveDocsService from "../dropwave/DropwaveDocsService.ts";
+import * as DropwaveStore from "../dropwave/DropwaveStore.ts";
 import { dropwaveBotInstructions } from "./dropwaveBotInstructions.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
@@ -1004,10 +1006,48 @@ export const layer: Layer.Layer<
         projection.thread.dropwaveBot === undefined ||
         (providerMessage.attachments.length === 0 && /^\/\S/.test(providerMessage.text.trimStart()))
           ? ""
-          : dropwaveBotInstructions(
-              projection.thread,
-              yield* projectionStore.listActiveDropwaveBots(projection.thread.projectId),
-            );
+          : yield* Effect.gen(function* () {
+              const team = yield* projectionStore.listActiveDropwaveBots(
+                projection.thread.projectId,
+              );
+              const maybeStore = yield* Effect.serviceOption(DropwaveStore.DropwaveStore);
+              const maybeDocs = yield* Effect.serviceOption(
+                DropwaveDocsService.DropwaveDocsService,
+              );
+              const openAsks = Option.isSome(maybeStore)
+                ? yield* maybeStore.value
+                    .listAsks({
+                      projectId: projection.thread.projectId,
+                      botThreadId: projection.thread.id,
+                      includeClosed: false,
+                    })
+                    .pipe(Effect.orElseSucceed(() => []))
+                : [];
+              const memories = Option.isSome(maybeStore)
+                ? yield* maybeStore.value
+                    .listMemories({
+                      projectId: projection.thread.projectId,
+                      botThreadId: projection.thread.id,
+                    })
+                    .pipe(Effect.orElseSucceed(() => []))
+                : [];
+              const summaryTree = Option.isSome(maybeStore)
+                ? yield* maybeStore.value
+                    .getThreadTreeOverview(projection.thread.id, 10)
+                    .pipe(Effect.orElseSucceed(() => []))
+                : [];
+              const docs = Option.isSome(maybeDocs)
+                ? yield* maybeDocs.value
+                    .listDocs(projection.thread.projectId)
+                    .pipe(Effect.orElseSucceed(() => []))
+                : [];
+              return dropwaveBotInstructions(projection.thread, team, {
+                openAsks,
+                memories,
+                docs,
+                summaryTree,
+              });
+            });
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,

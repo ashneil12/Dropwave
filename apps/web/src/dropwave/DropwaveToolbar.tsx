@@ -1,35 +1,56 @@
 import { Link } from "@tanstack/react-router";
-import { ActivityIcon, ImageIcon, SettingsIcon } from "lucide-react";
-import { useState } from "react";
 import * as Schema from "effect/Schema";
+import { T, msg, useGT, useMessages } from "gt-react";
+import { ActivityIcon, ImageIcon, SettingsIcon, UploadIcon } from "lucide-react";
+import { useState } from "react";
 
 import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { DropwaveNeeds } from "./DropwavePanels";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
-const Wallpaper = Schema.Literals(["mountains", "ocean", "abstract", "sunrise", "dusk"]);
+const Wallpaper = Schema.Literals(["mountains", "ocean", "abstract", "sunrise", "dusk", "custom"]);
+const presetKeys = ["mountains", "ocean", "abstract", "sunrise", "dusk"] as const;
 const wallpapers = {
-  mountains: { file: "mountains.jpg", label: "Mountains" },
-  ocean: { file: "ocean.jpg", label: "Ocean" },
-  abstract: { file: "abstract.jpg", label: "Abstract" },
-  sunrise: { file: "sunrise.jpg", label: "Sunrise" },
-  dusk: { file: "dusk.png", label: "Dusk" },
-} satisfies Record<typeof Wallpaper.Type, { file: string; label: string }>;
+  mountains: { file: "mountains.jpg", label: msg("Mountains") },
+  ocean: { file: "ocean.jpg", label: msg("Ocean") },
+  abstract: { file: "abstract.jpg", label: msg("Abstract") },
+  sunrise: { file: "sunrise.jpg", label: msg("Sunrise") },
+  dusk: { file: "dusk.png", label: msg("Dusk") },
+} as const;
+
+const CustomWallpaperSchema = Schema.NullOr(Schema.String);
 
 export function useDropwaveAppearance() {
   const [wallpaper, setWallpaper] = useLocalStorage("dropwave:wallpaper", "mountains", Wallpaper);
+  const [customWallpaper, setCustomWallpaper] = useLocalStorage(
+    "dropwave:custom-wallpaper",
+    null,
+    CustomWallpaperSchema,
+  );
   const [storedStrength, setStrength] = useLocalStorage(
     "dropwave:glass-strength",
     1,
     Schema.Finite,
   );
   const strength = Math.min(1.6, Math.max(0.4, storedStrength));
+  const bgUrl =
+    wallpaper === "custom" && customWallpaper
+      ? `url("${customWallpaper}")`
+      : `url("/dropwave/${wallpapers[wallpaper === "custom" ? "mountains" : wallpaper].file}")`;
   const style: React.CSSProperties & { "--dw-wallpaper": string; "--dw-glass": number } = {
-    "--dw-wallpaper": `url("/dropwave/${wallpapers[wallpaper].file}")`,
+    "--dw-wallpaper": bgUrl,
     "--dw-glass": strength,
   };
-  return { wallpaper, setWallpaper, strength, setStrength, style };
+  return {
+    wallpaper,
+    setWallpaper,
+    customWallpaper,
+    setCustomWallpaper,
+    strength,
+    setStrength,
+    style,
+  };
 }
 
 export function DropwaveToolbar({
@@ -42,6 +63,8 @@ export function DropwaveToolbar({
   toggleActivity: () => void;
 }) {
   const workspace = useDropwaveWorkspace();
+  const gt = useGT();
+  const m = useMessages();
   const [needsOpen, setNeedsOpen] = useState(false);
   if (!workspace) return null;
   const count = workspace.needs.length;
@@ -51,10 +74,10 @@ export function DropwaveToolbar({
         <PopoverTrigger
           data-dropwave-header-button=""
           data-dropwave-needs={count ? "pending" : "clear"}
-          aria-label="Needs you"
+          aria-label={gt("Needs you")}
         >
           <span data-dropwave-needs-dot="" aria-hidden="true" />
-          Needs you
+          <T>Needs you</T>
           {count > 0 ? <span data-dropwave-count="">{count}</span> : null}
         </PopoverTrigger>
         <PopoverPopup width="md" align="end" padding="compact" data-dropwave-popover="">
@@ -62,25 +85,27 @@ export function DropwaveToolbar({
         </PopoverPopup>
       </Popover>
       <Popover>
-        <PopoverTrigger data-dropwave-chrome-button="" aria-label="Wallpaper and glass">
+        <PopoverTrigger data-dropwave-chrome-button="" aria-label={gt("Wallpaper and glass")}>
           <ImageIcon />
         </PopoverTrigger>
         <PopoverPopup
           width="md"
           align="end"
           data-dropwave-popover=""
-          aria-label="Wallpaper and glass"
+          aria-label={gt("Wallpaper and glass")}
         >
           <div data-dropwave-appearance="">
-            <span>Wallpaper</span>
-            <div data-dropwave-wallpapers="" role="group" aria-label="Wallpapers">
-              {Wallpaper.literals.map((key) => {
+            <span>
+              <T>Wallpaper</T>
+            </span>
+            <div data-dropwave-wallpapers="" role="group" aria-label={gt("Wallpapers")}>
+              {presetKeys.map((key) => {
                 const wall = wallpapers[key];
                 return (
                   <button
                     key={key}
                     type="button"
-                    aria-label={wall.label}
+                    aria-label={m(wall.label)}
                     aria-pressed={appearance.wallpaper === key}
                     onClick={() => appearance.setWallpaper(key)}
                   >
@@ -89,8 +114,29 @@ export function DropwaveToolbar({
                 );
               })}
             </div>
+            <label data-dropwave-upload-wall="">
+              <UploadIcon />
+              <span>
+                <T>Use your own image</T>
+              </span>
+              <input
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    appearance.setCustomWallpaper(String(reader.result));
+                    appearance.setWallpaper("custom");
+                  };
+                  reader.readAsDataURL(file);
+                }}
+              />
+            </label>
             <label>
-              Glass strength
+              <T>Glass strength</T>
               <input
                 type="range"
                 min={0.4}
@@ -106,13 +152,13 @@ export function DropwaveToolbar({
       <button
         data-dropwave-chrome-button=""
         type="button"
-        aria-label="Activity"
+        aria-label={gt("Activity")}
         aria-pressed={activityOpen}
         onClick={toggleActivity}
       >
         <ActivityIcon />
       </button>
-      <Link to="/settings/general" data-dropwave-chrome-button="" aria-label="Settings">
+      <Link to="/settings/general" data-dropwave-chrome-button="" aria-label={gt("Settings")}>
         <SettingsIcon />
       </Link>
     </div>

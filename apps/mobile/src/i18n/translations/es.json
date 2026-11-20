@@ -3620,6 +3620,8 @@
   "2e54c9d636c7d212": "Muestra la respuesta cuando el agente termina.",
   "d5db39feffc9d626": "Párrafos terminados",
   "875890264aa547fc": "Muestra cada párrafo o bloque de código cuando está completo.",
+  "38f60793537bc311": "As it is written",
+  "a1f4b83dcd700778": "Show text word by word while the agent writes.",
   "3b969d1b0381a986": "{subtitle} {reason}",
   "5fc597e1e2a7ec55": "Selecciona un proyecto con un checkout en un entorno conectado.",
   "83b95c78e73eaa43": "Usa el filtro de arriba para seleccionar un entorno conectado.",

@@ -8,6 +8,9 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as DropwaveDocsService from "./dropwave/DropwaveDocsService.ts";
+import * as DropwaveStore from "./dropwave/DropwaveStore.ts";
+import * as DropwaveSupervisor from "./dropwave/DropwaveSupervisor.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
@@ -722,19 +725,34 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     Layer.provide(layerPullRequestService),
     Layer.provide(ProjectionStoreV2.layer),
   ),
-  Layer.effectDiscard(
-    Effect.gen(function* () {
-      const service = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;
-      yield* service.start();
-    }),
-  ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
+  Layer.merge(
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const service = yield* DelegatedTaskQuestionReactor.DelegatedTaskQuestionReactor;
+        yield* service.start();
+      }),
+    ).pipe(
+      Layer.provide(DelegatedTaskQuestionReactor.layer),
+      Layer.provide(ProjectionStoreV2.layer),
+    ),
+    Layer.effectDiscard(
+      Effect.gen(function* () {
+        const service = yield* DropwaveSupervisor.DropwaveSupervisor;
+        yield* service.start();
+      }),
+    ).pipe(Layer.provide(DropwaveSupervisor.layer), Layer.provide(ProjectionStoreV2.layer)),
+  ),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ProviderInstallation.layer,
   ReplayMarkers.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
-  Layer.provideMerge(layerOrchestrationApplication),
+  Layer.provideMerge(
+    Layer.merge(DropwaveDocsService.layer, DropwaveStore.layer).pipe(
+      Layer.provideMerge(layerOrchestrationApplication),
+    ),
+  ),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
   Layer.provideMerge(Layer.merge(ProjectStore.layer, ThreadSearch.layer)),
   Layer.provideMerge(SecretCheck.layer),

@@ -1,4 +1,5 @@
 import { copySnapshot } from "./copySnapshot";
+import { useDropwaveWorkspace } from "../../dropwave/workspaceContext";
 import { VoiceInputSetup } from "./VoiceInputSetup";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
@@ -494,8 +495,11 @@ const NO_PROVIDER_SKILLS: ServerProvider["skills"] = [];
 const NO_PROVIDER_SLASH_COMMANDS: ServerProvider["slashCommands"] = [];
 
 export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps) {
+  const dropwaveWorkspace = useDropwaveWorkspace();
   const gt = useGT();
   const m = useMessages();
+  const dropwaveBotName =
+    dropwaveWorkspace?.activeBot?.title ?? dropwaveWorkspace?.lead?.title ?? null;
   const {
     composerDraftTarget,
     environmentId,
@@ -3551,6 +3555,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     />
                   ) : showProviderUnavailable ? (
                     gt("Enable a provider in Settings")
+                  ) : dropwaveBotName ? (
+                    gt("Message {name}…", { name: dropwaveBotName })
                   ) : (
                     gt("Ask anything...")
                   )}
@@ -3742,7 +3748,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                             ? gt("Choose a project above to start a thread")
                             : showProviderUnavailable
                               ? gt("Enable a provider in Settings to send a message")
-                              : (offeredPromptSuggestion ?? m(DEFAULT_COMPOSER_PLACEHOLDER))
+                              : (offeredPromptSuggestion ??
+                                (dropwaveBotName
+                                  ? gt("Message {name}…", { name: dropwaveBotName })
+                                  : m(DEFAULT_COMPOSER_PLACEHOLDER)))
                     }
                     placeholderSuffix={
                       offeredPromptSuggestion !== null ? (

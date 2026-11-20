@@ -5,6 +5,7 @@ import {
   DropwaveChatAvatar,
   DropwaveConversationStart,
   DropwaveConversationTools,
+  DropwaveProjectApprovals,
 } from "../dropwave/DropwaveConversation";
 import { useDropwaveMode } from "../dropwave/workspaceContext";
 import { ChildThreadApprovals } from "./chat/ChildThreadApprovals";
@@ -3417,7 +3418,7 @@ export default function ChatView(props: ChatViewProps) {
           state={deviceState}
         />
       )}
-      {rightPanelControlsAtRoot && !embedded ? panelLayoutControls : null}
+      {!dropwaveMode && rightPanelControlsAtRoot && !embedded ? panelLayoutControls : null}
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-col overflow-x-hidden",
@@ -3451,8 +3452,10 @@ export default function ChatView(props: ChatViewProps) {
                 className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] h-[var(--workspace-topbar-height)] w-28 [-webkit-app-region:no-drag]"
               />
             ) : null}
-            {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
-            {inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
+            {!dropwaveMode && !rightPanelControlsAtRoot && !rightPanelControlsInPanel
+              ? panelLayoutControls
+              : null}
+            {!dropwaveMode && inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
             <ChatHeader
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
@@ -3462,16 +3465,11 @@ export default function ChatView(props: ChatViewProps) {
               activeProject={activeProject ?? null}
               parentThreadLink={headerParentThreadLink}
               onOpenThread={onOpenRelatedThreadStable}
-              rightPanelOpen={inlineRightPanelOwnsTitleBar}
+              rightPanelOpen={dropwaveMode ? false : inlineRightPanelOwnsTitleBar}
               onNewThreadInProject={handleNewThreadInActiveProjectStable}
               leading={dropwaveProfile ? <DropwaveChatAvatar profile /> : undefined}
               trailing={
-                dropwaveMode ? (
-                  <DropwaveConversationTools
-                    thread={activeThreadShell}
-                    onOpenFiles={addFilesSurfaceStable}
-                  />
-                ) : undefined
+                dropwaveMode ? <DropwaveConversationTools thread={activeThreadShell} /> : undefined
               }
               {...(activeDraftLogicalProjectKey
                 ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
@@ -3709,6 +3707,9 @@ export default function ChatView(props: ChatViewProps) {
                     }
                   >
                     <ChildThreadApprovals threadRef={activeThreadRef} />
+                    {dropwaveMode ? (
+                      <DropwaveProjectApprovals activeThreadRef={activeThreadRef} />
+                    ) : null}
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>
                         <ComposerSurface.Host

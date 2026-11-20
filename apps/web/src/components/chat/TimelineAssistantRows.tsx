@@ -1,4 +1,7 @@
-import { DropwaveChatAvatar } from "../../dropwave/DropwaveConversation";
+import {
+  DropwaveChatAvatar,
+  useDropwaveAssistantAuthor,
+} from "../../dropwave/DropwaveConversation";
 import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
 import { MessageId, type RunId, type TurnItemId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
@@ -42,6 +45,7 @@ const NO_VCS_STATUS = Atom.make(AsyncResult.initial());
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
+  const dropwaveAuthor = useDropwaveAssistantAuthor(ctx.threadRef ?? null);
   const gt = useGT();
   // The timeline holds a streaming message's row while only its text grows.
   const liveText = useAssistantMessageText(
@@ -60,7 +64,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             <DropwaveChatAvatar size={28} threadRef={ctx.threadRef} />
           </span>
         ) : null}
-        <MessageAuthorHeading>T3 Code</MessageAuthorHeading>
+        <MessageAuthorHeading>{dropwaveAuthor ?? "T3 Code"}</MessageAuthorHeading>
         <div data-thread-find-text="true">
           <AssistantCitationSource
             messageId={row.message.id}

@@ -1,6 +1,7 @@
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ScopedThreadRef } from "@t3tools/contracts";
+import { msg } from "gt-react";
 
 export type WorkState =
   | "working"
@@ -12,13 +13,33 @@ export type WorkState =
   | "ready";
 
 export const workStateLabel: Record<WorkState, string> = {
-  working: "Working",
-  "needs-you": "Needs you",
-  waiting: "Waiting",
-  done: "Done",
-  failed: "Failed",
-  stopped: "Stopped",
-  ready: "Ready",
+  working: msg("Working"),
+  "needs-you": msg("Needs you"),
+  waiting: msg("Waiting"),
+  done: msg("Done"),
+  failed: msg("Failed"),
+  stopped: msg("Stopped"),
+  ready: msg("Ready"),
+};
+
+export const workStateGlyph: Record<WorkState, string> = {
+  working: "◔",
+  "needs-you": "!",
+  waiting: "◌",
+  done: "✓",
+  failed: "!",
+  stopped: "–",
+  ready: "·",
+};
+
+const ATTENTION_PRIORITY: Record<WorkState, number> = {
+  "needs-you": 0,
+  failed: 1,
+  working: 2,
+  waiting: 3,
+  done: 4,
+  stopped: 5,
+  ready: 6,
 };
 
 export function needsOwner(thread: EnvironmentThreadShell) {
@@ -117,4 +138,19 @@ export function workFor(threads: ReadonlyArray<EnvironmentThreadShell>, owner: S
 
 export function newestWorkFirst(a: EnvironmentThreadShell, b: EnvironmentThreadShell) {
   return b.updatedAt.localeCompare(a.updatedAt);
+}
+
+export function attentionFirst(a: EnvironmentThreadShell, b: EnvironmentThreadShell) {
+  const diff = ATTENTION_PRIORITY[workState(a)] - ATTENTION_PRIORITY[workState(b)];
+  return diff !== 0 ? diff : newestWorkFirst(a, b);
+}
+
+export function formatShortAge(iso: string): string {
+  const deltaSec = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 1000));
+  if (Number.isNaN(deltaSec) || deltaSec < 60) return "now";
+  const mins = Math.floor(deltaSec / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }

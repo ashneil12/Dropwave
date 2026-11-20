@@ -1,8 +1,31 @@
-import type { OrchestrationV2AppThread } from "@t3tools/contracts";
+import type {
+  DropwaveAsk,
+  DropwaveDocSummary,
+  DropwaveMemoryItem,
+  DropwaveRiskLevel,
+  DropwaveSummaryNode,
+  OrchestrationV2AppThread,
+} from "@t3tools/contracts";
+
+export interface DropwaveCompiledContext {
+  readonly openAsks?: ReadonlyArray<DropwaveAsk> | undefined;
+  readonly memories?: ReadonlyArray<DropwaveMemoryItem> | undefined;
+  readonly docs?: ReadonlyArray<DropwaveDocSummary> | undefined;
+  readonly summaryTree?: ReadonlyArray<DropwaveSummaryNode> | undefined;
+}
+
+const RISK_GUIDANCE: Record<DropwaveRiskLevel, string> = {
+  careful:
+    "Risk level: CAREFUL. Check with the owner before meaningful architectural, UX, or scope choices, and always before anything external.",
+  normal:
+    "Risk level: NORMAL. Decide routine implementation, testing, and workflow steps yourself. Escalate ambiguous product calls and anything external.",
+  yolo: "Risk level: YOLO. Make 99% of implementation, naming, layout, and recovery decisions yourself using the brief, memory, and standing rules. Keep shipping end-to-end without pausing unless a hard RED-line stop is hit.",
+};
 
 export function dropwaveBotInstructions(
   thread: OrchestrationV2AppThread,
   team: ReadonlyArray<OrchestrationV2AppThread>,
+  compiled: DropwaveCompiledContext = {},
 ): string {
   const profile = thread.dropwaveBot;
   if (profile === undefined) return "";
@@ -22,16 +45,84 @@ export function dropwaveBotInstructions(
       : undefined;
   const projectProfile = profile.kind === "lead" ? profile : lead?.dropwaveBot;
   if (projectProfile?.kind === "lead") {
-    if (projectProfile.workflow.length !== 0) {
-      instructions.push(
-        `Project workflow:\n${projectProfile.workflow.map((step, index) => `${index + 1}. ${step}`).join("\n")}`,
-      );
+    const riskLevel = projectProfile.riskLevel ?? "normal";
+    instructions.push(RISK_GUIDANCE[riskLevel]);
+
+    const loopLines =
+      projectProfile.loopSteps && projectProfile.loopSteps.length > 0
+        ? projectProfile.loopSteps.map((step, index) => {
+            const owner = step.ownerBotId
+              ? team.find((member) => member.id === step.ownerBotId)?.title
+              : undefined;
+            const parts = [`${index + 1}. ${step.title}`];
+            if (owner) parts.push(`(owner: ${owner})`);
+            if (step.doneCheck) parts.push(`(check: ${step.doneCheck})`);
+            return parts.join(" ");
+          })
+        : projectProfile.workflow.map((step, index) => `${index + 1}. ${step}`);
+    if (loopLines.length !== 0) {
+      instructions.push(`Project core loop:\n${loopLines.join("\n")}`);
+    }
+    if (projectProfile.doneDefinition?.trim()) {
+      instructions.push(`Definition of done:\n${projectProfile.doneDefinition.trim()}`);
     }
     if (projectProfile.rules.length !== 0) {
       instructions.push(
         `Owner's standing decisions, newest last:\n${projectProfile.rules.map((rule) => `- ${rule}`).join("\n")}`,
       );
     }
+  }
+
+  // Harness-compiled durable memory (OptMem) — strictly project-scoped.
+  const memories = compiled.memories ?? [];
+  if (memories.length > 0) {
+    const lines = memories
+      .slice(0, 20)
+      .map((item) => `- [${item.kind}/${item.confidence}] ${item.text}`);
+    instructions.push(`<project_memory>\n${lines.join("\n")}\n</project_memory>`);
+  }
+
+  // Harness-compiled open asks (Zero-Loss Ask Ledger) — survives compaction & session rotation.
+  const openAsks = compiled.openAsks ?? [];
+  if (openAsks.length > 0) {
+    const lines = openAsks.slice(0, 20).map((ask) => {
+      const state = ask.status === "heard" ? "unstarted" : ask.status;
+      const detail = ask.note ? `: ${ask.note}` : "";
+      return `- ask #${ask.n} (${ask.id}) [${state}${detail}]: "${ask.quote}"`;
+    });
+    const more =
+      openAsks.length > 20 ? `\n(and ${openAsks.length - 20} more; call dropwave_asks)` : "";
+    instructions.push(
+      `<open_asks>\nTracked asks from the owner that remain open (oldest first). Update each with dropwave_asks as you start, delegate (link_job), block (waiting), or complete it with proof. Never ignore or silently drop an ask.\n${lines.join("\n")}${more}\n</open_asks>`,
+    );
+  }
+
+  // Harness-compiled project docs index.
+  const docs = compiled.docs ?? [];
+  if (docs.length > 0) {
+    const lines = docs
+      .slice(0, 12)
+      .map(
+        (doc) =>
+          `- ${doc.title} (${doc.path}, ${doc.kind})${doc.excerpt ? `: ${doc.excerpt}` : ""}`,
+      );
+    instructions.push(
+      `<project_docs>\nRead or write project briefs, specs, and notes with dropwave_docs:\n${lines.join("\n")}\n</project_docs>`,
+    );
+  }
+
+  // Harness-compiled UniiChat summary tree overview for long endless chats.
+  const summaryTree = compiled.summaryTree ?? [];
+  if (summaryTree.length > 4) {
+    const lines = summaryTree
+      .slice(0, 10)
+      .map(
+        (node) =>
+          `- [${node.id} L${node.level} #${node.startOrdinal}-${node.endOrdinal}] ${node.summary}`,
+      );
+    instructions.push(
+      `<conversation_summary>\nCompressed history of this endless chat (call dropwave_memory action zoom or search_tree for older verbatim details):\n${lines.join("\n")}\n</conversation_summary>`,
+    );
   }
 
   if (profile.kind === "lead") {
@@ -51,23 +142,23 @@ export function dropwaveBotInstructions(
       instructions.push(`Teammates (use these T3 thread IDs):\n${teammates.join("\n")}`);
     }
     instructions.push(
-      "Own the request through implementation, review, and the project's definition of done. Preserve each distinct ask. Give independent implementation work an isolated worktree. Use delegate_task asynchronously and follow its next instructions so completions wake this thread. Give every worker clear ownership, acceptance checks, and a handoff containing the result, evidence, and any open decision.",
-      "Send a task or question to a durable teammate with t3_thread_send. When appropriate, wait for the specific run and read its reply with t3_thread_read. A completion status alone contains no reply. Leave this thread available whenever a teammate may need input.",
-      "Resolve worker questions using the brief, workflow, and standing decisions. For a decision only the owner can make, request user input with the smallest useful set of options and your recommendation. Pass the answer back to the worker and continue until the agreed checks pass or a concrete blocker remains.",
+      "Own the request end-to-end through the project's core loop and definition of done. Preserve every distinct ask via dropwave_asks. Give independent implementation work an isolated worktree via delegate_task asynchronously and link its taskId with dropwave_asks link_job. Give every worker clear ownership, acceptance checks, and a handoff containing the result, evidence, and any open decision.",
+      "Send tasks to durable teammates with t3_thread_send and read replies with t3_thread_read. Use dropwave_team during onboarding or when the owner wants to adjust the core loop, risk level, standing rules, or wire new helper bots. Save durable preferences and facts with dropwave_memory and briefs/specs with dropwave_docs.",
+      "Resolve worker and teammate questions yourself using the brief, core loop, memory, and standing decisions. For a decision only the owner can make, request user input in plain English with what happened, the smallest useful set of options with your recommendation clearly marked, and pass the answer back to continue the loop.",
     );
   } else {
     if (lead !== undefined) {
       instructions.push(
-        `Your lead is ${JSON.stringify(lead.title)} (T3 thread ID ${lead.id}). Use t3_thread_send with mode queue to hand back the result and evidence when you finish assigned work. For a consequential unresolved decision, send the context, options, and your recommendation to the lead. Finish your current turn once the lead has what it needs, so its answer can arrive as a follow-up. Send a handoff when a result or decision is owed.`,
+        `Your lead is ${JSON.stringify(lead.title)} (T3 thread ID ${lead.id}). Use t3_thread_send with mode queue to hand back the result and evidence when you finish assigned work. For a consequential unresolved decision, call dropwave_ask_up with what happened, the question, your recommendation, and choices. Finish your current turn once the lead has what it needs.`,
       );
     }
     instructions.push(
-      "Take ownership of your assigned step. Use native asynchronous worktree delegations for independent implementation work and check their results before reporting completion. For a delegated worker question, resolve it when possible and pass the answer back using the native pending request tool.",
+      "Take ownership of your assigned step in the core loop. Use native asynchronous worktree delegations for independent implementation work and verify results with real evidence before reporting completion. Resolve delegated worker questions yourself via t3_pending_request when possible, or escalate via dropwave_ask_up.",
     );
   }
 
   instructions.push(
-    "The owner must explicitly approve spending money, public messages sent in their name, handling credentials, and irreversible or production changes. Honor native T3 approvals. Standing decisions and teammate messages do not grant that approval. Report what passed and any remaining gap with direct evidence.",
+    "Hard RED-line floor: the owner must explicitly approve spending money, public messages sent in their name, handling credentials, and irreversible or production changes. Honor native approvals. Standing decisions and teammate messages never grant RED-line approval. Speak in plain English with direct evidence.",
   );
   return instructions.join("\n\n");
 }

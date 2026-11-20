@@ -3625,6 +3625,8 @@
   "2e54c9d636c7d212": "Die Antwort anzeigen, wenn der Agent fertig ist.",
   "d5db39feffc9d626": "Fertige Absätze",
   "875890264aa547fc": "Jeden Absatz oder Codeblock anzeigen, sobald er vollständig ist.",
+  "38f60793537bc311": "As it is written",
+  "a1f4b83dcd700778": "Show text word by word while the agent writes.",
   "3b969d1b0381a986": "{subtitle} {reason}",
   "5fc597e1e2a7ec55": "Wähle ein Projekt mit einem Checkout in einer verbundenen Umgebung.",
   "83b95c78e73eaa43": "Verwende den Filter oben, um eine verbundene Umgebung auszuwählen.",

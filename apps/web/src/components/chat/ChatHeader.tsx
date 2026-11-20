@@ -287,7 +287,7 @@ export const ChatHeader = memo(function ChatHeader({
       ref={breadcrumbContainerRef}
       className={cn(
         "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        rightPanelOpen ? "pr-10" : "pr-24",
+        leading ? "pr-2" : rightPanelOpen ? "pr-10" : "pr-24",
       )}
       onContextMenu={handleHeaderContextMenu}
       data-dropwave-bot-header={leading ? "" : undefined}
@@ -420,7 +420,11 @@ export const ChatHeader = memo(function ChatHeader({
             </Tooltip>
           ) : null}
         </WorkspaceBreadcrumbItem>
-        {leading ? projectCrumb : null}
+        {leading && activeProjectName ? (
+          <WorkspaceBreadcrumbItem className="shrink">
+            <span data-dropwave-project-label="">{activeProjectName}</span>
+          </WorkspaceBreadcrumbItem>
+        ) : null}
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
       {trailing}
