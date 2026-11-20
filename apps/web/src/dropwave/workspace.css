@@ -3845,6 +3845,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
   width: fit-content;
   padding: 6px 12px 6px 10px;
   border-radius: 999px;
@@ -3855,6 +3856,15 @@
   transition:
     background-color 160ms ease,
     color 160ms ease;
+}
+[data-dw-work-trigger] > span:nth-child(2) {
+  white-space: nowrap;
+  flex: none;
+}
+[data-dw-work-trigger] [data-dw-mono="dim"] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 [data-dw-work-trigger]:hover {
   background: rgb(255 255 255 / 11%);
