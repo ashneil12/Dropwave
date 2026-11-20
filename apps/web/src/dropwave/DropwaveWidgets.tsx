@@ -1,7 +1,7 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { DropwaveAsk, DropwaveDocSummary, DropwaveMemoryItem } from "@t3tools/contracts";
 import { T, Var, msg, useGT, useMessages } from "gt-react";
-import { BrainIcon, ChevronDownIcon, FileTextIcon, PlusIcon } from "lucide-react";
+import { BrainIcon, ChevronDownIcon, ExpandIcon, FileTextIcon, PlusIcon } from "lucide-react";
 import { useState } from "react";
 
 import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
@@ -25,8 +25,8 @@ const WIDGET_OPTIONS: ReadonlyArray<{
   readonly kind: DropwaveWidgetKind;
   readonly label: string;
 }> = [
-  { kind: "mission", label: msg("Mission Control") },
-  { kind: "helpers", label: msg("Helper Bots") },
+  { kind: "asks", label: msg("Core Loop & Asks") },
+  { kind: "agents", label: msg("Team & Agents") },
   { kind: "reviews", label: msg("Pending Reviews") },
   { kind: "sessions", label: msg("Running Sessions") },
   { kind: "docs", label: msg("Docs & Briefs") },
@@ -38,8 +38,8 @@ export interface DropwaveWidgetData {
   readonly liveAsks: ReadonlyArray<DropwaveAsk>;
   readonly liveDocs: ReadonlyArray<DropwaveDocSummary>;
   readonly liveMemories: ReadonlyArray<DropwaveMemoryItem>;
-  readonly onSelectPreviewHelper?: (helperId: string | null) => void;
-  readonly activePreviewHelperId?: string | null;
+  readonly onSelectPreviewAgent?: (agentId: string | null) => void;
+  readonly activePreviewAgentId?: string | null;
   readonly onIgnorePreviewReview?: (reviewId: string) => void;
   readonly onOpenDoc?: (pathOrId: string) => void;
 }
@@ -92,65 +92,49 @@ export function DropwaveWidgetCard({
     </Popover>
   );
 
-  if (kind === "mission") {
-    const riskLevel = isPreview
-      ? venture!.riskLevel
+  // 1. Core Loop & Tracked Asks (replaces cryptic "Mission Control")
+  if (kind === "asks") {
+    const loopSteps = isPreview
+      ? venture!.loopSteps.map((s) => s.title)
       : workspace.lead?.source.dropwaveBot?.kind === "lead"
-        ? (workspace.lead.source.dropwaveBot.riskLevel ?? "yolo")
-        : "yolo";
-    const riskBadge =
-      riskLevel === "yolo"
-        ? gt("Proactive: High")
-        : riskLevel === "careful"
-          ? gt("Careful")
-          : gt("Balanced");
+        ? (workspace.lead.source.dropwaveBot.loopSteps?.map((s) => s.title) ??
+          workspace.lead.source.dropwaveBot.workflow)
+        : [];
     const openCount = isPreview ? venture!.objectives.length : data.liveAsks.length;
-    const progressPct = isPreview
-      ? venture!.sprintProgress
-      : openCount === 0
-        ? 100
-        : Math.min(
-            95,
-            Math.max(
-              24,
-              Math.round(
-                (data.liveAsks.filter((a) => a.status === "started" || a.status === "done").length /
-                  Math.max(1, openCount)) *
-                  100,
-              ),
-            ),
-          );
-    const headline = isPreview
-      ? venture!.sprintTitle
-      : workspace.project
-        ? workspace.project.title
-        : gt("Core Loop");
 
     return (
-      <section data-dw-card="" data-widget="mission">
+      <section data-dw-card="" data-widget="asks">
         <div data-dw-card-top="">
           <div data-dw-card-head="">
             <span data-dw-card-title="">
               <span data-dw-dot="indigo" />
               <span>
-                <T>Mission Control</T>
+                <T>Core Loop & Asks</T>
               </span>
             </span>
             <div data-dw-card-head-right="">
-              <span data-dw-badge="emerald">{riskBadge}</span>
+              <button
+                type="button"
+                data-dw-slot-swap=""
+                aria-label={gt("Add or manage asks")}
+                onClick={() => workspace.openPanel({ kind: "asks" })}
+              >
+                <PlusIcon />
+              </button>
               {slotSwitcher}
             </div>
           </div>
 
-          <div data-dw-sprint="">
-            <div data-dw-sprint-row="">
-              <strong>{headline}</strong>
-              <span data-dw-mono="emerald">{progressPct}%</span>
+          {loopSteps.length > 0 ? (
+            <div data-dw-loop-strip="" aria-label={gt("Core loop steps")}>
+              {loopSteps.slice(0, 4).map((step, idx) => (
+                <span key={step} data-dw-loop-chip="">
+                  <em>{idx + 1}</em>
+                  <span>{step}</span>
+                </span>
+              ))}
             </div>
-            <div data-dw-progress-track="">
-              <div data-dw-progress-fill="indigo" style={{ width: `${progressPct}%` }} />
-            </div>
-          </div>
+          ) : null}
 
           <div data-dw-obj-list="">
             {isPreview ? (
@@ -161,7 +145,7 @@ export function DropwaveWidgetCard({
                   data-dw-obj-row=""
                   onClick={() => {
                     if (obj.status === "approval" && venture!.reviews[0]) {
-                      workspace.jumpToReview(venture!.reviews[0].id);
+                      workspace.openDecisionQueue(venture!.reviews[0].id);
                     } else {
                       workspace.openPanel({ kind: "asks" });
                     }
@@ -193,7 +177,7 @@ export function DropwaveWidgetCard({
                 </button>
               ))
             ) : data.liveAsks.length > 0 ? (
-              data.liveAsks.slice(0, 4).map((ask) => (
+              data.liveAsks.slice(0, 5).map((ask) => (
                 <button
                   key={ask.id}
                   type="button"
@@ -217,7 +201,7 @@ export function DropwaveWidgetCard({
               ))
             ) : (
               <p data-dw-card-empty="">
-                <T>Every ask you send in chat is tracked here through your core loop.</T>
+                <T>Every ask you send in chat is tracked here until verified done.</T>
               </p>
             )}
           </div>
@@ -225,58 +209,55 @@ export function DropwaveWidgetCard({
 
         <div data-dw-card-foot="">
           <span data-dw-muted-label="">
-            {isPreview ? <T>Autonomous budget</T> : <T>Tracked asks</T>}
+            <T>
+              <Var>{openCount}</Var> tracked asks
+            </T>
           </span>
-          {isPreview ? (
-            <span data-dw-mono="bright">
-              ${venture!.budgetUsed} <small>/ ${venture!.budgetLimit}</small>
-            </span>
-          ) : (
-            <button
-              type="button"
-              data-dw-inline-link=""
-              onClick={() => workspace.openPanel({ kind: "asks" })}
-            >
-              <T>
-                <Var>{data.liveAsks.length}</Var> open
-              </T>
-            </button>
-          )}
+          <button
+            type="button"
+            data-dw-inline-link=""
+            onClick={() => workspace.openPanel({ kind: "asks" })}
+          >
+            <T>Open ledger</T>
+          </button>
         </div>
       </section>
     );
   }
 
-  if (kind === "helpers") {
+  // 2. Team & Agents (Chief of Staff / Lead RIGHT AT TOP + specialist agents — 1-click switching!)
+  if (kind === "agents") {
     const liveHelpers = workspace.bots.filter(
       (bot) =>
         bot.environmentId === workspace.lead?.environmentId &&
         bot.source.dropwaveBot?.kind === "teammate" &&
         bot.source.dropwaveBot.leadThreadId === workspace.lead.id,
     );
-    const activeHelperCount = isPreview ? venture!.helpers.length : liveHelpers.length;
+    const totalAgents = isPreview
+      ? 1 + venture!.helpers.length
+      : (workspace.lead ? 1 : 0) + liveHelpers.length;
 
     return (
-      <section data-dw-card="" data-widget="helpers">
+      <section data-dw-card="" data-widget="agents">
         <div data-dw-card-top="">
           <div data-dw-card-head="">
             <span data-dw-card-title="">
               <span>
-                <T>Helper Bots</T>
+                <T>Team & Agents</T>
               </span>
             </span>
             <div data-dw-card-head-right="">
               <span data-dw-status-inline="emerald">
                 <span data-dw-dot="emerald" />
                 <T>
-                  <Var>{activeHelperCount}</Var> Active
+                  <Var>{totalAgents}</Var>
                 </T>
               </span>
               {!isPreview && workspace.lead && workspace.project ? (
                 <button
                   type="button"
                   data-dw-slot-swap=""
-                  aria-label={gt("Add helper bot")}
+                  aria-label={gt("Add agent")}
                   onClick={() =>
                     workspace.openPanel({
                       kind: "profile",
@@ -297,18 +278,31 @@ export function DropwaveWidgetCard({
 
           <div data-dw-helper-list="">
             {isPreview ? (
-              venture!.helpers.length > 0 ? (
-                venture!.helpers.map((helper) => (
+              <>
+                <button
+                  type="button"
+                  data-dw-helper-row=""
+                  aria-current={data.activePreviewAgentId === null ? "true" : undefined}
+                  onClick={() => data.onSelectPreviewAgent?.(null)}
+                >
+                  <span data-dw-monogram="violet">{venture!.leadCode}</span>
+                  <span data-dw-helper-info="">
+                    <span data-dw-helper-head="">
+                      <strong>{venture!.leadName}</strong>
+                      <span data-dw-badge="violet">
+                        <T>Lead</T>
+                      </span>
+                    </span>
+                    <small>{venture!.leadStatus}</small>
+                  </span>
+                </button>
+                {venture!.helpers.map((helper) => (
                   <button
                     key={helper.id}
                     type="button"
                     data-dw-helper-row=""
-                    aria-current={data.activePreviewHelperId === helper.id ? "true" : undefined}
-                    onClick={() =>
-                      data.onSelectPreviewHelper?.(
-                        data.activePreviewHelperId === helper.id ? null : helper.id,
-                      )
-                    }
+                    aria-current={data.activePreviewAgentId === helper.id ? "true" : undefined}
+                    onClick={() => data.onSelectPreviewAgent?.(helper.id)}
                   >
                     <span data-dw-monogram={helper.tone}>{helper.code}</span>
                     <span data-dw-helper-info="">
@@ -321,115 +315,112 @@ export function DropwaveWidgetCard({
                       <small>{helper.statusLine}</small>
                     </span>
                   </button>
-                ))
-              ) : (
-                <p data-dw-card-empty="">
-                  <T>Solo loop. Main bot handles every step end-to-end.</T>
-                </p>
-              )
-            ) : liveHelpers.length > 0 ? (
-              liveHelpers.map((bot, idx) => {
-                const state = workState(bot);
-                const initials = bot.title
-                  .split(/\s+/)
-                  .map((w) => w[0] ?? "")
-                  .join("")
-                  .slice(0, 3)
-                  .toUpperCase();
-                return (
-                  <button
-                    key={keyOfThread(bot)}
-                    type="button"
-                    data-dw-helper-row=""
-                    aria-current={workspace.activeBot?.id === bot.id ? "true" : undefined}
-                    onClick={() => workspace.openThread(scopeThreadRef(bot.environmentId, bot.id))}
-                  >
-                    <span data-dw-monogram={idx % 2 === 0 ? "indigo" : "emerald"}>
-                      {initials || "AI"}
-                    </span>
-                    <span data-dw-helper-info="">
-                      <span data-dw-helper-head="">
-                        <strong>{bot.title}</strong>
-                        <span
-                          data-dw-mono={
-                            state === "working"
-                              ? "emerald"
-                              : state === "needs-you"
-                                ? "coral"
-                                : "amber"
-                          }
-                        >
-                          {m(workStateLabel[state])}
-                        </span>
+                ))}
+              </>
+            ) : workspace.lead ? (
+              <>
+                <button
+                  type="button"
+                  data-dw-helper-row=""
+                  aria-current={workspace.activeBot?.id === workspace.lead.id ? "true" : undefined}
+                  onClick={() =>
+                    workspace.openThread(
+                      scopeThreadRef(workspace.lead!.environmentId, workspace.lead!.id),
+                    )
+                  }
+                >
+                  <span data-dw-monogram="violet">CS</span>
+                  <span data-dw-helper-info="">
+                    <span data-dw-helper-head="">
+                      <strong>{workspace.lead.title}</strong>
+                      <span data-dw-badge="violet">
+                        <T>Lead</T>
                       </span>
-                      <small>
-                        {bot.source.dropwaveBot?.kind === "teammate" && bot.source.dropwaveBot.role
-                          ? bot.source.dropwaveBot.role
-                          : bot.source.dropwaveBot?.brief || gt("Specialist teammate")}
-                      </small>
                     </span>
-                  </button>
-                );
-              })
+                    <small>
+                      {workspace.lead.source.dropwaveBot?.brief || gt("Owns the core loop")}
+                    </small>
+                  </span>
+                </button>
+                {liveHelpers.map((bot, idx) => {
+                  const state = workState(bot);
+                  const initials = bot.title
+                    .split(/\s+/)
+                    .map((w) => w[0] ?? "")
+                    .join("")
+                    .slice(0, 3)
+                    .toUpperCase();
+                  return (
+                    <button
+                      key={keyOfThread(bot)}
+                      type="button"
+                      data-dw-helper-row=""
+                      aria-current={workspace.activeBot?.id === bot.id ? "true" : undefined}
+                      onClick={() =>
+                        workspace.openThread(scopeThreadRef(bot.environmentId, bot.id))
+                      }
+                    >
+                      <span data-dw-monogram={idx % 2 === 0 ? "indigo" : "emerald"}>
+                        {initials || "AI"}
+                      </span>
+                      <span data-dw-helper-info="">
+                        <span data-dw-helper-head="">
+                          <strong>{bot.title}</strong>
+                          <span
+                            data-dw-mono={
+                              state === "working"
+                                ? "emerald"
+                                : state === "needs-you"
+                                  ? "coral"
+                                  : "amber"
+                            }
+                          >
+                            {m(workStateLabel[state])}
+                          </span>
+                        </span>
+                        <small>
+                          {bot.source.dropwaveBot?.kind === "teammate" &&
+                          bot.source.dropwaveBot.role
+                            ? bot.source.dropwaveBot.role
+                            : bot.source.dropwaveBot?.brief || gt("Specialist agent")}
+                        </small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
             ) : (
               <p data-dw-card-empty="">
-                <T>Solo loop. Ask Chief of Staff to wire a QA or SEO helper anytime.</T>
+                <T>Run conversational setup to wire your Chief of Staff and specialist agents.</T>
               </p>
             )}
           </div>
         </div>
 
-        <div data-dw-branch-foot="">
-          <div data-dw-branch-head="">
-            <span>
-              <T>Active Branches</T>
-            </span>
-            <span data-dw-mono="muted">
-              {isPreview ? (
-                <T>
-                  <Var>{venture!.branches.length + 1}</Var> runs
-                </T>
-              ) : (
-                <T>
-                  <Var>{workspace.threads.filter(isCurrentWork).length}</Var> runs
-                </T>
-              )}
-            </span>
-          </div>
-          {isPreview ? (
-            <div data-dw-branch-rows="">
-              {venture!.branches.map((branch) => (
-                <div key={branch.id} data-dw-branch-row="">
-                  <span data-dw-mono={branch.tone}>{branch.ref}</span>
-                  <span>{branch.summary}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div data-dw-branch-rows="">
-              {workspace.threads
-                .filter((t) => t.branch !== null || t.linkedPullRequest !== null)
-                .slice(0, 2)
-                .map((t) => (
-                  <button
-                    key={keyOfThread(t)}
-                    type="button"
-                    data-dw-branch-row=""
-                    onClick={() => workspace.openThread(scopeThreadRef(t.environmentId, t.id))}
-                  >
-                    <span data-dw-mono="emerald">
-                      {t.linkedPullRequest ? `#${t.linkedPullRequest.number}` : t.branch}
-                    </span>
-                    <span>{t.title}</span>
-                  </button>
-                ))}
-            </div>
-          )}
+        <div data-dw-card-foot="">
+          <span data-dw-muted-label="">
+            <T>Click any agent to chat</T>
+          </span>
+          {!isPreview && workspace.lead ? (
+            <button
+              type="button"
+              data-dw-inline-link=""
+              onClick={() =>
+                workspace.openPanel({
+                  kind: "profile",
+                  target: { kind: "edit", bot: workspace.lead! },
+                })
+              }
+            >
+              <T>Edit loop</T>
+            </button>
+          ) : null}
         </div>
       </section>
     );
   }
 
+  // 3. Pending Reviews (clicks expand into the full-context Decision Queue modal!)
   if (kind === "reviews") {
     const reviews = isPreview ? venture!.reviews : [];
     const liveNeeds = isPreview ? [] : workspace.needs;
@@ -447,11 +438,15 @@ export function DropwaveWidgetCard({
             </span>
             <div data-dw-card-head-right="">
               {totalUrgent > 0 ? (
-                <span data-dw-badge="coral">
+                <button
+                  type="button"
+                  data-dw-badge="coral"
+                  onClick={() => workspace.openDecisionQueue()}
+                >
                   <T>
                     <Var>{totalUrgent}</Var> urgent
                   </T>
-                </span>
+                </button>
               ) : (
                 <span data-dw-badge="emerald">
                   <T>Clear</T>
@@ -473,24 +468,23 @@ export function DropwaveWidgetCard({
                       </span>
                     </div>
                     <p>{rev.summary}</p>
-                    {index === 0 ? (
-                      <div data-dw-review-actions="">
-                        <button
-                          type="button"
-                          data-dw-coral-btn=""
-                          onClick={() => workspace.jumpToReview(rev.id)}
-                        >
-                          <T>Resolve in Chat</T>
-                        </button>
-                        <button
-                          type="button"
-                          data-dw-ghost-xs=""
-                          onClick={() => data.onIgnorePreviewReview?.(rev.id)}
-                        >
-                          <T>Ignore</T>
-                        </button>
-                      </div>
-                    ) : null}
+                    <div data-dw-review-actions="">
+                      <button
+                        type="button"
+                        data-dw-coral-btn=""
+                        onClick={() => workspace.openDecisionQueue(rev.id)}
+                      >
+                        <ExpandIcon className="size-3" />
+                        <T>Review & decide</T>
+                      </button>
+                      <button
+                        type="button"
+                        data-dw-ghost-xs=""
+                        onClick={() => data.onIgnorePreviewReview?.(rev.id)}
+                      >
+                        <T>Ignore</T>
+                      </button>
+                    </div>
                   </div>
                 ))
               ) : (
@@ -532,17 +526,25 @@ export function DropwaveWidgetCard({
           </div>
         </div>
 
-        <div data-dw-card-foot-center="">
-          {totalUrgent > 0 ? (
-            <T>Auto-reminder active until resolved</T>
-          ) : (
-            <T>All clear across projects</T>
-          )}
+        <div data-dw-card-foot="">
+          <span data-dw-muted-label="">
+            {totalUrgent > 0 ? <T>Step through with full context</T> : <T>All clear</T>}
+          </span>
+          {totalUrgent > 0 && isPreview ? (
+            <button
+              type="button"
+              data-dw-inline-link=""
+              onClick={() => workspace.openDecisionQueue()}
+            >
+              <T>Review queue</T>
+            </button>
+          ) : null}
         </div>
       </section>
     );
   }
 
+  // 4. Running Sessions
   if (kind === "sessions") {
     const owner = workspace.activeBot ?? workspace.lead;
     const liveSessions =
@@ -676,6 +678,7 @@ export function DropwaveWidgetCard({
     );
   }
 
+  // 5. Docs & Briefs
   if (kind === "docs") {
     const items = isPreview
       ? venture!.docs.map((d) => ({
@@ -745,7 +748,7 @@ export function DropwaveWidgetCard({
     );
   }
 
-  // kind === "memory"
+  // 6. Memory & Rules
   const memItems = isPreview
     ? venture!.memories
     : data.liveMemories.map((item) => ({

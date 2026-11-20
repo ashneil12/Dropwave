@@ -3,49 +3,56 @@ import { expect } from "e2e";
 import { test, WEB } from "./t3.ts";
 
 test(
-  "Dropwave runs standalone spatial cockpit with customizable panels and conversational setup",
+  "Dropwave spatial cockpit runs Core Loop & Asks, Team switching, Decision Queue modal, Editorial Docs, and Dropwave Settings",
   WEB,
   async ({ t3, screen }) => {
     await t3.project("Dropwave fixture", { "README.md": "# Disposable fixture" });
     await t3.open();
 
-    // No T3 chrome anywhere.
+    // No T3 chrome or filler labels.
     await expect(screen.getByRole("button", "All threads")).toHaveCount(0);
+    await expect(screen.getByText("Active Target:")).toHaveCount(0);
+    await expect(screen.getByText("Solo Founder")).toHaveCount(0);
 
-    // Preview showcase loads cleanly with Hivra spatial cockpit.
-    await expect(screen.getByRole("heading", "Chief of Staff")).toBeVisible();
-    await expect(screen.getByText("Mission Control")).toBeVisible();
-    await expect(screen.getByText("Helper Bots")).toBeVisible();
+    // Useful renamed widgets visible.
+    await expect(screen.getByText("Core Loop & Asks")).toBeVisible();
+    await expect(screen.getByText("Team & Agents")).toBeVisible();
     await expect(screen.getByText("Pending Reviews")).toBeVisible();
     await expect(screen.getByText("Running Sessions")).toBeVisible();
 
-    // Resolve an inline Needs-You card with "Always do this".
-    await screen.getByRole("button", "Always do this").tap();
-    await expect(
-      screen.getByText("Saved rule & chose: $39, matches live experiment"),
-    ).toBeVisible();
+    // 1-click switching between Chief of Staff and specialist agent inside Team & Agents.
+    await screen.getByRole("button", /Hivra QA idle/).tap();
+    await expect(screen.getByRole("heading", "Hivra QA")).toBeVisible();
+    await screen.getByRole("button", /Chief of Staff Lead/).tap();
+    await expect(screen.getByRole("heading", "Chief of Staff")).toBeVisible();
 
-    // Swap a side widget panel screen.
-    await screen.getByRole("button", "Switch panel screen").first().tap();
-    await screen.getByRole("button", "Docs & Briefs").tap();
-    await expect(screen.getByText("Shared with bots")).toBeVisible();
+    // Custom Model Picker inside the revamped composer pill.
+    await screen.getByRole("button", "Select model").tap();
+    await screen.getByRole("option", /GPT-5\.4 Codex/).tap();
 
-    // Open in-pillar Docs view and return to chat.
+    // Decision Queue Focus Modal with full context (1 of N) + Always do this.
+    await screen.getByRole("button", "Review & decide").first().tap();
+    await expect(screen.getByText("Decision Queue")).toBeVisible();
+    await screen.getByRole("button", "Always do this").last().tap();
+    await screen.getByRole("button", "Close decisions").tap();
+
+    // Editorial Docs editor.
     await screen.getByRole("button", "Docs").tap();
-    await expect(screen.getByRole("button", "Back to chat")).toBeVisible();
+    await screen.getByRole("button", "Edit").tap();
+    await expect(screen.getByRole("textbox", "Document title")).toBeVisible();
+    await screen.getByRole("button", "Cancel").tap();
     await screen.getByRole("button", "Back to chat").tap();
 
-    // Conversational new-project setup (no modal form box).
-    await screen.getByRole("button", "New project setup").tap();
-    await screen.getByRole("textbox").fill("Pocket CRM");
-    await screen.getByRole("button", "Send").tap();
-    await screen.getByRole("button", "Tested live with screenshots and checks green").tap();
-    await screen.getByRole("button", "Launch Chief of Staff").tap();
-    await expect(screen.getByText("Pocket CRM")).toBeVisible();
+    // Searchable All Projects switcher on Dropwave brand.
+    await screen.getByRole("button", "All projects").tap();
+    await expect(screen.getByRole("textbox", "Switch project")).toBeVisible();
+    await screen.getByRole("button", "All projects").tap();
 
-    // Switch to Live mode and verify Settings opens in unified dark theme.
-    await screen.getByRole("button", "Live").tap();
-    await screen.getByRole("link", "Settings").tap();
-    await expect(screen.getByRole("dialog", "Settings")).toBeVisible();
+    // Dropwave-first Settings dialog with separated Engine / T3 Backend section.
+    await screen.getByRole("button", "Settings").tap();
+    await expect(screen.getByText("Dropwave Settings")).toBeVisible();
+    await screen.getByRole("button", "T3 Engine & Providers").tap();
+    await expect(screen.getByText("Underlying T3 Engine Settings")).toBeVisible();
+    await screen.getByRole("button", "Close settings").tap();
   },
 );

@@ -8,33 +8,50 @@ import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
 } from "@t3tools/client-runtime/state/thread-requests";
-import type { ProviderApprovalDecision, ScopedThreadRef } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
-import { T, Var, useGT } from "gt-react";
 import {
-  ArrowLeftIcon,
+  DEFAULT_SERVER_SETTINGS,
+  type DropwaveRiskLevel,
+  type ProviderApprovalDecision,
+  type ScopedThreadRef,
+} from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
+import { T, Var, msg, useGT, useMessages } from "gt-react";
+import {
   ArrowUpIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  ExpandIcon,
   FileTextIcon,
   MicIcon,
   PlusIcon,
   SquareIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 
 import { newMessageId } from "../lib/utils";
+import { providerInstanceEntriesFor } from "../providerInstances";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useThreadProjection, useThreadVisibleTurnItems } from "../state/entities";
-import { serverEnvironment } from "../state/server";
+import { useEnvironmentProviders } from "../state/environments";
+import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { environmentThreadDetails, threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { workState } from "./model";
 import type { SamplePendingReview, SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 const EMPTY_PENDING_REQUESTS_ATOM = Atom.make(null);
+
+/* oxlint-disable t3code/no-untranslated-copy -- model brand names */
+const PREVIEW_MODEL_OPTIONS: ReadonlyArray<DropwaveSelectOption> = [
+  { value: "claude:opus-4-6", label: "Claude Opus 4.6", hint: msg("Deep orchestration") },
+  { value: "claude:sonnet-4-6", label: "Claude Sonnet 4.6", hint: msg("Fast default") },
+  { value: "codex:gpt-5-4", label: "GPT-5.4 Codex", hint: msg("Heavy coding") },
+];
+/* oxlint-enable t3code/no-untranslated-copy */
 
 function formatClock(iso: string | Date): string {
   const date = typeof iso === "string" ? new Date(iso) : iso;
@@ -60,11 +77,13 @@ function ReviewDecisionCard({
   highlighted,
   resolvedLabel,
   onResolve,
+  onExpand,
 }: {
   review: SamplePendingReview;
   highlighted: boolean;
   resolvedLabel?: string | undefined;
   onResolve: (choiceLabel: string, alwaysDoThis: boolean) => void;
+  onExpand: () => void;
 }) {
   const gt = useGT();
   const defaultOpt = review.options.find((o) => o.recommended) ?? review.options[0];
@@ -97,7 +116,17 @@ function ReviewDecisionCard({
           <span data-dw-dot="coral" data-pulse="" />
           <T>Needs You</T>
         </span>
-        <span data-dw-mono="muted">{review.sessionTag}</span>
+        <div data-dw-needs-head-right="">
+          <span data-dw-mono="muted">{review.sessionTag}</span>
+          <button
+            type="button"
+            data-dw-mini-icon=""
+            aria-label={gt("Expand full context")}
+            onClick={onExpand}
+          >
+            <ExpandIcon className="size-3.5" />
+          </button>
+        </div>
       </div>
       <div data-dw-needs-copy="">
         <p>{renderRichInline(review.context)}</p>
@@ -346,28 +375,31 @@ function LiveUserInputCard({
 
 export function DropwaveChatPillar({
   venture,
-  activePreviewHelperId,
-  onClearPreviewHelper,
+  activePreviewAgentId,
   resolvedReviews,
   onResolvePreviewReview,
   onSendPreviewMessage,
   onOpenDoc,
+  onChangePreviewRisk,
 }: {
   venture: SampleVenture | null;
-  activePreviewHelperId: string | null;
-  onClearPreviewHelper: () => void;
+  activePreviewAgentId: string | null;
   resolvedReviews: Readonly<Record<string, string>>;
   onResolvePreviewReview: (reviewId: string, choiceLabel: string, alwaysDoThis: boolean) => void;
   onSendPreviewMessage: (text: string) => void;
   onOpenDoc: (docId: string) => void;
+  onChangePreviewRisk?: (risk: DropwaveRiskLevel) => void;
 }) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
+  const m = useMessages();
   const [draft, setDraft] = useState("");
   const [expandedFolds, setExpandedFolds] = useState<Record<string, boolean>>({});
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [previewModel, setPreviewModel] = useState(PREVIEW_MODEL_OPTIONS[0]!.value);
   const streamEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const isPreview = workspace?.mode === "preview" && venture !== null;
   const activeThread = !isPreview ? (workspace?.activeThread ?? workspace?.lead ?? null) : null;
@@ -382,8 +414,17 @@ export function DropwaveChatPillar({
       ? environmentThreadDetails.pendingRequestsAtom(activeThreadRef)
       : EMPTY_PENDING_REQUESTS_ATOM,
   );
+  const providersByEnv = useEnvironmentProviders();
+  const liveProviders = activeThread ? (providersByEnv.get(activeThread.environmentId) ?? []) : [];
+
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interruptTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
+    reportFailure: false,
+  });
+  const setModelCmd = useOrchestrationCommand(threadEnvironment.setModelSelection, {
+    reportFailure: false,
+  });
+  const updateMetadataCmd = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
   const saveMemory = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
@@ -398,39 +439,54 @@ export function DropwaveChatPillar({
     streamEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messageCount]);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- auto-grows multiline composer textarea smoothly
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el || draft.length < 0) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(180, Math.max(24, el.scrollHeight))}px`;
+  }, [draft]);
+
   if (!workspace) return null;
 
-  const activePreviewHelper =
-    isPreview && activePreviewHelperId
-      ? (venture!.helpers.find((h) => h.id === activePreviewHelperId) ?? null)
+  const activePreviewAgent =
+    isPreview && activePreviewAgentId
+      ? (venture!.helpers.find((h) => h.id === activePreviewAgentId) ?? null)
       : null;
 
   const liveBot = !isPreview ? (workspace.activeBot ?? workspace.lead) : null;
   const headerName = isPreview
-    ? (activePreviewHelper?.name ?? venture!.leadName)
+    ? (activePreviewAgent?.name ?? venture!.leadName)
     : (activeThread?.title ?? liveBot?.title ?? gt("Chief of Staff"));
   const headerCode = isPreview
-    ? (activePreviewHelper?.code ?? venture!.leadCode)
+    ? (activePreviewAgent?.code ?? venture!.leadCode)
     : headerName
         .split(/\s+/)
         .map((w) => w[0] ?? "")
         .join("")
         .slice(0, 2)
         .toUpperCase() || "CS";
+
+  const currentRisk: DropwaveRiskLevel = isPreview
+    ? venture!.riskLevel
+    : workspace.lead?.source.dropwaveBot?.kind === "lead"
+      ? (workspace.lead.source.dropwaveBot.riskLevel ?? "yolo")
+      : "yolo";
+
   const headerBadge = isPreview
-    ? activePreviewHelper
-      ? activePreviewHelper.role
-      : venture!.riskLevel === "yolo"
+    ? activePreviewAgent
+      ? activePreviewAgent.role
+      : currentRisk === "yolo"
         ? gt("Autonomous")
         : gt("Guided")
     : liveBot?.source.dropwaveBot?.kind === "lead"
-      ? (liveBot.source.dropwaveBot.riskLevel ?? "yolo") === "yolo"
+      ? currentRisk === "yolo"
         ? gt("Autonomous")
         : gt("Guided")
-      : gt("Helper");
+      : gt("Agent");
   const headerSub = isPreview
-    ? activePreviewHelper
-      ? `${venture!.name} · ${activePreviewHelper.statusLine}`
+    ? activePreviewAgent
+      ? `${venture!.name} · ${activePreviewAgent.statusLine}`
       : venture!.leadStatus
     : `${workspace.project?.title ?? gt("Workspace")} · ${
         activeThread ? workState(activeThread) : gt("Ready")
@@ -439,8 +495,109 @@ export function DropwaveChatPillar({
   const isLiveRunning = !isPreview && activeThread ? workState(activeThread) === "working" : false;
   const openAsksBadge = isPreview ? venture!.objectives.length : workspace.openAsksCount;
 
-  const handleSend = async (event: FormEvent) => {
-    event.preventDefault();
+  // Build real model options from live providers
+  const liveModelEntries: Array<{
+    readonly key: string;
+    readonly label: string;
+    readonly hint: string;
+    readonly instanceId: NonNullable<typeof activeThread>["source"]["modelSelection"]["instanceId"];
+    readonly model: string;
+  }> = [];
+  if (!isPreview && activeThread) {
+    const settings =
+      appAtomRegistry.get(environmentServerConfigsAtom).get(activeThread.environmentId)?.settings ??
+      DEFAULT_SERVER_SETTINGS;
+    const instances = providerInstanceEntriesFor(
+      liveProviders,
+      settings,
+      activeThread.projectId,
+    ).filter((entry) => entry.enabled && entry.isAvailable);
+    for (const inst of instances) {
+      for (const model of inst.models.slice(0, 6)) {
+        liveModelEntries.push({
+          key: `${inst.instanceId}::${model.slug}`,
+          label: model.name,
+          hint: inst.displayName,
+          instanceId: inst.instanceId,
+          model: model.slug,
+        });
+      }
+    }
+  }
+  const activeLiveModelKey = activeThread
+    ? `${activeThread.source.modelSelection.instanceId}::${activeThread.source.modelSelection.model}`
+    : "";
+  const resolvedPreviewModels: ReadonlyArray<DropwaveSelectOption> = PREVIEW_MODEL_OPTIONS.map(
+    (opt) => ({
+      ...opt,
+      ...(opt.hint ? { hint: m(opt.hint) } : {}),
+    }),
+  );
+  const modelOptions: ReadonlyArray<DropwaveSelectOption> = isPreview
+    ? resolvedPreviewModels
+    : liveModelEntries.length > 0
+      ? liveModelEntries.map((entry) => ({
+          value: entry.key,
+          label: entry.label,
+          hint: entry.hint,
+        }))
+      : activeThread
+        ? [
+            {
+              value: activeLiveModelKey,
+              label: activeThread.source.modelSelection.model,
+            },
+          ]
+        : resolvedPreviewModels;
+
+  const currentModelValue = isPreview ? previewModel : activeLiveModelKey;
+
+  const handleModelChange = (nextKey: string) => {
+    if (isPreview) {
+      setPreviewModel(nextKey);
+      return;
+    }
+    if (!activeThread) return;
+    const found = liveModelEntries.find((e) => e.key === nextKey);
+    if (!found) return;
+    void setModelCmd({
+      environmentId: activeThread.environmentId,
+      input: {
+        threadId: activeThread.id,
+        modelSelection: {
+          instanceId: found.instanceId,
+          model: found.model,
+        },
+      },
+    });
+  };
+
+  const riskOptions: ReadonlyArray<DropwaveSelectOption<DropwaveRiskLevel>> = [
+    { value: "yolo", label: "YOLO", hint: gt("Decides 99% end-to-end") },
+    { value: "normal", label: gt("Normal"), hint: gt("Asks on ambiguous calls") },
+    { value: "careful", label: gt("Careful"), hint: gt("Checks in early") },
+  ];
+
+  const handleRiskChange = (nextRisk: DropwaveRiskLevel) => {
+    if (isPreview) {
+      onChangePreviewRisk?.(nextRisk);
+      return;
+    }
+    const lead = workspace.lead;
+    if (!lead || lead.source.dropwaveBot?.kind !== "lead") return;
+    void updateMetadataCmd({
+      environmentId: lead.environmentId,
+      input: {
+        threadId: lead.id,
+        dropwaveBot: {
+          ...lead.source.dropwaveBot,
+          riskLevel: nextRisk,
+        },
+      },
+    });
+  };
+
+  const submitMessage = async () => {
     const text = draft.trim();
     if (!text || sending) return;
     setSendError(null);
@@ -481,6 +638,18 @@ export function DropwaveChatPillar({
     }
   };
 
+  const handleSend = (event: FormEvent) => {
+    event.preventDefault();
+    void submitMessage();
+  };
+
+  const handleTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      void submitMessage();
+    }
+  };
+
   const handleStop = async () => {
     if (!activeThreadRef) return;
     await interruptTurn({
@@ -515,33 +684,6 @@ export function DropwaveChatPillar({
     <div data-dw-pillar-body="">
       <header data-dw-pillar-head="">
         <div data-dw-head-identity="">
-          {activePreviewHelper ? (
-            <button
-              type="button"
-              data-dw-mini-icon=""
-              aria-label={gt("Back to Chief of Staff")}
-              onClick={onClearPreviewHelper}
-            >
-              <ArrowLeftIcon className="size-3.5" />
-            </button>
-          ) : !isPreview &&
-            workspace.lead &&
-            activeThread &&
-            activeThread.id !== workspace.lead.id ? (
-            <button
-              type="button"
-              data-dw-mini-icon=""
-              aria-label={gt("Back to Chief of Staff")}
-              onClick={() =>
-                workspace.openThread(
-                  scopeThreadRef(workspace.lead!.environmentId, workspace.lead!.id),
-                )
-              }
-            >
-              <ArrowLeftIcon className="size-3.5" />
-            </button>
-          ) : null}
-
           <button
             type="button"
             data-dw-avatar-ring=""
@@ -586,11 +728,6 @@ export function DropwaveChatPillar({
       <div data-dw-stream="">
         {isPreview ? (
           <>
-            <div data-dw-day-divider="">
-              <span>
-                <T>TODAY · LIVE PREVIEW</T>
-              </span>
-            </div>
             {venture!.messages.map((msg) => {
               if (msg.role === "owner") {
                 return (
@@ -685,6 +822,7 @@ export function DropwaveChatPillar({
                         review={review}
                         highlighted={workspace.highlightReviewId === review.id}
                         resolvedLabel={resolvedReviews[review.id]}
+                        onExpand={() => workspace.openDecisionQueue(review.id)}
                         onResolve={(choice, always) =>
                           onResolvePreviewReview(review.id, choice, always)
                         }
@@ -851,49 +989,71 @@ export function DropwaveChatPillar({
           </p>
         ) : null}
 
-        <form data-dw-pill-composer="" onSubmit={(e) => void handleSend(e)}>
-          <button
-            type="button"
-            data-dw-composer-icon=""
-            aria-label={gt("Track an ask")}
-            onClick={() => workspace.openPanel({ kind: "asks" })}
-          >
-            <PlusIcon className="size-4" />
-          </button>
-          <input
+        <form data-dw-composer-box="" onSubmit={handleSend}>
+          <textarea
+            ref={textareaRef}
+            rows={1}
             value={draft}
             onChange={(e) => setDraft(e.currentTarget.value)}
-            placeholder={gt("Message {name}…", { name: headerName })}
+            onKeyDown={handleTextareaKeyDown}
+            placeholder={gt("Dump ideas, asks, or reply to {name}…", { name: headerName })}
             aria-label={gt("Message {name}", { name: headerName })}
           />
-          <div data-dw-composer-right="">
-            <button
-              type="button"
-              data-dw-composer-icon=""
-              aria-label={gt("Voice input")}
-              onClick={() => workspace.openPanel({ kind: "asks" })}
-            >
-              <MicIcon className="size-4" />
-            </button>
-            {isLiveRunning ? (
+          <div data-dw-composer-bar="">
+            <div data-dw-composer-left="">
               <button
                 type="button"
-                data-dw-send-btn="stop"
-                aria-label={gt("Stop run")}
-                onClick={() => void handleStop()}
+                data-dw-composer-icon=""
+                aria-label={gt("Add tracked ask")}
+                onClick={() => workspace.openPanel({ kind: "asks" })}
               >
-                <SquareIcon className="size-3" />
+                <PlusIcon className="size-4" />
               </button>
-            ) : (
+              <DropwaveSelect
+                value={currentModelValue}
+                options={modelOptions}
+                ariaLabel={gt("Select model")}
+                compact
+                onChange={handleModelChange}
+              />
+              <DropwaveSelect
+                value={currentRisk}
+                options={riskOptions}
+                ariaLabel={gt("Autonomy level")}
+                compact
+                onChange={handleRiskChange}
+              />
+            </div>
+
+            <div data-dw-composer-right="">
               <button
-                type="submit"
-                data-dw-send-btn=""
-                aria-label={gt("Send message")}
-                disabled={!draft.trim() || sending}
+                type="button"
+                data-dw-composer-icon=""
+                aria-label={gt("Voice input")}
+                onClick={() => workspace.openPanel({ kind: "asks" })}
               >
-                <ArrowUpIcon className="size-3.5" />
+                <MicIcon className="size-4" />
               </button>
-            )}
+              {isLiveRunning ? (
+                <button
+                  type="button"
+                  data-dw-send-btn="stop"
+                  aria-label={gt("Stop run")}
+                  onClick={() => void handleStop()}
+                >
+                  <SquareIcon className="size-3" />
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  data-dw-send-btn=""
+                  aria-label={gt("Send message")}
+                  disabled={!draft.trim() || sending}
+                >
+                  <ArrowUpIcon className="size-3.5" />
+                </button>
+              )}
+            </div>
           </div>
         </form>
       </div>

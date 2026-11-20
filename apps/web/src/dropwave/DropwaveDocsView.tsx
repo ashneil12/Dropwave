@@ -25,6 +25,7 @@ import { useEffect, useState } from "react";
 import { requestConfirmDialog } from "../confirmDialog";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
+import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { formatShortAge } from "./model";
 import type { SampleDoc, SampleMemory, SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
@@ -394,6 +395,21 @@ export function DropwaveDocsView({
   const canDeleteOpenDoc =
     !isPreview && (activeDocView?.path.startsWith(".dropwave/docs/") ?? false);
 
+  const docKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveDocKind>> = [
+    { value: "brief", label: gt("Brief") },
+    { value: "spec", label: gt("Spec") },
+    { value: "note", label: gt("Note") },
+    { value: "loop", label: gt("Core loop") },
+    { value: "memory", label: gt("Memory") },
+  ];
+  const memoryKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveMemoryKind>> = [
+    { value: "rule", label: gt("Rule") },
+    { value: "preference", label: gt("Preference") },
+    { value: "decision", label: gt("Decision") },
+    { value: "fact", label: gt("Fact") },
+    { value: "lesson", label: gt("Lesson") },
+  ];
+
   return (
     <section data-dropwave-docs="" aria-label={gt("Project docs and memory")}>
       <aside data-dropwave-docs-rail="">
@@ -502,49 +518,49 @@ export function DropwaveDocsView({
 
         {tab === "docs" ? (
           editing || creatingNew ? (
-            <div data-dropwave-doc-editor="">
+            <div data-dropwave-doc-editor="editorial">
               <div data-dropwave-doc-bar="">
-                <input
-                  value={draftTitle}
-                  onChange={(event) => setDraftTitle(event.currentTarget.value)}
-                  placeholder={gt("Document title")}
-                  aria-label={gt("Document title")}
-                />
-                <select
+                <DropwaveSelect
                   value={draftKind}
-                  onChange={(event) => setDraftKind(event.currentTarget.value as DropwaveDocKind)}
-                  aria-label={gt("Document kind")}
-                >
-                  <option value="brief">{gt("Brief")}</option>
-                  <option value="spec">{gt("Spec")}</option>
-                  <option value="note">{gt("Note")}</option>
-                  <option value="loop">{gt("Core loop")}</option>
-                  <option value="memory">{gt("Memory")}</option>
-                </select>
-                <button
-                  type="button"
-                  data-dropwave-header-button=""
-                  onClick={() => {
-                    setCreatingNew(false);
-                    setEditing(false);
-                  }}
-                >
-                  <T>Cancel</T>
-                </button>
-                <button
-                  type="button"
-                  data-dropwave-primary-button=""
-                  disabled={busy || !draftTitle.trim()}
-                  onClick={() => void saveDoc()}
-                >
-                  <SaveIcon />
-                  <T>Save</T>
-                </button>
+                  options={docKindOptions}
+                  ariaLabel={gt("Document kind")}
+                  compact
+                  onChange={setDraftKind}
+                />
+                <div data-dropwave-doc-actions="">
+                  <button
+                    type="button"
+                    data-dropwave-header-button=""
+                    onClick={() => {
+                      setCreatingNew(false);
+                      setEditing(false);
+                    }}
+                  >
+                    <T>Cancel</T>
+                  </button>
+                  <button
+                    type="button"
+                    data-dropwave-primary-button=""
+                    disabled={busy || !draftTitle.trim()}
+                    onClick={() => void saveDoc()}
+                  >
+                    <SaveIcon />
+                    <T>Save</T>
+                  </button>
+                </div>
               </div>
+              <input
+                data-dropwave-editorial-title=""
+                value={draftTitle}
+                onChange={(event) => setDraftTitle(event.currentTarget.value)}
+                placeholder={gt("Untitled document")}
+                aria-label={gt("Document title")}
+              />
               <textarea
+                data-dropwave-editorial-body=""
                 value={draftContent}
                 onChange={(event) => setDraftContent(event.currentTarget.value)}
-                placeholder={gt("Write briefs, specs, decisions, or notes in Markdown…")}
+                placeholder={gt("Write briefs, specs, decisions, or notes…")}
               />
             </div>
           ) : activeDocView ? (
@@ -605,19 +621,12 @@ export function DropwaveDocsView({
                 void addMemory();
               }}
             >
-              <select
+              <DropwaveSelect
                 value={newMemoryKind}
-                onChange={(event) =>
-                  setNewMemoryKind(event.currentTarget.value as DropwaveMemoryKind)
-                }
-                aria-label={gt("Memory kind")}
-              >
-                <option value="rule">{gt("Rule")}</option>
-                <option value="preference">{gt("Preference")}</option>
-                <option value="decision">{gt("Decision")}</option>
-                <option value="fact">{gt("Fact")}</option>
-                <option value="lesson">{gt("Lesson")}</option>
-              </select>
+                options={memoryKindOptions}
+                ariaLabel={gt("Memory kind")}
+                onChange={setNewMemoryKind}
+              />
               <input
                 value={newMemoryText}
                 onChange={(event) => setNewMemoryText(event.currentTarget.value)}

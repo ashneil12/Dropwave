@@ -33,6 +33,7 @@ import { readEnvironmentProviders } from "../state/environments";
 import { environmentServerConfigsAtom } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import type { SampleVenture } from "./sampleData";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
@@ -504,22 +505,25 @@ export function DropwaveConversationalSetup({
                           }}
                           placeholder={gt("Step name")}
                         />
-                        <select
+                        <DropwaveSelect
                           value={step.owner}
-                          aria-label={gt("Step owner")}
-                          onChange={(e) => {
-                            const val = e.currentTarget.value;
+                          options={
+                            [
+                              { value: "Main bot", label: gt("Main bot") },
+                              { value: "QA bot", label: gt("QA bot") },
+                              { value: "SEO bot", label: gt("SEO bot") },
+                            ] satisfies ReadonlyArray<DropwaveSelectOption>
+                          }
+                          ariaLabel={gt("Step owner")}
+                          compact
+                          onChange={(val) => {
                             setSteps((prev) =>
                               prev.map((item, idx) =>
                                 idx === index ? { ...item, owner: val } : item,
                               ),
                             );
                           }}
-                        >
-                          <option value="Main bot">{gt("Main bot")}</option>
-                          <option value="QA bot">{gt("QA bot")}</option>
-                          <option value="SEO bot">{gt("SEO bot")}</option>
-                        </select>
+                        />
                         <button
                           type="button"
                           data-dw-mini-icon=""

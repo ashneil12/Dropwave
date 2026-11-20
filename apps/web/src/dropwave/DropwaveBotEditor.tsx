@@ -41,6 +41,7 @@ import { useEnvironmentScope } from "../state/session";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { useDropwaveWorkspace, type BotEditorTarget } from "./workspaceContext";
 
 const validProfile = Schema.is(DropwaveBotProfile);
@@ -458,11 +459,20 @@ export function DropwaveBotEditor({
                               );
                             }}
                           />
-                          <select
+                          <DropwaveSelect
                             value={step.ownerBotId ?? ""}
-                            aria-label={gt("Step owner")}
-                            onChange={(event) => {
-                              const value = event.currentTarget.value;
+                            options={
+                              [
+                                { value: "", label: name || gt("Main bot") },
+                                ...projectTeammates.map((helper) => ({
+                                  value: helper.id,
+                                  label: helper.title,
+                                })),
+                              ] satisfies ReadonlyArray<DropwaveSelectOption>
+                            }
+                            ariaLabel={gt("Step owner")}
+                            compact
+                            onChange={(value) => {
                               setSteps((prev) =>
                                 prev.map((item, idx) =>
                                   idx === index
@@ -474,14 +484,7 @@ export function DropwaveBotEditor({
                                 ),
                               );
                             }}
-                          >
-                            <option value="">{name || gt("Main bot")}</option>
-                            {projectTeammates.map((helper) => (
-                              <option key={helper.id} value={helper.id}>
-                                {helper.title}
-                              </option>
-                            ))}
-                          </select>
+                          />
                           <button
                             type="button"
                             data-dropwave-icon-button=""

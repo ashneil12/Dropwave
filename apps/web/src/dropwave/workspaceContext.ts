@@ -17,7 +17,7 @@ export type WorkspacePanel =
 
 export type DropwaveMainView = "chat" | "docs" | "setup";
 
-export type DropwaveWidgetKind = "mission" | "helpers" | "reviews" | "sessions" | "docs" | "memory";
+export type DropwaveWidgetKind = "asks" | "agents" | "reviews" | "sessions" | "docs" | "memory";
 
 export interface DropwaveSlotLayout {
   readonly topLeft: DropwaveWidgetKind;
@@ -55,6 +55,8 @@ interface DropwaveWorkspaceState {
   readonly setFocusMode: (focus: boolean) => void;
   readonly highlightReviewId: string | null;
   readonly jumpToReview: (reviewId: string) => void;
+  readonly openDecisionQueue: (reviewId?: string) => void;
+  readonly openSettings: () => void;
 }
 
 export const DropwaveWorkspaceContext = createContext<DropwaveWorkspaceState | null>(null);

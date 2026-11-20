@@ -12,14 +12,16 @@ import type {
   DropwaveAsk,
   DropwaveDocSummary,
   DropwaveMemoryItem,
+  DropwaveRiskLevel,
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { T, Var, useGT } from "gt-react";
-import { PlusIcon, ZapIcon } from "lucide-react";
+import { ChevronDownIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -38,8 +40,10 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams } from "../threadRoutes";
 import { DropwaveChatPillar } from "./DropwaveChatPillar";
 import { DropwaveConversationalSetup } from "./DropwaveConversationalSetup";
+import { DropwaveDecisionModal, type DecisionQueueItem } from "./DropwaveDecisionModal";
 import { DropwaveDocsView } from "./DropwaveDocsView";
 import { DropwavePanels } from "./DropwavePanels";
+import { DropwaveSettingsDialog } from "./DropwaveSettingsDialog";
 import { DropwaveToolbar, useDropwaveAppearance } from "./DropwaveToolbar";
 import { DropwaveWidgetCard } from "./DropwaveWidgets";
 import { botOwner, isWorkspaceBot, keyOfThread, needsOwner, newestWorkFirst } from "./model";
@@ -63,8 +67,8 @@ import "./workspace.css";
 const LAST_PROJECT_KEY = "dropwave:last-project";
 const ProjectKey = Schema.NullOr(Schema.String);
 const WidgetKindSchema = Schema.Literals([
-  "mission",
-  "helpers",
+  "asks",
+  "agents",
   "reviews",
   "sessions",
   "docs",
@@ -77,12 +81,14 @@ const SlotLayoutSchema = Schema.Struct({
   bottomRight: WidgetKindSchema,
 });
 const DEFAULT_SLOTS: DropwaveSlotLayout = {
-  topLeft: "mission",
-  bottomLeft: "helpers",
+  topLeft: "asks",
+  bottomLeft: "agents",
   topRight: "reviews",
   bottomRight: "sessions",
 };
 const ModeOverrideSchema = Schema.NullOr(Schema.Literals(["preview", "live"]));
+const DefaultRiskSchema = Schema.Literals(["careful", "normal", "yolo"]);
+const MAX_TOPBAR_VENTURES = 4;
 
 function keyOfProject(project: EnvironmentProject) {
   return scopedProjectKey({ environmentId: project.environmentId, projectId: project.id });
@@ -123,7 +129,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
 
   const [lastProject, setLastProject] = useLocalStorage(LAST_PROJECT_KEY, null, ProjectKey);
   const [slots, setSlots] = useLocalStorage(
-    "dropwave:slot-layout",
+    "dropwave:slot-layout-v2",
     DEFAULT_SLOTS,
     SlotLayoutSchema,
   );
@@ -133,17 +139,27 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     null,
     ModeOverrideSchema,
   );
+  const [defaultRisk, setDefaultRisk] = useLocalStorage(
+    "dropwave:default-risk",
+    "yolo",
+    DefaultRiskSchema,
+  );
   const appearance = useDropwaveAppearance();
 
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
   const [highlightReviewId, setHighlightReviewId] = useState<string | null>(null);
   const [openDocId, setOpenDocId] = useState<string | null>(null);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectSearch, setProjectSearch] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [decisionModalOpen, setDecisionModalOpen] = useState(false);
+  const [decisionInitialIndex, setDecisionInitialIndex] = useState(0);
 
-  // Sample workspace state (interactive Preview mode so founder can experience full Dropwave immediately)
+  // Interactive Preview showcase state
   const [ventures, setVentures] = useState<ReadonlyArray<SampleVenture>>(INITIAL_SAMPLE_VENTURES);
   const [selectedVentureId, setSelectedVentureId] = useState(INITIAL_SAMPLE_VENTURES[0]!.id);
-  const [activePreviewHelperId, setActivePreviewHelperId] = useState<string | null>(null);
+  const [activePreviewAgentId, setActivePreviewAgentId] = useState<string | null>(null);
   const [resolvedReviews, setResolvedReviews] = useState<Record<string, string>>({});
 
   // Live Dropwave backend data for side widgets
@@ -211,7 +227,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     };
   }, [activeUpdatedAt, listAsksCmd, listDocsCmd, listMemCmd, mode, project, refreshNonce]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stamps dark glass root attributes for Settings dialogs and popovers
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stamps dark glass root attributes for portals and Settings
   useEffect(() => {
     const root = document.documentElement;
     const hadDark = root.classList.contains("dark");
@@ -254,7 +270,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
 
   const jumpToReview = (reviewId: string) => {
     setMainView("chat");
-    setActivePreviewHelperId(null);
+    setActivePreviewAgentId(null);
     setHighlightReviewId(reviewId);
     setTimeout(() => {
       document.getElementById(`review-${reviewId}`)?.scrollIntoView({
@@ -264,12 +280,60 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     }, 40);
   };
 
+  // Build Decision Queue items across all ventures (Preview) or pending live threads
+  const decisionQueueItems: ReadonlyArray<DecisionQueueItem> =
+    mode === "preview"
+      ? ventures.flatMap((v) =>
+          v.reviews.map((rev) => ({
+            id: rev.id,
+            projectName: v.name,
+            sessionTag: rev.sessionTag,
+            title: rev.title,
+            summary: rev.summary,
+            context: rev.context,
+            question: rev.question,
+            ifDoNothing: rev.ifDoNothing,
+            evidence:
+              v.docs[0]?.excerpt ||
+              gt("Checked against active project brief and recent session output."),
+            options: rev.options,
+          })),
+        )
+      : needs.map((thread) => {
+          const ownerProj = projects.find((p) => projectIncludes(p, thread));
+          return {
+            id: keyOfThread(thread),
+            projectName: ownerProj?.title ?? gt("Project"),
+            sessionTag: thread.title,
+            title: thread.title,
+            summary: gt("Waiting on your decision or approval to continue."),
+            context: gt(
+              "This bot paused because it hit a decision or approval gate. Open it in chat to inspect the full turn or resolve it directly.",
+            ),
+            question: gt("Jump into {name} to answer?", { name: thread.title }),
+            ifDoNothing: gt("If you do nothing: this run stays paused."),
+            options: [{ id: "open", label: gt("Open in chat to resolve"), recommended: true }],
+          };
+        });
+
+  const openDecisionQueue = (reviewId?: string) => {
+    const idx = reviewId
+      ? Math.max(
+          0,
+          decisionQueueItems.findIndex((item) => item.id === reviewId),
+        )
+      : 0;
+    setDecisionInitialIndex(idx);
+    setDecisionModalOpen(true);
+  };
+
   const handleResolvePreviewReview = (
     reviewId: string,
     choiceLabel: string,
     alwaysDoThis: boolean,
   ) => {
-    if (!activeVenture) return;
+    const ownerVenture = ventures.find((v) => v.reviews.some((r) => r.id === reviewId));
+    if (!ownerVenture) return;
     setResolvedReviews((prev) => ({
       ...prev,
       [reviewId]: alwaysDoThis
@@ -278,7 +342,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     }));
     setVentures((prev) =>
       prev.map((v) => {
-        if (v.id !== activeVenture.id) return v;
+        if (v.id !== ownerVenture.id) return v;
         const review = v.reviews.find((r) => r.id === reviewId);
         return {
           ...v,
@@ -307,13 +371,11 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   };
 
   const handleIgnorePreviewReview = (reviewId: string) => {
-    if (!activeVenture) return;
     setVentures((prev) =>
-      prev.map((v) =>
-        v.id === activeVenture.id
-          ? { ...v, reviews: v.reviews.filter((r) => r.id !== reviewId) }
-          : v,
-      ),
+      prev.map((v) => ({
+        ...v,
+        reviews: v.reviews.filter((r) => r.id !== reviewId),
+      })),
     );
   };
 
@@ -323,13 +385,12 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     setVentures((prev) =>
       prev.map((v) => {
         if (v.id !== activeVenture.id) return v;
-        const nextObjId = `ask-${Date.now()}`;
         return {
           ...v,
           objectives: [
             {
-              id: nextObjId,
-              title: text.slice(0, 44),
+              id: `ask-${Date.now()}`,
+              title: text.slice(0, 48),
               status: "working",
               badge: "Tracked",
             },
@@ -352,13 +413,20 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
               authorCode: v.leadCode,
               time: nowTime,
               text: gt(
-                "Logged in Mission Control and queued through the {name} core loop. Switch to Live in the top bar anytime to run real agents on your repos.",
+                "Tracked in Core Loop & Asks for {name}. Switch to Live in the top bar anytime to execute with real agents on your repos.",
                 { name: v.name },
               ),
             },
           ],
         };
       }),
+    );
+  };
+
+  const handleChangePreviewRisk = (risk: DropwaveRiskLevel) => {
+    if (!activeVenture) return;
+    setVentures((prev) =>
+      prev.map((v) => (v.id === activeVenture.id ? { ...v, riskLevel: risk } : v)),
     );
   };
 
@@ -394,35 +462,25 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     );
   };
 
-  const totalNeedsCount =
-    mode === "preview" ? ventures.reduce((sum, v) => sum + v.reviews.length, 0) : needs.length;
-
-  const targetText =
-    mode === "preview" && activeVenture
-      ? activeVenture.targetLine
-      : project
-        ? project.title
-        : gt("No project linked");
-  const statusText =
-    mode === "preview" && activeVenture
-      ? activeVenture.statusWord
-      : lead
-        ? gt("Autonomous Execution")
-        : gt("Ready for setup");
+  const totalNeedsCount = decisionQueueItems.length;
 
   const widgetData = {
     venture: mode === "preview" ? activeVenture : null,
     liveAsks,
     liveDocs,
     liveMemories,
-    activePreviewHelperId,
-    onSelectPreviewHelper: (id: string | null) => {
-      setActivePreviewHelperId(id);
+    activePreviewAgentId,
+    onSelectPreviewAgent: (id: string | null) => {
+      setActivePreviewAgentId(id);
       setMainView("chat");
     },
     onIgnorePreviewReview: handleIgnorePreviewReview,
     onOpenDoc: (docId: string) => setOpenDocId(docId),
   };
+
+  const visiblePreviewVentures = ventures.slice(0, MAX_TOPBAR_VENTURES);
+  const visibleLiveProjects = projects.slice(0, MAX_TOPBAR_VENTURES);
+  const searchLower = projectSearch.trim().toLowerCase();
 
   return (
     <DropwaveWorkspaceContext
@@ -473,24 +531,124 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         setFocusMode,
         highlightReviewId,
         jumpToReview,
+        openDecisionQueue,
+        openSettings: () => setSettingsOpen(true),
       }}
     >
       <DropwaveModeContext value={true}>
         <div data-dw-cockpit="" style={appearance.style}>
-          {/* Top Venture Switcher Bar */}
+          {/* Top Venture Switcher Bar — clean, zero useless filler */}
           <header data-dw-topbar="">
             <div data-dw-topbar-left="">
-              <span data-dw-brand="">
-                <span data-dw-brand-dot="" />
-                {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product brand name */}
-                <strong>Dropwave</strong>
-              </span>
+              <Popover open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
+                <PopoverTrigger type="button" data-dw-brand-btn="" aria-label={gt("All projects")}>
+                  <span data-dw-brand-dot="" />
+                  {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product brand name */}
+                  <strong>Dropwave</strong>
+                  <ChevronDownIcon className="size-3.5 opacity-60" />
+                </PopoverTrigger>
+                <PopoverPopup align="start" width="md" padding="compact" data-dropwave-popover="">
+                  <div data-dw-project-switcher="">
+                    <label data-dw-switcher-search="">
+                      <SearchIcon className="size-3.5" />
+                      <input
+                        value={projectSearch}
+                        onChange={(e) => setProjectSearch(e.currentTarget.value)}
+                        placeholder={gt("Switch project…")}
+                        aria-label={gt("Switch project")}
+                      />
+                    </label>
+                    <div data-dw-switcher-list="">
+                      {mode === "preview"
+                        ? ventures
+                            .filter(
+                              (v) => !searchLower || v.name.toLowerCase().includes(searchLower),
+                            )
+                            .map((v) => (
+                              <button
+                                key={v.id}
+                                type="button"
+                                data-dw-switcher-item=""
+                                aria-current={activeVenture?.id === v.id ? "true" : undefined}
+                                onClick={() => {
+                                  setSelectedVentureId(v.id);
+                                  setActivePreviewAgentId(null);
+                                  setMainView("chat");
+                                  setProjectMenuOpen(false);
+                                }}
+                              >
+                                <span data-dw-switcher-left="">
+                                  <span
+                                    data-dw-dot={
+                                      v.reviews.length > 0
+                                        ? "coral"
+                                        : activeVenture?.id === v.id
+                                          ? "emerald"
+                                          : "dim"
+                                    }
+                                  />
+                                  <strong>{v.name}</strong>
+                                </span>
+                                {v.reviews.length > 0 ? (
+                                  <span data-dw-badge="coral">{v.reviews.length}</span>
+                                ) : null}
+                              </button>
+                            ))
+                        : projects
+                            .filter(
+                              (p) => !searchLower || p.title.toLowerCase().includes(searchLower),
+                            )
+                            .map((proj) => {
+                              const key = keyOfProject(proj);
+                              const active = project !== null && keyOfProject(project) === key;
+                              return (
+                                <button
+                                  key={key}
+                                  type="button"
+                                  data-dw-switcher-item=""
+                                  aria-current={active ? "true" : undefined}
+                                  onClick={() => {
+                                    setLastProject(key);
+                                    setProjectMenuOpen(false);
+                                    const chosenLead = leadFor(proj, roster);
+                                    if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
+                                      setMainView("chat");
+                                      openThread(
+                                        scopeThreadRef(chosenLead.environmentId, chosenLead.id),
+                                      );
+                                    } else {
+                                      setMainView("setup");
+                                    }
+                                  }}
+                                >
+                                  <span data-dw-switcher-left="">
+                                    <span data-dw-dot={active ? "emerald" : "dim"} />
+                                    <strong>{proj.title}</strong>
+                                  </span>
+                                </button>
+                              );
+                            })}
+                    </div>
+                    <button
+                      type="button"
+                      data-dw-switcher-new=""
+                      onClick={() => {
+                        setProjectMenuOpen(false);
+                        setMainView("setup");
+                      }}
+                    >
+                      <PlusIcon className="size-3.5" />
+                      <T>New project setup</T>
+                    </button>
+                  </div>
+                </PopoverPopup>
+              </Popover>
 
               <span data-dw-vdiv="" aria-hidden="true" />
 
               <nav data-dw-ventures="" aria-label={gt("Projects")}>
                 {mode === "preview"
-                  ? ventures.map((v) => {
+                  ? visiblePreviewVentures.map((v) => {
                       const active = activeVenture?.id === v.id;
                       const hasUrgent = v.reviews.length > 0;
                       return (
@@ -501,7 +659,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                           aria-current={active ? "true" : undefined}
                           onClick={() => {
                             setSelectedVentureId(v.id);
-                            setActivePreviewHelperId(null);
+                            setActivePreviewAgentId(null);
                             setMainView("chat");
                           }}
                         >
@@ -514,7 +672,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                         </button>
                       );
                     })
-                  : projects.map((proj) => {
+                  : visibleLiveProjects.map((proj) => {
                       const key = keyOfProject(proj);
                       const active = project !== null && keyOfProject(project) === key;
                       const hasUrgent = needs.some((t) => {
@@ -546,6 +704,23 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                         </button>
                       );
                     })}
+
+                {(mode === "preview" ? ventures.length : projects.length) > MAX_TOPBAR_VENTURES ? (
+                  <button
+                    type="button"
+                    data-dw-venture-more=""
+                    onClick={() => setProjectMenuOpen(true)}
+                  >
+                    <T>
+                      +
+                      <Var>
+                        {(mode === "preview" ? ventures.length : projects.length) -
+                          MAX_TOPBAR_VENTURES}
+                      </Var>
+                    </T>
+                  </button>
+                ) : null}
+
                 <button
                   type="button"
                   data-dw-venture-add=""
@@ -557,29 +732,10 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
               </nav>
             </div>
 
-            <div data-dw-topbar-center="">
-              <span data-dw-target-pill="">
-                <span data-dw-muted-label="">
-                  <T>Active Target:</T>
-                </span>
-                <strong>{targetText}</strong>
-                <span data-dw-muted-sep="">·</span>
-                <span data-dw-mono="emerald">{statusText}</span>
-              </span>
-            </div>
-
-            <DropwaveToolbar
-              appearance={appearance}
-              ventures={ventures}
-              totalNeedsCount={totalNeedsCount}
-              onSelectPreviewReview={(ventureId, reviewId) => {
-                setSelectedVentureId(ventureId);
-                jumpToReview(reviewId);
-              }}
-            />
+            <DropwaveToolbar appearance={appearance} totalNeedsCount={totalNeedsCount} />
           </header>
 
-          {/* Main Spatial 3-Zone Workspace */}
+          {/* Main Spatial 3-Zone Workspace — full remaining height (zero bottom footer!) */}
           <main data-dw-spatial="" data-focus={focusMode ? "true" : undefined}>
             {!focusMode ? (
               <div data-dw-wing="left">
@@ -595,7 +751,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                   onCreatedPreviewVenture={(newVenture) => {
                     setVentures((prev) => [newVenture, ...prev]);
                     setSelectedVentureId(newVenture.id);
-                    setActivePreviewHelperId(null);
+                    setActivePreviewAgentId(null);
                     setMainView("chat");
                   }}
                 />
@@ -610,12 +766,12 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
               ) : (
                 <DropwaveChatPillar
                   venture={mode === "preview" ? activeVenture : null}
-                  activePreviewHelperId={activePreviewHelperId}
-                  onClearPreviewHelper={() => setActivePreviewHelperId(null)}
+                  activePreviewAgentId={activePreviewAgentId}
                   resolvedReviews={resolvedReviews}
                   onResolvePreviewReview={handleResolvePreviewReview}
                   onSendPreviewMessage={handleSendPreviewMessage}
                   onOpenDoc={(docId) => setOpenDocId(docId)}
+                  onChangePreviewRisk={handleChangePreviewRisk}
                 />
               )}
             </section>
@@ -628,37 +784,51 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
             ) : null}
           </main>
 
-          {/* Subtle Bottom Status Dock */}
-          <footer data-dw-footer="">
-            <div data-dw-footer-left="">
-              <span data-dw-footer-badge="">S</span>
-              <strong>
-                <T>Solo Founder</T>
-              </strong>
-              <span data-dw-muted-sep="">·</span>
-              <span data-dw-status-inline="emerald">
-                <span data-dw-dot="emerald" />
-                <T>Orchestrating</T>
-              </span>
-            </div>
-            <div data-dw-footer-right="">
-              <ZapIcon className="size-3" data-dw-icon="indigo" />
-              <span>
-                {mode === "preview" ? (
-                  <T>Preview Showcase · click Live for connected repos</T>
-                ) : (
-                  <T>
-                    Live Harness · <Var>{projects.length}</Var> projects
-                  </T>
-                )}
-              </span>
-            </div>
-          </footer>
-
-          {/* Settings & route modals render cleanly on top */}
+          {/* Engine Settings modal route (when opened via Dropwave Settings -> Engine & Providers) */}
           {modalOpen ? <SidebarProvider>{children}</SidebarProvider> : null}
         </div>
       </DropwaveModeContext>
+
+      {/* Decision Queue Focus Modal */}
+      <DropwaveDecisionModal
+        open={decisionModalOpen}
+        items={decisionQueueItems}
+        initialIndex={decisionInitialIndex}
+        onClose={() => setDecisionModalOpen(false)}
+        onResolve={(item, choiceLabel, alwaysDoThis) => {
+          if (mode === "preview") {
+            handleResolvePreviewReview(item.id, choiceLabel, alwaysDoThis);
+          } else {
+            const match = needs.find((t) => keyOfThread(t) === item.id);
+            setDecisionModalOpen(false);
+            if (match) openThread(scopeThreadRef(match.environmentId, match.id));
+          }
+        }}
+        onIgnore={(item) => {
+          if (mode === "preview") handleIgnorePreviewReview(item.id);
+          else setDecisionModalOpen(false);
+        }}
+        onJumpToChat={(item) => {
+          if (mode === "preview") {
+            const owner = ventures.find((v) => v.reviews.some((r) => r.id === item.id));
+            if (owner) setSelectedVentureId(owner.id);
+            jumpToReview(item.id);
+          } else {
+            const match = needs.find((t) => keyOfThread(t) === item.id);
+            if (match) openThread(scopeThreadRef(match.environmentId, match.id));
+          }
+        }}
+      />
+
+      {/* Dropwave-first Settings Dialog */}
+      <DropwaveSettingsDialog
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        appearance={appearance}
+        defaultRisk={defaultRisk}
+        onChangeDefaultRisk={setDefaultRisk}
+      />
+
       {!modalOpen && panel !== null ? (
         <DropwavePanels panel={panel} onClose={() => setPanel(null)} />
       ) : null}

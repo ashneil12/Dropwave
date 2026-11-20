@@ -7,7 +7,6 @@ import { T, Var, useGT, useMessages } from "gt-react";
 import {
   ActivityIcon,
   ArrowUpRightIcon,
-  CheckIcon,
   ListChecksIcon,
   ListTodoIcon,
   PlusIcon,
@@ -203,17 +202,6 @@ function Activity() {
         />
       )}
     </>
-  );
-}
-
-export function DropwaveNeeds({ onOpenThread }: { onOpenThread: () => void }) {
-  const workspace = useDropwaveWorkspace();
-  const gt = useGT();
-  if (!workspace) return null;
-  return workspace.needs.length > 0 ? (
-    <WorkList threads={workspace.needs} onOpenThread={onOpenThread} preferLead />
-  ) : (
-    <Empty icon={<CheckIcon />} text={gt("Nothing needs you right now.")} />
   );
 }
 
