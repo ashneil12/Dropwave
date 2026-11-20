@@ -51,6 +51,7 @@ import type {
 import {
   IDLE_COMPACTION_TEXT,
   idleCompactionOf,
+  isEligibleDropwaveBotThread,
   isQueuedProviderThreadPlaceholder,
   OrchestrationV2AppThreadJson as OrchestrationV2AppThreadJsonSchema,
   OrchestrationV2CheckpointJson as OrchestrationV2CheckpointJsonSchema,
@@ -603,6 +604,9 @@ export interface ProjectionStoreV2Shape {
   readonly listActiveThreads: (
     projectId?: ProjectId,
   ) => Effect.Effect<ReadonlyArray<ActiveThreadListEntry>, ProjectionStoreV2Error>;
+  readonly listActiveDropwaveBots: (
+    projectId: ProjectId,
+  ) => Effect.Effect<ReadonlyArray<OrchestrationV2AppThread>, ProjectionStoreV2Error>;
   /** Older settled thread ids below a cursor, newest settle first, and per-project counts. */
   readonly listOlderSettledThreads: (
     query: OlderSettledThreadsQuery,
@@ -911,11 +915,17 @@ function preserveCompletionDelivery(
   return { ...next, completionDelivery: current.completionDelivery };
 }
 
+function eligibleBotProfile(thread: OrchestrationV2AppThread): OrchestrationV2AppThread {
+  if (thread.dropwaveBot === undefined || isEligibleDropwaveBotThread(thread)) return thread;
+  const { dropwaveBot: _profile, ...rest } = thread;
+  return rest;
+}
+
 export function emptyProjection(
   event: Extract<OrchestrationV2DomainEvent, { readonly type: "thread.created" }>,
 ): OrchestrationV2ThreadProjection {
   return {
-    thread: event.payload,
+    thread: eligibleBotProfile(event.payload),
     runs: [],
     attempts: [],
     nodes: [],
@@ -975,7 +985,7 @@ export function applyToProjection(
     case "thread.guest-share-updated":
       return {
         ...base,
-        thread: event.payload,
+        thread: eligibleBotProfile(event.payload),
       };
     // Reordering and PR refreshes preserve the orchestrator's activity timestamp.
     case "thread.active-reordered":
@@ -984,14 +994,14 @@ export function applyToProjection(
     case "thread.issue-synced":
       return {
         ...base,
-        thread: event.payload,
+        thread: eligibleBotProfile(event.payload),
         updatedAt: event.payload.updatedAt,
       };
     case "thread.visited":
     case "thread.marked-unread":
       return {
         ...projection,
-        thread: event.payload,
+        thread: eligibleBotProfile(event.payload),
       };
     case "thread.visit-recorded":
       return {
@@ -1337,9 +1347,11 @@ const decodePullRequestThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(PullRequestThread),
 );
 
-const decodeThreadPayload = Schema.decodeUnknownEffect(
+const decodeStoredThreadPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJsonSchema),
 );
+const decodeThreadPayload = (stored: unknown) =>
+  decodeStoredThreadPayload(stored).pipe(Effect.map(eligibleBotProfile));
 const decodeRunPayload = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2RunJsonSchema),
 );
@@ -1823,6 +1835,9 @@ export function threadShellFromProjection(
     creationSource: projection.thread.creationSource,
     id: projection.thread.id,
     projectId: projection.thread.projectId,
+    ...(projection.thread.dropwaveBot === undefined
+      ? {}
+      : { dropwaveBot: projection.thread.dropwaveBot }),
     title: projection.thread.title,
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
@@ -2137,6 +2152,9 @@ function shellFromState(input: {
     creationSource: input.state.thread.creationSource,
     id: input.state.thread.id,
     projectId: input.state.thread.projectId,
+    ...(input.state.thread.dropwaveBot === undefined
+      ? {}
+      : { dropwaveBot: input.state.thread.dropwaveBot }),
     title: input.state.thread.title,
     providerInstanceId: input.state.thread.providerInstanceId,
     modelSelection: input.state.thread.modelSelection,
@@ -2390,7 +2408,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             case "thread.model-selection-updated":
             case "thread.provider-switched":
             case "thread.guest-share-updated": {
-              const payloadJson = yield* encodeThreadPayload(event.payload);
+              const payloadJson = yield* encodeThreadPayload(eligibleBotProfile(event.payload));
               const payload = parseEncodedPayload(payloadJson);
               yield* sql`
               INSERT INTO orchestration_v2_projection_threads (
@@ -8371,6 +8389,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return { providerThreadsByThreadId, pendingTurnItemsByThreadId };
     });
 
+    const isDropwaveBotRow = (alias: string) => {
+      const thread = sql.literal(alias);
+      return sql`(
+        json_extract(${thread}.payload_json, '$.dropwaveBot.kind') IS NOT NULL
+        AND json_extract(${thread}.payload_json, '$.lineage.parentThreadId') IS NULL
+        AND json_extract(${thread}.payload_json, '$.lineage.rootThreadId') IS ${thread}.thread_id
+        AND json_extract(${thread}.payload_json, '$.lineage.relationshipToParent') IS NULL
+        AND json_extract(${thread}.payload_json, '$.lineage.sideChat') IS NOT 1
+        AND json_extract(${thread}.payload_json, '$.delegatedFrom') IS NULL
+      )`;
+    };
+
     const getSettlementCandidates: ProjectionStoreV2Shape["getSettlementCandidates"] = (threadId) =>
       sql
         .withTransaction(
@@ -8412,6 +8442,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               AND json_extract(t.payload_json, '$.settledOverride') IS NULL
               AND json_extract(t.payload_json, '$.pinnedAt') IS NULL
               AND json_extract(t.payload_json, '$.autoSettleDisabledAt') IS NULL
+              AND NOT ${isDropwaveBotRow("t")}
               AND (
                 json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
                 OR NOT EXISTS (
@@ -9207,6 +9238,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       }));
     }, Effect.mapError(shellSnapshotReadError));
 
+    const listActiveDropwaveBots = Effect.fn("ProjectionStore.listActiveDropwaveBots")(function* (
+      projectId: ProjectId,
+    ) {
+      const rows = yield* sql<PayloadRow>`
+        SELECT t.payload_json FROM orchestration_v2_projection_threads t
+        WHERE t.project_id = ${projectId}
+          AND t.deleted_at IS NULL AND t.archived_at IS NULL
+          AND ${isDropwaveBotRow("t")}
+        ORDER BY t.title, t.thread_id
+      `;
+      const bots = yield* Effect.forEach(rows, (row) => decodeThreadPayload(row.payload_json));
+      return bots.filter((thread) => thread.dropwaveBot !== undefined);
+    }, Effect.mapError(shellSnapshotReadError));
+
     const getThreadLinkMetadata = Effect.fn("ProjectionStore.getThreadLinkMetadata")(function* (
       threadIds: ReadonlyArray<ThreadId>,
     ) {
@@ -9399,6 +9444,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       countThreads: readOnReader(countThreads),
       listActiveShellIndex: readOnReader(listActiveShellIndex),
       listActiveThreads: readOnReader(listActiveThreads),
+      listActiveDropwaveBots: readOnReader(listActiveDropwaveBots),
       readShellSnapshot: readOnReader(readShellSnapshot),
       listOlderSettledThreads: readOnReader(listOlderSettledThreads),
       getThreadShell: readOnReader(getThreadShell),

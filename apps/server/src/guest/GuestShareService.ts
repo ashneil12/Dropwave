@@ -218,6 +218,18 @@ const threadOf = (event: OrchestrationV2DomainEvent): OrchestrationV2AppThread |
   }
 };
 
+const guestThread = (thread: OrchestrationV2AppThread): OrchestrationV2AppThread => {
+  if (thread.dropwaveBot === undefined) return thread;
+  const { dropwaveBot: _privateProfile, ...visible } = thread;
+  return visible;
+};
+
+// The current wire contract puts the private profile on full thread records only.
+const hasPrivateBotProfile = (
+  event: OrchestrationV2DomainEvent,
+): event is Extract<OrchestrationV2DomainEvent, { readonly payload: OrchestrationV2AppThread }> =>
+  "dropwaveBot" in event.payload && event.payload.dropwaveBot !== undefined;
+
 const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const commandOutputs = yield* CommandOutputHub.CommandOutputHub;
@@ -524,7 +536,7 @@ const make = Effect.gen(function* () {
 
   /**
    * The thread as the owner's thread subscription sends it: a bounded snapshot, then the same
-   * wire events, batched the same way. Only the share's own state is added.
+   * wire events, batched the same way. Bot configuration stays on the owner's side.
    */
   const stream = Effect.fn("GuestShareService.stream")(function* (session: string) {
     const { thread, share } = yield* authorize(session, "session");
@@ -568,10 +580,13 @@ const make = Effect.gen(function* () {
           if (item.event.type === "turn-item.updated") rememberSent(share.id, [item.event.payload]);
           const updated = threadOf(item.event);
           const view = updated === null ? null : viewOf(updated);
+          const publicItem = hasPrivateBotProfile(item.event)
+            ? { ...item, event: { ...item.event, payload: guestThread(item.event.payload) } }
+            : item;
           return view === null
-            ? [{ type: "thread", item }]
+            ? [{ type: "thread", item: publicItem }]
             : [
-                { type: "thread", item },
+                { type: "thread", item: publicItem },
                 { type: "view", view },
               ];
         }),
@@ -585,7 +600,7 @@ const make = Effect.gen(function* () {
     );
     const openingSnapshot = buildBoundedThreadStreamSnapshot({
       snapshotSequence: snapshot.snapshotSequence,
-      projection: snapshot.projection,
+      projection: { ...snapshot.projection, thread: guestThread(snapshot.projection.thread) },
     });
     const opening: ReadonlyArray<GuestStreamEvent> = [
       { type: "view", view: initialView },

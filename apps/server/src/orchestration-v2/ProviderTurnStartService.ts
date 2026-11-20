@@ -45,6 +45,7 @@ import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts"
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal } from "./contextBoundary.ts";
+import { dropwaveBotInstructions } from "./dropwaveBotInstructions.ts";
 import {
   DEFAULT_HANDOFF_TOKEN_CAP,
   handoffTokenCapConfig,
@@ -903,6 +904,14 @@ export const layer: Layer.Layer<
         session.driver === "claudeAgent" ||
         session.providerSession.capabilities.turns.supportsNativeGoals === true;
       const goalCommand = goalDriver && parseGoalCommand(providerMessage) !== null;
+      const botContext =
+        projection.thread.dropwaveBot === undefined ||
+        (providerMessage.attachments.length === 0 && /^\/\S/.test(providerMessage.text.trimStart()))
+          ? ""
+          : dropwaveBotInstructions(
+              projection.thread,
+              yield* projectionStore.listActiveDropwaveBots(projection.thread.projectId),
+            );
       // The provider turn marks cancellation work delivered; restart continuations use their own text or resume natively.
       const noteContinuation = isRestartNoteContinuation(
         run,
@@ -1842,11 +1851,10 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          const context = [delivery.context, sideChatContext, restartNote]
+          const inlineHistory = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          const text = goalCommand ? userText : withInlineContext(context, userText);
           const startInput = noteContinuation ? promptedInput : turnInput;
           const { resume: _resume, ...contextInput } = startInput;
           const { message: resumeMessage, resume: _resumeIntent, ...resumeInput } = startInput;
@@ -1858,6 +1866,16 @@ export const layer: Layer.Layer<
                     !turnInput.message.attachments.some((current) => current.id === missed.id),
                 );
           // Like pending history, pending images need a prompt; native resume carries none.
+          const resumeNatively =
+            turnInput.resume &&
+            inlineHistory === "" &&
+            missedAttachments.length === 0 &&
+            session.resumeTurn !== undefined;
+          const context =
+            botContext === "" || compact || goalCommand || resumeNatively
+              ? inlineHistory
+              : [botContext, inlineHistory].filter((part) => part !== "").join("\n\n");
+          const text = goalCommand ? userText : withInlineContext(context, userText);
           const prompted = context !== "" || missedAttachments.length > 0;
           const operation =
             turnInput.resume && !prompted && session.resumeTurn !== undefined
@@ -1929,6 +1947,7 @@ export const layer: Layer.Layer<
         ),
       );
       const deliverySession =
+        botContext === "" &&
         effectiveHandoffs.length === 0 &&
         retryHandoff.handoffs.length === 0 &&
         retryHandoff.attachments.length === 0 &&

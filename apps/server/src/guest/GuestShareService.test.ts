@@ -6,7 +6,7 @@ import {
   CommandId,
   EventId,
   GuestShareId,
-  type GuestStreamEvent,
+  GuestStreamEvent,
   MessageId,
   type OrchestrationV2ThreadHistoryPage,
   type OrchestrationV2TurnItem,
@@ -28,6 +28,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -285,6 +286,61 @@ it.effect("starts a stream with the runs and items already in the thread", () =>
       snapshot.item.projection.visibleTurnItems.map((row) => row.item.type),
       "user_message",
     );
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("keeps the owner's bot profile out of encoded guest snapshots and live updates", () =>
+  Effect.gen(function* () {
+    const { orchestrator, guestShares, credential } = yield* shareThread;
+    const { token: session } = yield* guestShares.redeem({ credential, name: "Sam" });
+    const sink = yield* EventSink.EventSinkV2;
+    const { thread } = yield* orchestrator.getThreadProjection(threadId);
+    const publishProfile = (title: string, brief: string) =>
+      sink.write({
+        events: [
+          {
+            type: "thread.metadata-updated",
+            id: EventId.make(`profile:${title}`),
+            threadId,
+            occurredAt: thread.updatedAt,
+            payload: {
+              ...thread,
+              title,
+              dropwaveBot: { kind: "lead", brief, workflow: [], rules: [] },
+            },
+          },
+        ],
+      });
+    yield* publishProfile("Initial owner title", "PRIVATE_PROFILE_SNAPSHOT");
+    const events = yield* guestShares.stream(session);
+    yield* publishProfile("New owner title", "PRIVATE_PROFILE_UPDATE");
+    assert.equal(
+      (yield* orchestrator.getThreadProjection(threadId)).thread.dropwaveBot?.brief,
+      "PRIVATE_PROFILE_UPDATE",
+    );
+    yield* orchestrator.dispatch({
+      type: "thread.guest-share.close",
+      commandId: CommandId.make("close-after-profile-edit"),
+      threadId,
+    });
+    const encode = Schema.encodeEffect(Schema.fromJsonString(Schema.toCodecJson(GuestStreamEvent)));
+    const payloads = yield* Effect.forEach(yield* Stream.runCollect(events), (event) =>
+      encode(event),
+    );
+    assert.isTrue(
+      payloads.some(
+        (payload) =>
+          payload.includes('"kind":"snapshot"') && payload.includes("Initial owner title"),
+      ),
+    );
+    assert.isTrue(
+      payloads.some(
+        (payload) =>
+          payload.includes('"type":"thread.metadata-updated"') &&
+          payload.includes("New owner title"),
+      ),
+    );
+    assert.isFalse(payloads.some((payload) => /dropwaveBot|PRIVATE_PROFILE/.test(payload)));
   }).pipe(Effect.provide(layerTest)),
 );
 

@@ -8,6 +8,7 @@ import {
   OrchestrationV2CheckpointUnavailableError,
   WS_METHODS,
   type ChatAttachment,
+  type DropwaveBotProfile,
   MessageId,
   type ModelSelection,
   type NodeId,
@@ -84,6 +85,7 @@ export interface CreateThreadInput extends CommandMetadata {
   readonly threadId: ThreadId;
   readonly projectId: ProjectId;
   readonly title: string;
+  readonly dropwaveBot?: DropwaveBotProfile;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
@@ -141,6 +143,7 @@ export type MarkThreadUnreadInput = ThreadCommandInput;
 export interface UpdateThreadMetadataInput extends ThreadCommandInput {
   readonly limitRecovery?: import("@t3tools/contracts").OrchestrationV2LimitRecoveryUpdate | null;
   readonly title?: string;
+  readonly dropwaveBot?: DropwaveBotProfile | null;
   readonly modelSelection?: ModelSelection;
   readonly branch?: string | null;
   readonly worktreePath?: string | null;
@@ -476,6 +479,7 @@ export const createThread = Effect.fn("EnvironmentCommands.createThread")(functi
     threadId: input.threadId,
     projectId: input.projectId,
     title: input.title,
+    ...(input.dropwaveBot === undefined ? {} : { dropwaveBot: input.dropwaveBot }),
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode,
     interactionMode: input.interactionMode,
@@ -687,6 +691,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
     let result = null;
     if (
       input.title !== undefined ||
+      input.dropwaveBot !== undefined ||
       input.branch !== undefined ||
       input.worktreePath !== undefined ||
       input.regenerateTitle !== undefined ||
@@ -699,6 +704,7 @@ export const updateThreadMetadata = Effect.fn("EnvironmentCommands.updateThreadM
         commandId,
         threadId: input.threadId,
         ...(input.title === undefined ? {} : { title: input.title }),
+        ...(input.dropwaveBot === undefined ? {} : { dropwaveBot: input.dropwaveBot }),
         ...(input.branch === undefined ? {} : { branch: input.branch }),
         ...(input.worktreePath === undefined ? {} : { worktreePath: input.worktreePath }),
         ...(input.expectedEmpty === true ? { expectedEmpty: true } : {}),

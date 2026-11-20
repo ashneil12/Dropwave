@@ -14,6 +14,7 @@ import {
   CheckpointRef,
   CommandId,
   ContextTransferId,
+  type DropwaveBotProfile,
   EnvironmentId,
   EventId,
   IssueTrackerKind,
@@ -3548,6 +3549,113 @@ const writeHtmlRenderRun = Effect.fn("test.writeHtmlRenderRun")(function* (input
 });
 
 it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
+  it.effect(
+    "keeps one active Dropwave lead per project and preserves teammate routing across roster changes",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectId = ProjectId.make("dropwave-roster");
+        const otherProjectId = ProjectId.make("dropwave-other-project");
+        for (const id of [projectId, otherProjectId]) {
+          yield* seedProject({
+            projectId: id,
+            title: id,
+            workspaceRoot: `/workspace/${id}`,
+            defaultModelSelection: null,
+            createdAt: "2026-09-07T00:00:00.000Z",
+          });
+        }
+        const leadProfile = {
+          kind: "lead",
+          brief: "Keep the project moving.",
+          workflow: ["Build", "Review"],
+          rules: ["Run affected tests"],
+        } satisfies DropwaveBotProfile;
+        const createBot = (id: string, profile: DropwaveBotProfile, project = projectId) =>
+          orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create:${id}`),
+            threadId: ThreadId.make(id),
+            createdBy: "user",
+            creationSource: "web",
+            projectId: project,
+            title: id,
+            dropwaveBot: profile,
+            modelSelection,
+            runtimeMode: "approval-required",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+          });
+        const results = yield* Effect.forEach(
+          ["dropwave-lead-a", "dropwave-lead-b"],
+          (id) => Effect.result(createBot(id, leadProfile)),
+          { concurrency: 2 },
+        );
+        assert.lengthOf(
+          results.filter((result) => result._tag === "Success"),
+          1,
+        );
+        const shell = (yield* orchestrator.getShellSnapshot()).threads;
+        const lead = shell.find((thread) => thread.dropwaveBot?.kind === "lead");
+        assert.isDefined(lead);
+        assert.isNotNull(lead.pinnedAt);
+        assert.deepEqual(lead.dropwaveBot, leadProfile);
+        const teammateProfile = {
+          kind: "teammate",
+          brief: "Check the release.",
+          leadThreadId: lead.id,
+        } satisfies DropwaveBotProfile;
+        const crossProject = yield* Effect.result(
+          createBot("cross-project", teammateProfile, otherProjectId),
+        );
+        assert.equal(crossProject._tag, "Failure");
+        yield* createBot("dropwave-review", teammateProfile);
+        const teammateId = ThreadId.make("dropwave-review");
+        const editedProfile = { ...leadProfile, rules: [...leadProfile.rules, "Keep evidence"] };
+        yield* orchestrator.dispatch({
+          type: "thread.metadata.update",
+          commandId: CommandId.make("edit-lead"),
+          threadId: lead.id,
+          dropwaveBot: editedProfile,
+        });
+        const updated = (yield* orchestrator.getShellSnapshot()).threads;
+        assert.deepEqual(
+          updated.find((thread) => thread.id === lead.id)?.dropwaveBot,
+          editedProfile,
+        );
+        assert.deepEqual(
+          updated.find((thread) => thread.id === teammateId)?.dropwaveBot,
+          teammateProfile,
+        );
+        const archive = (threadId: ThreadId, stage: string) =>
+          orchestrator.dispatch({
+            type: "thread.archive",
+            commandId: CommandId.make(stage),
+            threadId,
+          });
+        assert.equal((yield* Effect.result(archive(lead.id, "blocked-archive")))._tag, "Failure");
+        yield* archive(teammateId, "archive-teammate");
+        yield* archive(lead.id, "archive-lead");
+        const restore = (threadId: ThreadId, stage: string) =>
+          orchestrator.dispatch({
+            type: "thread.unarchive",
+            commandId: CommandId.make(stage),
+            threadId,
+          });
+        assert.equal(
+          (yield* Effect.result(restore(teammateId, "blocked-restore")))._tag,
+          "Failure",
+        );
+        yield* restore(lead.id, "restore-lead");
+        yield* restore(teammateId, "restore-teammate");
+        assert.deepEqual(
+          (yield* orchestrator.getThreadProjection(teammateId)).thread.dropwaveBot,
+          teammateProfile,
+        );
+      }),
+  );
+
   it.effect("applies lifecycle commands idempotently and emits archive/removal shell deltas", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

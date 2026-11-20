@@ -20,6 +20,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import {
   makeSubagentChildThread,
@@ -136,7 +137,7 @@ it("resets a subagent child's snooze, title job and remote delegation but keeps 
 });
 
 it.effect.each(["provider", "mcp"] as const)(
-  "a %s child does not inherit parent settlement protections and settles once its parent settles",
+  "a %s child keeps its own identity and settles once its parent settles",
   (creationSource) =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -145,7 +146,8 @@ it.effect.each(["provider", "mcp"] as const)(
         pinnedAt: parentCreatedAt,
         pinOrderKey: "a0",
         autoSettleDisabledAt: parentCreatedAt,
-      };
+        dropwaveBot: { kind: "lead", brief: "Parent profile", workflow: [], rules: [] },
+      } satisfies OrchestrationV2AppThread;
       const childThread = makeSubagentChildThread({
         parentThread,
         childThreadId,
@@ -175,6 +177,22 @@ it.effect.each(["provider", "mcp"] as const)(
         });
       }
       const savedParent = yield* store.getThread(parentThreadId);
+      assert.deepEqual(savedParent.dropwaveBot, parentThread.dropwaveBot);
+      assert.isUndefined(childThread.dropwaveBot);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.dropwaveBot', json(${JSON.stringify(parentThread.dropwaveBot)}))
+        WHERE thread_id = ${childThreadId}
+      `;
+      assert.isUndefined((yield* store.getThread(childThreadId)).dropwaveBot);
+      assert.isUndefined((yield* store.getThreadShell(childThreadId))?.dropwaveBot);
+      const turnStart = yield* store.getTurnStartContext(childThreadId, RunId.make("worker-run"));
+      assert.isUndefined(turnStart.thread.dropwaveBot);
+      assert.deepEqual(
+        (yield* store.listActiveDropwaveBots(parentThread.projectId)).map((bot) => bot.id),
+        [parentThreadId],
+      );
       assert.deepEqual(savedParent.pinnedAt, parentCreatedAt);
       assert.equal(savedParent.pinOrderKey, "a0");
       assert.deepEqual(savedParent.autoSettleDisabledAt, parentCreatedAt);

@@ -20,6 +20,7 @@ import {
   RunId,
   ThreadId,
   ProjectId,
+  type OrchestrationV2AppThread,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -390,6 +391,7 @@ it.each([
 
 function makeLocalCommandHarness(input: {
   readonly text: string;
+  readonly nativeTurn?: boolean;
   readonly manualContinuation?: boolean;
   readonly nativeResumeUnsupported?: boolean;
   readonly steeringRestart?: boolean;
@@ -1089,8 +1091,9 @@ function makeLocalCommandHarness(input: {
       : (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
           startTurn(ProviderAdapter.resumeTurnInput(input)),
   };
+  const runsNativeTurn = input.nativeTurn === true || input.sideChat !== undefined;
   const open = vi.fn(() =>
-    input.sideChat !== undefined
+    runsNativeTurn
       ? Effect.succeed(sideChatSession as never)
       : input.interruptOpen === true
         ? Effect.interrupt
@@ -1126,7 +1129,7 @@ function makeLocalCommandHarness(input: {
       input: RunExecutionService.RunExecutionServiceV2StartRootRunInput,
     ) => Effect.Effect<void, RunExecutionService.RunExecutionServiceV2Error>
   >((runInput) =>
-    input.sideChat !== undefined
+    runsNativeTurn
       ? (runInput.resume
           ? runInput.session.resumeTurn!({
               ...runInput,
@@ -1194,6 +1197,7 @@ function makeLocalCommandHarness(input: {
   const createWorktree = vi.fn<GitWorkflow.GitWorkflowService["Service"]["createWorktree"]>(() =>
     Effect.succeed({} as never),
   );
+  let botRoster: ReadonlyArray<OrchestrationV2AppThread> = [];
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>((id) =>
     Effect.succeed(id === parentThreadId ? parentRecords : projection),
   );
@@ -1281,6 +1285,7 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
+          listActiveDropwaveBots: () => Effect.succeed(botRoster),
           getTurnStartContext,
           getRuntimeRecoveryProjection,
           getRun,
@@ -1333,6 +1338,9 @@ function makeLocalCommandHarness(input: {
     getRun,
     setProjection: (next: OrchestrationV2ThreadProjection) => {
       projection = next;
+    },
+    setBotRoster: (team: ReadonlyArray<OrchestrationV2AppThread>) => {
+      botRoster = team;
     },
     resolveRuntimePolicy,
     createWorktree,
@@ -2142,6 +2150,69 @@ effectIt.effect("refuses unsupported resume instead of manufacturing a user prom
       ]),
     );
   }),
+);
+
+effectIt.effect.each([
+  { text: "Run the launch checklist", role: "lead", instructions: true },
+  { text: "Verify the rollout", role: "teammate", instructions: true },
+  { text: "/review", role: "lead", instructions: false },
+])(
+  "projects a saved bot profile onto prompts and preserves slash commands: $text",
+  ({ text, role, instructions }) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text, nativeTurn: true });
+      const projection = harness.projection();
+      const leadId =
+        role === "lead" ? projection.thread.id : ThreadId.make("dropwave-project-lead");
+      const teammateId =
+        role === "teammate" ? projection.thread.id : ThreadId.make("dropwave-review-person");
+      const lead: OrchestrationV2AppThread = {
+        ...projection.thread,
+        id: leadId,
+        lineage: { ...projection.thread.lineage, rootThreadId: leadId },
+        title: "Projects",
+        dropwaveBot: {
+          kind: "lead",
+          brief: "Coordinate the launch.",
+          workflow: ["Check the build", "Review the rollout"],
+          rules: ["Include a test receipt"],
+        },
+      };
+      const teammate: OrchestrationV2AppThread = {
+        ...projection.thread,
+        id: teammateId,
+        lineage: { ...projection.thread.lineage, rootThreadId: teammateId },
+        title: "Reviewer",
+        dropwaveBot: { kind: "teammate", brief: "Check deployment notes.", leadThreadId: lead.id },
+      };
+      harness.setProjection({
+        ...projection,
+        thread: role === "lead" ? lead : teammate,
+      });
+      harness.setBotRoster([lead, teammate]);
+      harness.tryHandlePromptCommand.mockReturnValue(Effect.succeed(false));
+      yield* harness.start;
+      const outgoing = harness.startTurn.mock.calls[0]?.[0];
+      expect(outgoing).toBeDefined();
+      if (instructions) {
+        expect(outgoing?.message.text).toContain("2. Review the rollout");
+        expect(outgoing?.message.text).toContain("Include a test receipt");
+        if (role === "lead") {
+          expect(outgoing?.message.text).toContain("Coordinate the launch.");
+          expect(outgoing?.message.text).toContain('"Reviewer": dropwave-review-person');
+          expect(outgoing?.message.text).toContain("Responsibility: Check deployment notes.");
+        } else {
+          expect(outgoing?.message.text).toContain("Check deployment notes.");
+          expect(outgoing?.message.text).toContain(
+            `Your lead is "Projects" (T3 thread ID ${leadId})`,
+          );
+        }
+        expect(outgoing?.message.text).toMatch(new RegExp(`User message:\\n${text}$`));
+      } else {
+        expect(outgoing?.message.text).toBe(text);
+      }
+      expect(harness.projection().messages[0]?.text).toBe(text);
+    }),
 );
 
 effectIt.effect.each([

@@ -1,4 +1,5 @@
 import type {
+  DropwaveBotProfile,
   OrchestrationV2ThreadLinkMetadata,
   GuestShareId,
   OrchestrationV2SearchThreadInput,
@@ -28,6 +29,7 @@ import {
   CommandId,
   type GuestMessageId,
   isCompactionCommandMessage,
+  isEligibleDropwaveBotThread,
   isOrchestrationV2WorkActive,
   isProviderNativeSubagentThread,
   MessageId,
@@ -103,6 +105,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import * as ProjectStore from "./ProjectStore.ts";
@@ -1553,6 +1556,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const messageIntake = yield* KeyedLock.make<ThreadId>();
+  // Bot membership spans threads, so its validation and commit share a lock.
+  const dropwaveRoster = yield* Semaphore.make(1);
   // Read once: the policy is fixed for the server's life, and dispatch takes it as an input.
   const { managedPolicy } = serverSettings;
   const runtimeModeCeiling: RuntimeModeCeiling | undefined =
@@ -3732,6 +3737,61 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       { concurrency: 1, discard: true },
     );
 
+  const validateDropwaveRoster = Effect.fn("Orchestrator.validateDropwaveRoster")(function* (
+    command: OrchestrationV2ServerCommand,
+    input: {
+      readonly projectId: ProjectId;
+      readonly threadId: ThreadId;
+      readonly previous: DropwaveBotProfile | undefined;
+      readonly next: DropwaveBotProfile | undefined;
+    },
+  ) {
+    const refuse = (cause: string) =>
+      new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause,
+      });
+    const { projectId, threadId, previous, next } = input;
+    if (next !== undefined && previous === undefined) {
+      const project = yield* projects.get(projectId).pipe(mapDispatchError(command));
+      if (
+        Option.isNone(project) ||
+        project.value.deletedAt !== null ||
+        project.value.archivedAt !== null
+      ) {
+        return yield* refuse("Choose an active project for this bot.");
+      }
+    }
+    const bots = yield* projectionStore
+      .listActiveDropwaveBots(projectId)
+      .pipe(mapDispatchError(command));
+    if (
+      previous?.kind === "lead" &&
+      next?.kind !== "lead" &&
+      bots.some(
+        (bot) => bot.dropwaveBot?.kind === "teammate" && bot.dropwaveBot.leadThreadId === threadId,
+      )
+    ) {
+      return yield* refuse("Remove or archive this lead's teammates first.");
+    }
+    if (
+      next?.kind === "lead" &&
+      bots.some((bot) => bot.id !== threadId && bot.dropwaveBot?.kind === "lead")
+    ) {
+      return yield* refuse("This project already has a lead bot.");
+    }
+    if (
+      next?.kind === "teammate" &&
+      !bots.some(
+        (bot) =>
+          bot.id !== threadId && bot.id === next.leadThreadId && bot.dropwaveBot?.kind === "lead",
+      )
+    ) {
+      return yield* refuse("Choose an active lead bot in this project.");
+    }
+  });
+
   const dispatchThreadCreate = Effect.fn("orchestrationV2.dispatch.threadCreate")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "thread.create" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -3751,6 +3811,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         threadId: command.threadId,
       });
     }
+    if (command.dropwaveBot !== undefined) {
+      if (
+        command.createdBy !== "user" ||
+        command.linkOrigin !== undefined ||
+        command.delegatedFrom != null
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "Set up a bot from the workspace's Team view.",
+        });
+      }
+      yield* validateDropwaveRoster(command, {
+        projectId: command.projectId,
+        threadId: command.threadId,
+        previous: undefined,
+        next: command.dropwaveBot,
+      });
+    }
 
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
@@ -3760,6 +3839,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       id: command.threadId,
       projectId: command.projectId,
       title: command.title,
+      ...(command.dropwaveBot === undefined ? {} : { dropwaveBot: command.dropwaveBot }),
       providerInstanceId: command.modelSelection.instanceId,
       modelSelection: command.modelSelection,
       runtimeMode: command.runtimeMode,
@@ -3784,6 +3864,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       archivedAt: null,
       settledOverride: null,
       settledAt: null,
+      ...(command.dropwaveBot === undefined ? {} : { pinnedAt: now }),
       snoozedUntil: null,
       snoozedAt: null,
       lastVisitedAt: null,
@@ -4135,6 +4216,52 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandId: command.commandId,
         commandType: command.type,
         cause: `Thread ${command.threadId} is deleted.`,
+      });
+    }
+    const profileUpdate =
+      command.type === "thread.metadata.update" ? command.dropwaveBot : undefined;
+    if (
+      profileUpdate != null &&
+      (!isEligibleDropwaveBotThread(thread) || thread.archivedAt !== null)
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Choose an active top-level thread for this bot.",
+      });
+    }
+    if (
+      thread.archivedAt === null &&
+      (profileUpdate !== undefined ||
+        (command.type === "thread.archive" && thread.dropwaveBot?.kind === "lead"))
+    ) {
+      yield* validateDropwaveRoster(command, {
+        projectId: thread.projectId,
+        threadId: thread.id,
+        previous: thread.dropwaveBot,
+        next: profileUpdate ?? undefined,
+      });
+    }
+    if (
+      command.type === "thread.unarchive" &&
+      thread.archivedAt !== null &&
+      thread.dropwaveBot !== undefined
+    ) {
+      yield* validateDropwaveRoster(command, {
+        projectId: thread.projectId,
+        threadId: thread.id,
+        previous: undefined,
+        next: thread.dropwaveBot,
+      });
+    }
+    if (
+      (command.type === "thread.snooze" || command.type === "thread.settle") &&
+      thread.dropwaveBot !== undefined
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Bots stay available for teammate and worker handoffs.",
       });
     }
     if (
@@ -4810,6 +4937,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           };
         }
         case "thread.metadata.update": {
+          const { dropwaveBot, ...threadFields } = thread;
+          const nextBot = command.dropwaveBot === undefined ? dropwaveBot : command.dropwaveBot;
+          const configuringBot = command.dropwaveBot != null && dropwaveBot === undefined;
           const previousRecovery =
             thread.limitRecovery?.runId === command.limitRecovery?.runId &&
             thread.limitRecovery?.resetAt === command.limitRecovery?.resetAt
@@ -4828,7 +4958,19 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     requestId: command.commandId,
                   };
           return {
-            ...thread,
+            ...threadFields,
+            ...(nextBot == null ? {} : { dropwaveBot: nextBot }),
+            ...(configuringBot
+              ? {
+                  titleRegeneration: null,
+                  pinnedAt: thread.pinnedAt ?? now,
+                  settledOverride: null,
+                  settledAt: null,
+                  ...(thread.limitRecovery?.snooze === true
+                    ? {}
+                    : { snoozedUntil: null, snoozedAt: null }),
+                }
+              : {}),
             ...(command.title === undefined ? {} : { title: command.title }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
@@ -5593,6 +5735,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     const thread = projection.thread;
     if (thread.deletedAt !== null) return yield* reject("is deleted.");
+    if (thread.dropwaveBot !== undefined)
+      return yield* reject("belongs to its project's bot team.");
     if (threadHasUnfinishedWork(projection)) {
       return yield* reject("still has work in progress. Finish or stop it first.");
     }
@@ -7055,11 +7199,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // A thread named before its first message (for example by an MCP launch that tracks an issue)
     // keeps that name instead of a title generated from a terse prompt such as "work on this".
     const seedsUntitledThread =
+      projection.thread.dropwaveBot === undefined &&
       command.titleSeed !== undefined &&
       (yield* projectionStore.getMessageCount(command.threadId).pipe(mapDispatchError(command))) ===
         0 &&
       !hasTitleSetBeforeFirstMessage(projection.thread, command.titleSeed);
     if (
+      projection.thread.dropwaveBot === undefined &&
       !isNativeMaintenanceCommand(command) &&
       (seedsUntitledThread || (command.createdBy === "user" && (yield* onlyMaintenanceHistory)))
     ) {
@@ -14980,6 +15126,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ),
           );
         if (
+          thread.dropwaveBot !== undefined ||
           thread.settledOverride !== null ||
           DateTime.toEpochMillis(thread.updatedAt) > DateTime.toEpochMillis(command.snapshotAt)
         ) {
@@ -15020,6 +15167,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (cause) => new OrchestratorProjectionError({ threadId: deletion.threadId, cause }),
               ),
             );
+          if (
+            projection.thread.archivedAt === null &&
+            projection.thread.dropwaveBot?.kind === "lead"
+          ) {
+            yield* validateDropwaveRoster(deletion, {
+              projectId: projection.thread.projectId,
+              threadId: projection.thread.id,
+              previous: projection.thread.dropwaveBot,
+              next: undefined,
+            });
+          }
           return yield* mapDispatchError(command)(
             planThreadDeletion({
               command: deletion,
@@ -15689,7 +15847,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
 
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
-  const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
+  const dispatchThreadWithReceipt = Effect.fnUntraced(function* (
+    command: OrchestrationV2ServerCommand,
+  ) {
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
@@ -15738,6 +15898,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ? withSubagentParentLock(command.threadId, dispatch)
       : dispatch;
   });
+
+  const dispatchWithReceipt = (command: OrchestrationV2ServerCommand) => {
+    const dispatch = dispatchThreadWithReceipt(command);
+    const editsRoster =
+      (command.type === "thread.create" && command.dropwaveBot !== undefined) ||
+      (command.type === "thread.metadata.update" && command.dropwaveBot !== undefined) ||
+      command.type === "thread.archive" ||
+      command.type === "thread.unarchive" ||
+      command.type === "thread.delete" ||
+      command.type === "thread.project.adopt-folder";
+    return editsRoster ? dropwaveRoster.withPermit(dispatch) : dispatch;
+  };
 
   const handleRunUpdate = Effect.fn("Orchestrator.handleRunUpdate")(
     function* (stored: OrchestrationV2StoredEvent) {
