@@ -34,14 +34,25 @@ export function useDropwaveAppearance() {
     1,
     Schema.Finite,
   );
-  const strength = Math.min(1.6, Math.max(0.4, storedStrength));
+  const [storedOpacity, setOpacity] = useLocalStorage(
+    "dropwave:glass-opacity",
+    0.54,
+    Schema.Finite,
+  );
+  const strength = Math.min(1.6, Math.max(0.3, storedStrength));
+  const opacity = Math.min(0.86, Math.max(0.24, storedOpacity));
   const bgUrl =
     wallpaper === "custom" && customWallpaper
       ? `url("${customWallpaper}")`
       : `url("/dropwave/${wallpapers[wallpaper === "custom" ? "mountains" : wallpaper].file}")`;
-  const style: React.CSSProperties & { "--dw-wallpaper": string; "--dw-glass": number } = {
+  const style: React.CSSProperties & {
+    "--dw-wallpaper": string;
+    "--dw-glass": number;
+    "--dw-glass-opacity": number;
+  } = {
     "--dw-wallpaper": bgUrl,
     "--dw-glass": strength,
+    "--dw-glass-opacity": opacity,
   };
   return {
     wallpaper,
@@ -49,6 +60,8 @@ export function useDropwaveAppearance() {
     setCustomWallpaper,
     strength,
     setStrength,
+    opacity,
+    setOpacity,
     style,
   };
 }

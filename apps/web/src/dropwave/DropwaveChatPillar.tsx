@@ -18,11 +18,15 @@ import { Atom } from "effect/reactivity";
 import { T, Var, useGT } from "gt-react";
 import {
   ArrowUpIcon,
+  BotIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  FileTextIcon,
+  ImagePlusIcon,
+  ListTodoIcon,
   MicIcon,
   MicOffIcon,
-  PaperclipIcon,
+  PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -35,6 +39,7 @@ import {
   type KeyboardEvent,
 } from "react";
 
+import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { newMessageId } from "../lib/utils";
 import { useThreadProjection, useThreadVisibleTurnItems } from "../state/entities";
 import { serverEnvironment } from "../state/server";
@@ -48,6 +53,7 @@ import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
 import { DropwaveComposerControls } from "./DropwaveComposerControls";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
+import { DropwaveWorkingBlock } from "./DropwaveWorkingBlock";
 import { workState } from "./model";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
@@ -399,13 +405,20 @@ function HelperChildApprovals({
   );
 }
 
-export function DropwaveChatPillar() {
+export function DropwaveChatPillar({
+  onOpenDocPath,
+  onOpenThreadId,
+}: {
+  onOpenDocPath?: (docPath: string) => void;
+  onOpenThreadId?: (threadId: string) => void;
+} = {}) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Array<PendingImageAttachment>>([]);
   const [workersFoldOpen, setWorkersFoldOpen] = useState(false);
   const [openAgentMsgs, setOpenAgentMsgs] = useState<Record<string, boolean>>({});
+  const [plusMenuOpen, setPlusMenuOpen] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -813,7 +826,11 @@ export function DropwaveChatPillar() {
                           <div data-dw-work-body={isOpen ? "open" : "closed"}>
                             <div data-dw-work-body-inner="">
                               <div data-dw-work-step="">
-                                <DropwaveMarkdown text={msg.text} />
+                                <DropwaveMarkdown
+                                  text={msg.text}
+                                  onOpenDocPath={onOpenDocPath}
+                                  onOpenThreadId={onOpenThreadId}
+                                />
                               </div>
                             </div>
                           </div>
@@ -829,11 +846,20 @@ export function DropwaveChatPillar() {
                     </div>
                   ) : (
                     <div key={msg.id} data-dw-turn="bot">
-                      <DropwaveMarkdown text={msg.text} />
+                      <DropwaveMarkdown
+                        text={msg.text}
+                        onOpenDocPath={onOpenDocPath}
+                        onOpenThreadId={onOpenThreadId}
+                      />
                     </div>
                   );
                 })
               )}
+
+              {/* Devin-Next style live working stream + faded auto-collapsing Thoughts + Thinking Orb */}
+              <div data-dw-turn="bot">
+                <DropwaveWorkingBlock visibleItems={visibleItems} isRunning={isLiveRunning} />
+              </div>
 
               {/* AffectUI-style 1-line folding background runs pill */}
               {liveSubagents.length > 0 && activeThreadRef ? (
@@ -917,7 +943,11 @@ export function DropwaveChatPillar() {
 
               {streamingAssistant && streamingAssistant.item.type === "assistant_message" ? (
                 <div data-dw-turn="bot">
-                  <DropwaveMarkdown text={streamingAssistant.item.text || gt("Thinking…")} />
+                  <DropwaveMarkdown
+                    text={streamingAssistant.item.text || gt("Thinking…")}
+                    onOpenDocPath={onOpenDocPath}
+                    onOpenThreadId={onOpenThreadId}
+                  />
                 </div>
               ) : null}
 
@@ -1034,14 +1064,81 @@ export function DropwaveChatPillar() {
                   hidden
                   onChange={handleAttachFiles}
                 />
-                <button
-                  type="button"
-                  data-dw-composer-icon=""
-                  aria-label={gt("Attach image")}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <PaperclipIcon className="size-4" />
-                </button>
+                <Popover open={plusMenuOpen} onOpenChange={setPlusMenuOpen}>
+                  <PopoverTrigger
+                    type="button"
+                    data-dw-plus-btn=""
+                    data-open={plusMenuOpen ? "true" : undefined}
+                    aria-label={gt("Add to message")}
+                  >
+                    <PlusIcon className="size-4" />
+                  </PopoverTrigger>
+                  <PopoverPopup align="start" width="sm" padding="compact" data-dropwave-popover="">
+                    <div data-dw-plus-menu="">
+                      <button
+                        type="button"
+                        data-dw-plus-item=""
+                        onClick={() => {
+                          setPlusMenuOpen(false);
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        <ImagePlusIcon className="size-3.5" />
+                        <span>
+                          <T>Attach image</T>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        data-dw-plus-item=""
+                        onClick={() => {
+                          setPlusMenuOpen(false);
+                          workspace.setMainView("asks");
+                        }}
+                      >
+                        <ListTodoIcon className="size-3.5" />
+                        <span>
+                          <T>Open tracked asks</T>
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        data-dw-plus-item=""
+                        onClick={() => {
+                          setPlusMenuOpen(false);
+                          workspace.setMainView("docs");
+                        }}
+                      >
+                        <FileTextIcon className="size-3.5" />
+                        <span>
+                          <T>Browse project docs</T>
+                        </span>
+                      </button>
+                      {workspace.lead && workspace.project ? (
+                        <button
+                          type="button"
+                          data-dw-plus-item=""
+                          onClick={() => {
+                            setPlusMenuOpen(false);
+                            workspace.openPanel({
+                              kind: "profile",
+                              target: {
+                                kind: "new-teammate",
+                                project: workspace.project!,
+                                lead: workspace.lead!,
+                              },
+                            });
+                          }}
+                        >
+                          <BotIcon className="size-3.5" />
+                          <span>
+                            <T>Add specialist bot</T>
+                          </span>
+                        </button>
+                      ) : null}
+                    </div>
+                  </PopoverPopup>
+                </Popover>
 
                 {activeThread ? (
                   <DropwaveComposerControls

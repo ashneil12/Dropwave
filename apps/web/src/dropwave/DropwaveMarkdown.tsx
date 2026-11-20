@@ -1,5 +1,5 @@
 import { useGT } from "gt-react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, FileTextIcon, MessageSquareIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 type MdBlock =
@@ -15,6 +15,28 @@ type MdBlock =
     }
   | { readonly kind: "p"; readonly key: string; readonly text: string };
 
+export interface DropwaveMarkdownHandlers {
+  readonly onOpenDocPath?: ((docPath: string) => void) | undefined;
+  readonly onOpenThreadId?: ((threadId: string) => void) | undefined;
+}
+
+function extractDropwaveDocPath(href: string): string | null {
+  const dropwaveMatch = /(\.dropwave\/docs\/[^\s#?]+)/i.exec(href);
+  if (dropwaveMatch) return dropwaveMatch[1]!;
+  if (/\.md$/i.test(href)) {
+    const file = href.split("/").pop();
+    if (file) return file;
+  }
+  return null;
+}
+
+function extractThreadId(href: string): string | null {
+  if (!href.startsWith("t3-thread://")) return null;
+  const parts = href.split("/");
+  const last = parts.at(-1);
+  return last ? decodeURIComponent(last) : null;
+}
+
 function parseMarkdown(source: string): Array<MdBlock> {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const blocks: Array<MdBlock> = [];
@@ -27,7 +49,6 @@ function parseMarkdown(source: string): Array<MdBlock> {
       continue;
     }
 
-    // Fenced code block
     const fence = /^```([\w-]*)\s*$/.exec(line.trim());
     if (fence) {
       const lang = fence[1] ?? "";
@@ -43,7 +64,6 @@ function parseMarkdown(source: string): Array<MdBlock> {
       continue;
     }
 
-    // Headings
     if (line.startsWith("### ")) {
       blocks.push({ kind: "h3", key: `h3-${i}`, text: line.slice(4).trim() });
       i += 1;
@@ -60,7 +80,6 @@ function parseMarkdown(source: string): Array<MdBlock> {
       continue;
     }
 
-    // Markdown table
     if (
       line.includes("|") &&
       i + 1 < lines.length &&
@@ -84,7 +103,6 @@ function parseMarkdown(source: string): Array<MdBlock> {
       continue;
     }
 
-    // Unordered list
     if (/^\s*[-*•]\s+/.test(line)) {
       const start = i;
       const items: Array<string> = [];
@@ -96,7 +114,6 @@ function parseMarkdown(source: string): Array<MdBlock> {
       continue;
     }
 
-    // Ordered list
     if (/^\s*\d+\.\s+/.test(line)) {
       const start = i;
       const items: Array<string> = [];
@@ -108,7 +125,6 @@ function parseMarkdown(source: string): Array<MdBlock> {
       continue;
     }
 
-    // Paragraph (join contiguous plain lines)
     const start = i;
     const para: Array<string> = [];
     while (
@@ -127,7 +143,7 @@ function parseMarkdown(source: string): Array<MdBlock> {
   return blocks;
 }
 
-function renderInline(text: string): ReactNode {
+function renderInline(text: string, handlers: DropwaveMarkdownHandlers): ReactNode {
   const tokenRe = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|#\d+)/g;
   const nodes: Array<ReactNode> = [];
   let lastIndex = 0;
@@ -139,27 +155,70 @@ function renderInline(text: string): ReactNode {
     const token = match[0];
     const key = `${match.index}-${token.slice(0, 12)}`;
     if (token.startsWith("`") && token.endsWith("`")) {
-      nodes.push(
-        <code key={key} data-dw-inline-code="">
-          {token.slice(1, -1)}
-        </code>,
-      );
+      const codeVal = token.slice(1, -1);
+      const docPath = extractDropwaveDocPath(codeVal);
+      if (docPath && handlers.onOpenDocPath) {
+        nodes.push(
+          <button
+            key={key}
+            type="button"
+            data-dw-ref-chip="doc"
+            onClick={() => handlers.onOpenDocPath?.(docPath)}
+          >
+            <FileTextIcon className="size-3 shrink-0" />
+            <span>{codeVal}</span>
+          </button>,
+        );
+      } else {
+        nodes.push(
+          <code key={key} data-dw-inline-code="">
+            {codeVal}
+          </code>,
+        );
+      }
     } else if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
     } else if (token.startsWith("[")) {
       const parsed = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       if (parsed) {
+        const label = parsed[1]!;
         const href = parsed[2]!;
+        const threadId = extractThreadId(href);
+        const docPath = extractDropwaveDocPath(href);
         if (/^https?:\/\//i.test(href)) {
           nodes.push(
             <a key={key} href={href} target="_blank" rel="noreferrer" data-dw-md-link="">
-              {parsed[1]}
+              {label}
             </a>,
+          );
+        } else if (threadId && handlers.onOpenThreadId) {
+          nodes.push(
+            <button
+              key={key}
+              type="button"
+              data-dw-ref-chip="thread"
+              onClick={() => handlers.onOpenThreadId?.(threadId)}
+            >
+              <MessageSquareIcon className="size-3 shrink-0" />
+              <span>{label}</span>
+            </button>,
+          );
+        } else if (docPath && handlers.onOpenDocPath) {
+          nodes.push(
+            <button
+              key={key}
+              type="button"
+              data-dw-ref-chip="doc"
+              onClick={() => handlers.onOpenDocPath?.(docPath)}
+            >
+              <FileTextIcon className="size-3 shrink-0" />
+              <span>{label}</span>
+            </button>,
           );
         } else {
           nodes.push(
             <code key={key} data-dw-inline-code="">
-              {parsed[1]}
+              {label}
             </code>,
           );
         }
@@ -209,8 +268,15 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
   );
 }
 
-export function DropwaveMarkdown({ text }: { text: string }) {
+export function DropwaveMarkdown({
+  text,
+  onOpenDocPath,
+  onOpenThreadId,
+}: {
+  text: string;
+} & DropwaveMarkdownHandlers) {
   const blocks = parseMarkdown(text);
+  const handlers: DropwaveMarkdownHandlers = { onOpenDocPath, onOpenThreadId };
   return (
     <div data-dw-md="">
       {blocks.map((block) => {
@@ -218,16 +284,16 @@ export function DropwaveMarkdown({ text }: { text: string }) {
           case "code":
             return <CodeBlock key={block.key} lang={block.lang} code={block.code} />;
           case "h1":
-            return <h3 key={block.key}>{renderInline(block.text)}</h3>;
+            return <h3 key={block.key}>{renderInline(block.text, handlers)}</h3>;
           case "h2":
-            return <h4 key={block.key}>{renderInline(block.text)}</h4>;
+            return <h4 key={block.key}>{renderInline(block.text, handlers)}</h4>;
           case "h3":
-            return <h5 key={block.key}>{renderInline(block.text)}</h5>;
+            return <h5 key={block.key}>{renderInline(block.text, handlers)}</h5>;
           case "ul":
             return (
               <ul key={block.key}>
                 {block.items.map((item) => (
-                  <li key={`${block.key}-${item.slice(0, 24)}`}>{renderInline(item)}</li>
+                  <li key={`${block.key}-${item.slice(0, 24)}`}>{renderInline(item, handlers)}</li>
                 ))}
               </ul>
             );
@@ -235,7 +301,7 @@ export function DropwaveMarkdown({ text }: { text: string }) {
             return (
               <ol key={block.key}>
                 {block.items.map((item) => (
-                  <li key={`${block.key}-${item.slice(0, 24)}`}>{renderInline(item)}</li>
+                  <li key={`${block.key}-${item.slice(0, 24)}`}>{renderInline(item, handlers)}</li>
                 ))}
               </ol>
             );
@@ -246,7 +312,7 @@ export function DropwaveMarkdown({ text }: { text: string }) {
                   <thead>
                     <tr>
                       {block.headers.map((h) => (
-                        <th key={`${block.key}-h-${h}`}>{renderInline(h)}</th>
+                        <th key={`${block.key}-h-${h}`}>{renderInline(h, handlers)}</th>
                       ))}
                     </tr>
                   </thead>
@@ -254,7 +320,9 @@ export function DropwaveMarkdown({ text }: { text: string }) {
                     {block.rows.map((row) => (
                       <tr key={`${block.key}-r-${row.join("|").slice(0, 28)}`}>
                         {row.map((cell) => (
-                          <td key={`${block.key}-c-${cell.slice(0, 24)}`}>{renderInline(cell)}</td>
+                          <td key={`${block.key}-c-${cell.slice(0, 24)}`}>
+                            {renderInline(cell, handlers)}
+                          </td>
                         ))}
                       </tr>
                     ))}
@@ -263,7 +331,7 @@ export function DropwaveMarkdown({ text }: { text: string }) {
               </div>
             );
           case "p":
-            return <p key={block.key}>{renderInline(block.text)}</p>;
+            return <p key={block.key}>{renderInline(block.text, handlers)}</p>;
         }
       })}
     </div>

@@ -15,10 +15,11 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
+import { ProviderSettingsPanel } from "../components/settings/ProviderSettingsPanel";
 import { Dialog, DialogPopup } from "../components/ui/dialog";
 import type { useDropwaveAppearance } from "./DropwaveToolbar";
 
-type SettingsSection = "dropwave" | "engine";
+type SettingsSection = "dropwave" | "providers" | "engine";
 
 const PRESETS = [
   { key: "mountains", file: "mountains.jpg", label: msg("Mountains") },
@@ -90,8 +91,20 @@ export function DropwaveSettingsDialog({
                 </span>
               </button>
 
+              <button
+                type="button"
+                data-dw-settings-nav-item=""
+                aria-current={section === "providers" ? "true" : undefined}
+                onClick={() => setSection("providers")}
+              >
+                <KeyRoundIcon className="size-4" />
+                <span>
+                  <T>Providers & Models</T>
+                </span>
+              </button>
+
               <div data-dw-settings-divider="">
-                <T>Backend Engine</T>
+                <T>Advanced</T>
               </div>
 
               <button
@@ -102,7 +115,7 @@ export function DropwaveSettingsDialog({
               >
                 <CpuIcon className="size-4" />
                 <span>
-                  <T>T3 Engine & Providers</T>
+                  <T>T3 Engine & Advanced</T>
                 </span>
               </button>
             </nav>
@@ -111,7 +124,13 @@ export function DropwaveSettingsDialog({
           <div data-dw-settings-main="">
             <header data-dw-settings-header="">
               <h2>
-                {section === "dropwave" ? <T>Workspace & Look</T> : <T>T3 Engine & Providers</T>}
+                {section === "dropwave" ? (
+                  <T>Workspace & Look</T>
+                ) : section === "providers" ? (
+                  <T>Providers & Models</T>
+                ) : (
+                  <T>T3 Engine & Advanced</T>
+                )}
               </h2>
               <button
                 type="button"
@@ -169,15 +188,28 @@ export function DropwaveSettingsDialog({
                     </div>
                     <label data-dw-range-row="">
                       <span>
-                        <T>Glass opacity & blur</T>
+                        <T>Glass blur</T>
                       </span>
                       <input
                         type="range"
-                        min={0.4}
+                        min={0.3}
                         max={1.6}
                         step={0.05}
                         value={appearance.strength}
                         onChange={(e) => appearance.setStrength(e.currentTarget.valueAsNumber)}
+                      />
+                    </label>
+                    <label data-dw-range-row="">
+                      <span>
+                        <T>Glass opacity</T>
+                      </span>
+                      <input
+                        type="range"
+                        min={0.24}
+                        max={0.86}
+                        step={0.02}
+                        value={appearance.opacity}
+                        onChange={(e) => appearance.setOpacity(e.currentTarget.valueAsNumber)}
                       />
                     </label>
                   </section>
@@ -212,6 +244,10 @@ export function DropwaveSettingsDialog({
                     </div>
                   </section>
                 </>
+              ) : section === "providers" ? (
+                <div data-dw-embedded-providers="">
+                  <ProviderSettingsPanel />
+                </div>
               ) : (
                 <section data-dw-settings-group="">
                   <h3>
@@ -219,29 +255,12 @@ export function DropwaveSettingsDialog({
                   </h3>
                   <p data-dw-settings-desc="">
                     <T>
-                      Manage AI providers, local project folders, git worktrees, and remote
-                      connections in the underlying engine.
+                      Open the underlying engine screens when you need deep git worktree, project
+                      defaults, or remote relay controls.
                     </T>
                   </p>
 
                   <div data-dw-engine-links="">
-                    <button
-                      type="button"
-                      data-dw-engine-card=""
-                      onClick={() => openEngineRoute("/settings/providers")}
-                    >
-                      <KeyRoundIcon className="size-4" data-dw-icon="indigo" />
-                      <div>
-                        <strong>
-                          <T>Providers & Models</T>
-                        </strong>
-                        <small>
-                          <T>Claude, Codex, Cursor, OpenCode, and API credentials</T>
-                        </small>
-                      </div>
-                      <ArrowUpRightIcon className="size-4 opacity-60" />
-                    </button>
-
                     <button
                       type="button"
                       data-dw-engine-card=""

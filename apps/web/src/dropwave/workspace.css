@@ -4131,6 +4131,391 @@
     0 28px 68px rgb(0 0 0 / 56%) !important;
 }
 
+/* ================================================================
+   TRACK 1 CRAFT: UNIFIED SINGLE-BLOCK GLASS SHELL, BLUR + OPACITY,
+   LIVING BOT-FACE ANIMATIONS, DEVIN-NEXT WORKING BLOCK & ORB,
+   CLICKABLE REF CHIPS, MORPHING + MENU & EMBEDDED PROVIDERS
+   ================================================================ */
+[data-dw-atelier] {
+  display: flex;
+  padding: 12px;
+}
+[data-dw-shell] {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 274px minmax(0, 1fr);
+  border-radius: 22px;
+  overflow: hidden;
+  background: rgb(15 16 24 / calc(var(--dw-glass-opacity, 0.54) * 100%));
+  backdrop-filter: blur(calc(34px * var(--dw-glass, 1))) saturate(160%);
+  -webkit-backdrop-filter: blur(calc(34px * var(--dw-glass, 1))) saturate(160%);
+  box-shadow:
+    0 0 0 0.5px rgb(255 255 255 / 15%),
+    inset 0 1px 0 rgb(255 255 255 / 13%),
+    0 28px 72px rgb(0 0 0 / 44%);
+  transition: grid-template-columns 260ms var(--dw-ease);
+}
+[data-dw-shell][data-collapsed="true"] {
+  grid-template-columns: minmax(0, 1fr);
+}
+[data-dw-shell] > [data-dw-rail] {
+  border-radius: 0;
+  background: rgb(10 11 18 / 26%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+  border-inline-end: 0.5px solid rgb(255 255 255 / 9%);
+}
+[data-dw-shell] > [data-dw-canvas] {
+  border-radius: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: none;
+}
+
+/* Smooth animated Projects Drawer */
+[data-dw-project-drawer-wrap] {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 260ms var(--dw-ease),
+    opacity 180ms ease;
+}
+[data-dw-project-drawer-wrap="open"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+[data-dw-project-drawer-inner] {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Standout Lead Agent card inside Team */
+[data-dw-team-row="lead"] {
+  padding: 9px 10px;
+  background: linear-gradient(135deg, rgb(168 172 255 / 12%), rgb(255 255 255 / 3%));
+  box-shadow:
+    0 0 0 0.5px rgb(168 172 255 / 26%),
+    inset 0 1px 0 rgb(255 255 255 / 9%);
+}
+[data-dw-team-row="lead"] [data-dw-team-top] strong {
+  font-size: 13.5px;
+  font-weight: 620;
+  letter-spacing: -0.015em;
+}
+[data-dw-team-row="lead"][aria-current="true"] {
+  background: linear-gradient(135deg, rgb(168 172 255 / 19%), rgb(255 255 255 / 6%));
+  box-shadow:
+    0 0 0 1px rgb(168 172 255 / 42%),
+    0 8px 22px rgb(0 0 0 / 22%);
+}
+
+/* Living Bot Face Animations (libraries.dev/bots-inspired motion, respects reduced motion) */
+[data-dw-bot-eyes] {
+  transform-origin: 18px 17.5px;
+  animation: dw-eye-blink 5.4s ease-in-out var(--dw-bot-delay, 0s) infinite;
+}
+[data-dw-bot-motion="working"] [data-dw-bot-svg] {
+  animation: dw-bot-hop 1.45s cubic-bezier(0.34, 1.56, 0.64, 1) infinite;
+}
+[data-dw-bot-motion="working"] {
+  box-shadow:
+    0 0 0 1px rgb(92 214 141 / 46%),
+    0 0 16px rgb(92 214 141 / 24%);
+}
+[data-dw-bot-motion="waiting"] [data-dw-bot-eyes] {
+  animation: dw-bot-rest 4.2s ease-in-out infinite;
+}
+@keyframes dw-eye-blink {
+  0%,
+  44%,
+  48%,
+  92%,
+  100% {
+    transform: translateX(0) scaleY(1);
+  }
+  46% {
+    transform: translateX(0) scaleY(0.12);
+  }
+  66%,
+  72% {
+    transform: translateX(0.9px) scaleY(1);
+  }
+  80%,
+  84% {
+    transform: translateX(-0.7px) scaleY(1);
+  }
+}
+@keyframes dw-bot-hop {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  45% {
+    transform: translateY(-2.2px) scale(1.03);
+  }
+  75% {
+    transform: translateY(0.6px) scale(0.98);
+  }
+}
+@keyframes dw-bot-rest {
+  0%,
+  100% {
+    transform: scaleY(0.75);
+    opacity: 0.78;
+  }
+  50% {
+    transform: scaleY(0.55);
+    opacity: 0.96;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-dw-bot-eyes],
+  [data-dw-bot-svg],
+  [data-dw-orb-ring],
+  [data-dw-orb-core] {
+    animation: none !important;
+  }
+}
+
+/* Devin-Next Live Working Block + Faded Thoughts Peek + Thinking Orb */
+[data-dw-working-block] {
+  display: grid;
+  gap: 8px;
+  padding: 2px 0;
+}
+[data-dw-working-head] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgb(244 243 239 / 64%);
+  transition: color 140ms ease;
+}
+[data-dw-working-head]:hover {
+  color: #fff;
+}
+[data-dw-working-drawer] {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 280ms var(--dw-ease),
+    opacity 200ms ease;
+}
+[data-dw-working-drawer="open"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+[data-dw-working-drawer-inner] {
+  overflow: hidden;
+  min-height: 0;
+  display: grid;
+  gap: 6px;
+  padding-inline-start: 14px;
+  border-inline-start: 1px solid rgb(255 255 255 / 10%);
+}
+[data-dw-step-row] {
+  display: grid;
+  gap: 6px;
+}
+[data-dw-step-trigger] {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 12.5px;
+  color: rgb(244 243 239 / 60%);
+  text-align: start;
+}
+[data-dw-step-trigger]:not(:disabled):hover {
+  color: #fff;
+}
+[data-dw-step-trigger] span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-dw-thought-peek] {
+  max-height: 112px;
+  overflow: hidden;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: rgb(244 243 239 / 52%);
+  mask-image: linear-gradient(180deg, transparent 0%, #000 18%, #000 72%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, transparent 0%, #000 18%, #000 72%, transparent 100%);
+}
+[data-dw-thought-peek] p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+[data-dw-step-detail] {
+  margin: 0;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: rgb(8 9 15 / 55%);
+  border: 0.5px solid rgb(255 255 255 / 8%);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgb(244 243 239 / 74%);
+  white-space: pre-wrap;
+  max-height: 220px;
+  overflow: auto;
+}
+[data-dw-orb-row] {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding-top: 2px;
+  font-size: 12.5px;
+  color: rgb(244 243 239 / 76%);
+}
+[data-dw-thinking-orb] {
+  position: relative;
+  width: 15px;
+  height: 15px;
+  display: inline-grid;
+  place-items: center;
+}
+[data-dw-orb-core] {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 30% 30%, #fff, #9c9eff 65%, #6758f5);
+  box-shadow: 0 0 10px rgb(156 158 255 / 80%);
+  animation: dw-orb-breathe 1.8s ease-in-out infinite;
+}
+[data-dw-orb-ring] {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1.5px solid transparent;
+  border-top-color: rgb(168 172 255 / 85%);
+  border-right-color: rgb(110 231 200 / 55%);
+  animation: dw-orb-spin 1.15s linear infinite;
+}
+@keyframes dw-orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes dw-orb-breathe {
+  0%,
+  100% {
+    transform: scale(0.92);
+  }
+  50% {
+    transform: scale(1.16);
+  }
+}
+
+/* Clickable Doc & Thread Reference Chips inside Chat Markdown */
+[data-dw-ref-chip] {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px;
+  margin: 0 1px;
+  border-radius: 7px;
+  background: rgb(168 172 255 / 13%);
+  box-shadow: inset 0 0 0 0.5px rgb(168 172 255 / 28%);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #dcdeff;
+  vertical-align: baseline;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+[data-dw-ref-chip]:hover {
+  background: rgb(168 172 255 / 24%);
+  color: #fff;
+}
+[data-dw-ref-chip="thread"] {
+  background: rgb(110 231 200 / 12%);
+  box-shadow: inset 0 0 0 0.5px rgb(110 231 200 / 26%);
+  color: #c8f7ea;
+}
+[data-dw-ref-chip="thread"]:hover {
+  background: rgb(110 231 200 / 22%);
+  color: #fff;
+}
+
+/* Morphing + Composer Button & Animated Voice Ring */
+[data-dw-plus-btn] {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgb(255 255 255 / 8%);
+  box-shadow: inset 0 0 0 0.5px rgb(255 255 255 / 14%);
+  color: rgb(244 243 239 / 84%);
+  transition:
+    transform 220ms var(--dw-ease),
+    background-color 160ms ease;
+}
+[data-dw-plus-btn]:hover {
+  background: rgb(255 255 255 / 16%);
+  color: #fff;
+}
+[data-dw-plus-btn][data-open="true"] {
+  transform: rotate(45deg);
+  background: rgb(255 255 255 / 20%);
+  color: #fff;
+}
+[data-dw-plus-menu] {
+  display: grid;
+  gap: 2px;
+}
+[data-dw-plus-item] {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: rgb(244 243 239 / 82%);
+  text-align: start;
+}
+[data-dw-plus-item]:hover {
+  background: rgb(255 255 255 / 9%);
+  color: #fff;
+}
+[data-dw-composer-icon][data-recording="true"] {
+  position: relative;
+  animation: dw-voice-ring 1.35s ease-out infinite;
+}
+@keyframes dw-voice-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgb(239 107 107 / 58%);
+  }
+  70% {
+    box-shadow: 0 0 0 8px rgb(239 107 107 / 0%);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgb(239 107 107 / 0%);
+  }
+}
+
+/* Embedded Providers Panel inside Dropwave Settings */
+[data-dw-settings-modal] {
+  width: min(95vw, 860px);
+  max-width: 860px !important;
+  height: min(86dvh, 640px);
+}
+[data-dw-embedded-providers] {
+  min-width: 0;
+}
+
 /* Responsive Tablet & Mobile */
 @media (max-width: 1024px) {
   [data-dw-spatial] {

@@ -106,6 +106,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
 
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
+  const [openDocPath, setOpenDocPath] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decisionModalOpen, setDecisionModalOpen] = useState(false);
   const [openAsksCount, setOpenAsksCount] = useState(0);
@@ -244,111 +245,127 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
           data-collapsed={sidebarCollapsed ? "true" : undefined}
           style={appearance.style}
         >
-          {/* Left Frosted-Glass Sidebar (Bot faces, auto-collapsing Projects + Pins, Team, Sessions) */}
-          {!sidebarCollapsed ? (
-            <DropwaveSidebar appearance={appearance} onCollapse={() => setSidebarCollapsed(true)} />
-          ) : null}
+          <div data-dw-shell="" data-collapsed={sidebarCollapsed ? "true" : undefined}>
+            {/* Left Frosted-Glass Sidebar seamlessly joined to the main canvas */}
+            {!sidebarCollapsed ? (
+              <DropwaveSidebar
+                appearance={appearance}
+                onCollapse={() => setSidebarCollapsed(true)}
+              />
+            ) : null}
 
-          {/* Main Open Frosted-Glass Canvas */}
-          <main data-dw-canvas="">
-            <header data-dw-canvas-head="">
-              <div data-dw-canvas-left="">
-                {sidebarCollapsed ? (
+            {/* Main Open Frosted-Glass Canvas */}
+            <main data-dw-canvas="">
+              <header data-dw-canvas-head="">
+                <div data-dw-canvas-left="">
+                  {sidebarCollapsed ? (
+                    <button
+                      type="button"
+                      data-dw-rail-icon=""
+                      aria-label={gt("Show sidebar")}
+                      onClick={() => setSidebarCollapsed(false)}
+                    >
+                      <PanelLeftOpenIcon className="size-4" />
+                    </button>
+                  ) : null}
                   <button
                     type="button"
-                    data-dw-rail-icon=""
-                    aria-label={gt("Show sidebar")}
-                    onClick={() => setSidebarCollapsed(false)}
+                    data-dw-canvas-bot=""
+                    aria-label={gt("Bot and core loop settings")}
+                    onClick={() => {
+                      if (headerBot) {
+                        setPanel({ kind: "profile", target: { kind: "edit", bot: headerBot } });
+                      }
+                    }}
                   >
-                    <PanelLeftOpenIcon className="size-4" />
+                    <DropwaveBotAvatar
+                      name={headerName}
+                      seed={headerBot?.source.dropwaveBot?.avatarSeed}
+                      role={headerRole}
+                      size="sm"
+                    />
+                    <strong>{headerName}</strong>
+                    {project ? <span>{project.title}</span> : null}
                   </button>
-                ) : null}
-                <button
-                  type="button"
-                  data-dw-canvas-bot=""
-                  aria-label={gt("Bot and core loop settings")}
-                  onClick={() => {
-                    if (headerBot) {
-                      setPanel({ kind: "profile", target: { kind: "edit", bot: headerBot } });
-                    }
-                  }}
-                >
-                  <DropwaveBotAvatar
-                    name={headerName}
-                    seed={headerBot?.source.dropwaveBot?.avatarSeed}
-                    role={headerRole}
-                    size="sm"
+                </div>
+
+                <div data-dw-canvas-right="">
+                  {needs.length > 0 ? (
+                    <button
+                      type="button"
+                      data-dw-needs-pill="urgent"
+                      aria-label={gt("Needs you")}
+                      onClick={() => setDecisionModalOpen(true)}
+                    >
+                      <span data-dw-dot="coral" data-pulse="" />
+                      <span>
+                        <T>
+                          <Var>{needs.length}</Var> needs you
+                        </T>
+                      </span>
+                    </button>
+                  ) : null}
+
+                  <div data-dw-canvas-tabs="" role="tablist" aria-label={gt("Workspace views")}>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={mainView === "chat"}
+                      onClick={() => setMainView("chat")}
+                    >
+                      <T>Chat</T>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={mainView === "docs"}
+                      onClick={() => setMainView("docs")}
+                    >
+                      <T>Docs</T>
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={mainView === "asks"}
+                      onClick={() => setMainView("asks")}
+                    >
+                      <T>Asks</T>
+                      {openAsksCount > 0 ? <em data-dw-tab-count="">{openAsksCount}</em> : null}
+                    </button>
+                  </div>
+                </div>
+              </header>
+
+              <div data-dw-canvas-body="">
+                {mainView === "setup" ? (
+                  <DropwaveConversationalSetup
+                    key={project ? keyOfProject(project) : "new"}
+                    defaultRisk={defaultRisk}
+                    onCancel={() => setMainView("chat")}
                   />
-                  <strong>{headerName}</strong>
-                  {project ? <span>{project.title}</span> : null}
-                </button>
+                ) : mainView === "docs" ? (
+                  <DropwaveDocsView initialDocPath={openDocPath} />
+                ) : mainView === "asks" ? (
+                  <div data-dw-asks-canvas="">
+                    <DropwaveAsksPanel />
+                  </div>
+                ) : (
+                  <DropwaveChatPillar
+                    onOpenDocPath={(docPath) => {
+                      setOpenDocPath(docPath);
+                      setMainView("docs");
+                    }}
+                    onOpenThreadId={(threadId) => {
+                      const match = allThreads.find((t) => t.id === threadId);
+                      if (match) {
+                        openThread(scopeThreadRef(match.environmentId, match.id));
+                      }
+                    }}
+                  />
+                )}
               </div>
-
-              <div data-dw-canvas-right="">
-                {needs.length > 0 ? (
-                  <button
-                    type="button"
-                    data-dw-needs-pill="urgent"
-                    aria-label={gt("Needs you")}
-                    onClick={() => setDecisionModalOpen(true)}
-                  >
-                    <span data-dw-dot="coral" data-pulse="" />
-                    <span>
-                      <T>
-                        <Var>{needs.length}</Var> needs you
-                      </T>
-                    </span>
-                  </button>
-                ) : null}
-
-                <div data-dw-canvas-tabs="" role="tablist" aria-label={gt("Workspace views")}>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={mainView === "chat"}
-                    onClick={() => setMainView("chat")}
-                  >
-                    <T>Chat</T>
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={mainView === "docs"}
-                    onClick={() => setMainView("docs")}
-                  >
-                    <T>Docs</T>
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={mainView === "asks"}
-                    onClick={() => setMainView("asks")}
-                  >
-                    <T>Asks</T>
-                    {openAsksCount > 0 ? <em data-dw-tab-count="">{openAsksCount}</em> : null}
-                  </button>
-                </div>
-              </div>
-            </header>
-
-            <div data-dw-canvas-body="">
-              {mainView === "setup" ? (
-                <DropwaveConversationalSetup
-                  key={project ? keyOfProject(project) : "new"}
-                  defaultRisk={defaultRisk}
-                  onCancel={() => setMainView("chat")}
-                />
-              ) : mainView === "docs" ? (
-                <DropwaveDocsView />
-              ) : mainView === "asks" ? (
-                <div data-dw-asks-canvas="">
-                  <DropwaveAsksPanel />
-                </div>
-              ) : (
-                <DropwaveChatPillar />
-              )}
-            </div>
-          </main>
+            </main>
+          </div>
 
           {/* Engine Settings route modal */}
           {modalOpen ? <SidebarProvider>{children}</SidebarProvider> : null}

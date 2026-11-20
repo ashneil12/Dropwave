@@ -44,10 +44,11 @@ test(
     await expect(screen.getByText("Verify Canary pricing before launch")).toBeVisible();
     await screen.getByRole("tab", "Chat").tap();
 
-    // Verify Dropwave-first Settings + separated Engine tab from minimal sidebar footer.
+    // Verify Dropwave-first Settings (with embedded Providers & Models + separated T3 Engine & Advanced).
     await screen.getByRole("button", "Settings").tap();
     await expect(screen.getByText("Dropwave Settings")).toBeVisible();
-    await screen.getByRole("button", "T3 Engine & Providers").tap();
+    await screen.getByRole("button", "Providers & Models").tap();
+    await screen.getByRole("button", "T3 Engine & Advanced").tap();
     await expect(screen.getByText("Underlying T3 Engine Settings")).toBeVisible();
     await screen.getByRole("button", "Close settings").tap();
   },

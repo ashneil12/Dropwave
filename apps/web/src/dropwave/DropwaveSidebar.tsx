@@ -206,14 +206,25 @@ export function DropwaveSidebar({
                   />
                 </label>
                 <label>
-                  <T>Glass strength</T>
+                  <T>Glass blur</T>
                   <input
                     type="range"
-                    min={0.4}
+                    min={0.3}
                     max={1.6}
                     step={0.05}
                     value={appearance.strength}
                     onChange={(event) => appearance.setStrength(event.currentTarget.valueAsNumber)}
+                  />
+                </label>
+                <label>
+                  <T>Glass opacity</T>
+                  <input
+                    type="range"
+                    min={0.24}
+                    max={0.86}
+                    step={0.02}
+                    value={appearance.opacity}
+                    onChange={(event) => appearance.setOpacity(event.currentTarget.valueAsNumber)}
                   />
                 </label>
               </div>
@@ -301,62 +312,68 @@ export function DropwaveSidebar({
           </button>
         </div>
 
-        {/* Auto-collapsing All Projects list with Pin toggles */}
-        {projectsExpanded ? (
-          <div data-dw-project-drawer="">
-            {workspace.projects.length > 4 ? (
-              <label data-dw-switcher-search="">
-                <SearchIcon className="size-3" />
-                <input
-                  value={projectSearch}
-                  onChange={(e) => setProjectSearch(e.currentTarget.value)}
-                  placeholder={gt("Find project…")}
-                  aria-label={gt("Find project")}
-                />
-              </label>
-            ) : null}
-            <div data-dw-project-drawer-list="">
-              {filteredProjects.map((proj) => {
-                const pKey = keyOfProject(proj);
-                const active =
-                  workspace.project !== null && keyOfProject(workspace.project) === pKey;
-                const pinned = pinnedSet.has(pKey);
-                return (
-                  <div
-                    key={pKey}
-                    data-dw-project-drawer-row=""
-                    data-active={active ? "true" : undefined}
-                  >
-                    <button
-                      type="button"
-                      data-dw-project-drawer-pick=""
-                      onClick={() => {
-                        workspace.selectProject(proj);
-                        setProjectsExpanded(false);
-                      }}
+        {/* Auto-collapsing All Projects list with smooth reveal & Pin toggles */}
+        <div data-dw-project-drawer-wrap={projectsExpanded ? "open" : "closed"}>
+          <div data-dw-project-drawer-inner="">
+            <div data-dw-project-drawer="">
+              {workspace.projects.length > 4 ? (
+                <label data-dw-switcher-search="">
+                  <SearchIcon className="size-3" />
+                  <input
+                    value={projectSearch}
+                    onChange={(e) => setProjectSearch(e.currentTarget.value)}
+                    placeholder={gt("Find project…")}
+                    aria-label={gt("Find project")}
+                  />
+                </label>
+              ) : null}
+              <div data-dw-project-drawer-list="">
+                {filteredProjects.map((proj) => {
+                  const pKey = keyOfProject(proj);
+                  const active =
+                    workspace.project !== null && keyOfProject(workspace.project) === pKey;
+                  const pinned = pinnedSet.has(pKey);
+                  return (
+                    <div
+                      key={pKey}
+                      data-dw-project-drawer-row=""
+                      data-active={active ? "true" : undefined}
                     >
-                      <span
-                        data-dw-dot={
-                          workspace.needsProject(proj) ? "coral" : active ? "emerald" : "dim"
-                        }
-                      />
-                      <span>{proj.title}</span>
-                    </button>
-                    <button
-                      type="button"
-                      data-dw-pin-btn=""
-                      aria-label={pinned ? gt("Unpin project") : gt("Pin project to top")}
-                      aria-pressed={pinned}
-                      onClick={() => togglePin(pKey)}
-                    >
-                      {pinned ? <PinOffIcon className="size-3" /> : <PinIcon className="size-3" />}
-                    </button>
-                  </div>
-                );
-              })}
+                      <button
+                        type="button"
+                        data-dw-project-drawer-pick=""
+                        onClick={() => {
+                          workspace.selectProject(proj);
+                          setProjectsExpanded(false);
+                        }}
+                      >
+                        <span
+                          data-dw-dot={
+                            workspace.needsProject(proj) ? "coral" : active ? "emerald" : "dim"
+                          }
+                        />
+                        <span>{proj.title}</span>
+                      </button>
+                      <button
+                        type="button"
+                        data-dw-pin-btn=""
+                        aria-label={pinned ? gt("Unpin project") : gt("Pin project to top")}
+                        aria-pressed={pinned}
+                        onClick={() => togglePin(pKey)}
+                      >
+                        {pinned ? (
+                          <PinOffIcon className="size-3" />
+                        ) : (
+                          <PinIcon className="size-3" />
+                        )}
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
-        ) : null}
+        </div>
       </div>
 
       {/* Section 2: Team (Lead + Specialists with expressive bot faces!) */}
@@ -391,7 +408,7 @@ export function DropwaveSidebar({
             <>
               <button
                 type="button"
-                data-dw-team-row=""
+                data-dw-team-row="lead"
                 aria-current={workspace.activeBot?.id === workspace.lead.id ? "true" : undefined}
                 onClick={() =>
                   workspace.openThread(
@@ -409,8 +426,12 @@ export function DropwaveSidebar({
                 <span data-dw-team-meta="">
                   <span data-dw-team-top="">
                     <strong>{workspace.lead.title}</strong>
-                    <span data-dw-team-state="lead">
-                      <T>Lead</T>
+                    <span
+                      data-dw-team-state={
+                        workState(workspace.lead) === "working" ? "working" : "lead"
+                      }
+                    >
+                      {workState(workspace.lead) === "working" ? <T>Working</T> : <T>Lead</T>}
                     </span>
                   </span>
                   <small>
