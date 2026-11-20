@@ -7,9 +7,7 @@ import {
   FolderGit2Icon,
   ImageIcon,
   KeyRoundIcon,
-  LayoutGridIcon,
   PlugIcon,
-  RotateCcwIcon,
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   UploadIcon,
@@ -18,15 +16,9 @@ import {
 import { useState } from "react";
 
 import { Dialog, DialogPopup } from "../components/ui/dialog";
-import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import type { useDropwaveAppearance } from "./DropwaveToolbar";
-import {
-  useDropwaveWorkspace,
-  type DropwaveSlotLayout,
-  type DropwaveWidgetKind,
-} from "./workspaceContext";
 
-type SettingsSection = "dropwave" | "layout" | "engine";
+type SettingsSection = "dropwave" | "engine";
 
 const PRESETS = [
   { key: "mountains", file: "mountains.jpg", label: msg("Mountains") },
@@ -35,25 +27,6 @@ const PRESETS = [
   { key: "sunrise", file: "sunrise.jpg", label: msg("Sunrise") },
   { key: "dusk", file: "dusk.png", label: msg("Dusk") },
 ] as const;
-
-const WIDGET_CHOICES: ReadonlyArray<{
-  readonly value: DropwaveWidgetKind;
-  readonly label: string;
-}> = [
-  { value: "asks", label: msg("Core Loop & Asks") },
-  { value: "agents", label: msg("Team & Agents") },
-  { value: "reviews", label: msg("Pending Reviews") },
-  { value: "sessions", label: msg("Running Sessions") },
-  { value: "docs", label: msg("Docs & Briefs") },
-  { value: "memory", label: msg("Memory & Rules") },
-];
-
-const DEFAULT_LAYOUT: DropwaveSlotLayout = {
-  topLeft: "asks",
-  bottomLeft: "agents",
-  topRight: "reviews",
-  bottomRight: "sessions",
-};
 
 export function DropwaveSettingsDialog({
   open,
@@ -68,17 +41,12 @@ export function DropwaveSettingsDialog({
   defaultRisk: DropwaveRiskLevel;
   onChangeDefaultRisk: (next: DropwaveRiskLevel) => void;
 }) {
-  const workspace = useDropwaveWorkspace();
   const navigate = useNavigate();
   const gt = useGT();
   const m = useMessages();
   const [section, setSection] = useState<SettingsSection>("dropwave");
 
-  if (!open || !workspace) return null;
-
-  const widgetOptions: ReadonlyArray<DropwaveSelectOption<DropwaveWidgetKind>> = WIDGET_CHOICES.map(
-    (c) => ({ value: c.value, label: m(c.label) }),
-  );
+  if (!open) return null;
 
   const openEngineRoute = (
     to:
@@ -121,17 +89,6 @@ export function DropwaveSettingsDialog({
                   <T>Workspace & Look</T>
                 </span>
               </button>
-              <button
-                type="button"
-                data-dw-settings-nav-item=""
-                aria-current={section === "layout" ? "true" : undefined}
-                onClick={() => setSection("layout")}
-              >
-                <LayoutGridIcon className="size-4" />
-                <span>
-                  <T>Side Panels</T>
-                </span>
-              </button>
 
               <div data-dw-settings-divider="">
                 <T>Backend Engine</T>
@@ -154,13 +111,7 @@ export function DropwaveSettingsDialog({
           <div data-dw-settings-main="">
             <header data-dw-settings-header="">
               <h2>
-                {section === "dropwave" ? (
-                  <T>Workspace & Look</T>
-                ) : section === "layout" ? (
-                  <T>Side Panels</T>
-                ) : (
-                  <T>T3 Engine & Providers</T>
-                )}
+                {section === "dropwave" ? <T>Workspace & Look</T> : <T>T3 Engine & Providers</T>}
               </h2>
               <button
                 type="button"
@@ -261,53 +212,6 @@ export function DropwaveSettingsDialog({
                     </div>
                   </section>
                 </>
-              ) : section === "layout" ? (
-                <section data-dw-settings-group="">
-                  <div data-dw-settings-row-head="">
-                    <div>
-                      <h3>
-                        <T>Customize all 4 side panels</T>
-                      </h3>
-                      <p data-dw-settings-desc="">
-                        <T>Choose which screen sits in each floating corner around your chat.</T>
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      data-dw-ghost-xs=""
-                      onClick={() => {
-                        workspace.setSlotWidget("topLeft", DEFAULT_LAYOUT.topLeft);
-                        workspace.setSlotWidget("bottomLeft", DEFAULT_LAYOUT.bottomLeft);
-                        workspace.setSlotWidget("topRight", DEFAULT_LAYOUT.topRight);
-                        workspace.setSlotWidget("bottomRight", DEFAULT_LAYOUT.bottomRight);
-                      }}
-                    >
-                      <RotateCcwIcon className="size-3" />
-                      <T>Reset</T>
-                    </button>
-                  </div>
-
-                  <div data-dw-slot-grid="">
-                    {(
-                      [
-                        { slot: "topLeft", label: gt("Top Left") },
-                        { slot: "topRight", label: gt("Top Right") },
-                        { slot: "bottomLeft", label: gt("Bottom Left") },
-                        { slot: "bottomRight", label: gt("Bottom Right") },
-                      ] as const
-                    ).map(({ slot, label }) => (
-                      <div key={slot} data-dw-slot-setting="">
-                        <span>{label}</span>
-                        <DropwaveSelect
-                          value={workspace.slots[slot]}
-                          options={widgetOptions}
-                          ariaLabel={label}
-                          onChange={(next) => workspace.setSlotWidget(slot, next)}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </section>
               ) : (
                 <section data-dw-settings-group="">
                   <h3>
@@ -315,9 +219,8 @@ export function DropwaveSettingsDialog({
                   </h3>
                   <p data-dw-settings-desc="">
                     <T>
-                      Most Dropwave settings live in the first two tabs. Open these backend engine
-                      controls when you need to manage AI providers, local folders, git worktrees,
-                      or remote connections.
+                      Manage AI providers, local project folders, git worktrees, and remote
+                      connections in the underlying engine.
                     </T>
                   </p>
 

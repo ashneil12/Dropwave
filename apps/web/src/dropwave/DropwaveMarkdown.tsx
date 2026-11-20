@@ -128,7 +128,7 @@ function parseMarkdown(source: string): Array<MdBlock> {
 }
 
 function renderInline(text: string): ReactNode {
-  const tokenRe = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\(https?:\/\/[^)]+\)|#\d+)/g;
+  const tokenRe = /(`[^`]+`|\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|#\d+)/g;
   const nodes: Array<ReactNode> = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -147,13 +147,22 @@ function renderInline(text: string): ReactNode {
     } else if (token.startsWith("**") && token.endsWith("**")) {
       nodes.push(<strong key={key}>{token.slice(2, -2)}</strong>);
     } else if (token.startsWith("[")) {
-      const parsed = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec(token);
+      const parsed = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
       if (parsed) {
-        nodes.push(
-          <a key={key} href={parsed[2]} target="_blank" rel="noreferrer" data-dw-md-link="">
-            {parsed[1]}
-          </a>,
-        );
+        const href = parsed[2]!;
+        if (/^https?:\/\//i.test(href)) {
+          nodes.push(
+            <a key={key} href={href} target="_blank" rel="noreferrer" data-dw-md-link="">
+              {parsed[1]}
+            </a>,
+          );
+        } else {
+          nodes.push(
+            <code key={key} data-dw-inline-code="">
+              {parsed[1]}
+            </code>,
+          );
+        }
       } else {
         nodes.push(token);
       }

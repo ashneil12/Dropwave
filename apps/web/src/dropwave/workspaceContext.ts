@@ -15,16 +15,7 @@ export type WorkspacePanel =
   | { kind: "work"; owner: ScopedThreadRef }
   | { kind: "profile"; target: BotEditorTarget };
 
-export type DropwaveMainView = "chat" | "docs" | "setup";
-
-export type DropwaveWidgetKind = "asks" | "agents" | "reviews" | "sessions" | "docs" | "memory";
-
-export interface DropwaveSlotLayout {
-  readonly topLeft: DropwaveWidgetKind;
-  readonly bottomLeft: DropwaveWidgetKind;
-  readonly topRight: DropwaveWidgetKind;
-  readonly bottomRight: DropwaveWidgetKind;
-}
+export type DropwaveMainView = "chat" | "docs" | "asks" | "setup";
 
 interface DropwaveWorkspaceState {
   readonly projects: ReadonlyArray<EnvironmentProject>;
@@ -45,10 +36,6 @@ interface DropwaveWorkspaceState {
   readonly selectProject: (project: EnvironmentProject) => void;
   readonly openThread: (thread: ScopedThreadRef) => void;
   readonly openPanel: (panel: WorkspacePanel | null) => void;
-  readonly slots: DropwaveSlotLayout;
-  readonly setSlotWidget: (slot: keyof DropwaveSlotLayout, kind: DropwaveWidgetKind) => void;
-  readonly focusMode: boolean;
-  readonly setFocusMode: (focus: boolean) => void;
   readonly openDecisionQueue: () => void;
   readonly openSettings: () => void;
 }

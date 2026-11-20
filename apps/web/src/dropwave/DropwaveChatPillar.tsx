@@ -9,12 +9,10 @@ import type {
   ThreadPendingApproval,
   ThreadPendingUserInput,
 } from "@t3tools/client-runtime/state/thread-requests";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  type DropwaveRiskLevel,
-  type ProviderApprovalDecision,
-  type ScopedThreadRef,
-  type UploadChatAttachment,
+import type {
+  ProviderApprovalDecision,
+  ScopedThreadRef,
+  UploadChatAttachment,
 } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 import { T, Var, useGT } from "gt-react";
@@ -22,7 +20,6 @@ import {
   ArrowUpIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  FileTextIcon,
   MicIcon,
   MicOffIcon,
   PaperclipIcon,
@@ -39,11 +36,8 @@ import {
 } from "react";
 
 import { newMessageId } from "../lib/utils";
-import { providerInstanceEntriesFor } from "../providerInstances";
-import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useThreadProjection, useThreadVisibleTurnItems } from "../state/entities";
-import { useEnvironmentProviders } from "../state/environments";
-import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
+import { serverEnvironment } from "../state/server";
 import {
   childThreadApprovalsAtom,
   environmentThreadDetails,
@@ -51,8 +45,9 @@ import {
 } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
+import { DropwaveComposerControls } from "./DropwaveComposerControls";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
-import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { workState } from "./model";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
@@ -98,225 +93,309 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
   return win.SpeechRecognition ?? win.webkitSpeechRecognition ?? null;
 }
 
-function formatClock(iso: string | Date): string {
-  const date = typeof iso === "string" ? new Date(iso) : iso;
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
+type InlineDecisionEntry =
+  | {
+      readonly key: string;
+      readonly kind: "approval";
+      readonly threadRef: ScopedThreadRef;
+      readonly sourceTitle?: string | undefined;
+      readonly approval: ThreadPendingApproval;
+    }
+  | {
+      readonly key: string;
+      readonly kind: "input";
+      readonly threadRef: ScopedThreadRef;
+      readonly input: ThreadPendingUserInput;
+    };
 
-function LiveApprovalCard({
-  approval,
-  threadRef,
-  sourceTitle,
-}: {
-  approval: ThreadPendingApproval;
-  threadRef: ScopedThreadRef;
-  sourceTitle?: string | undefined;
-}) {
-  const gt = useGT();
-  const [busy, setBusy] = useState(false);
-  const respondApproval = useOrchestrationCommand(threadEnvironment.respondToApproval, {
-    reportFailure: false,
-  });
-
-  const decide = async (decision: ProviderApprovalDecision) => {
-    if (busy) return;
-    setBusy(true);
-    await respondApproval({
-      environmentId: threadRef.environmentId,
-      input: {
-        threadId: threadRef.threadId,
-        requestId: approval.requestId,
-        decision,
-      },
-    });
-    setBusy(false);
-  };
-
-  return (
-    <div data-dw-needs-card="">
-      <div data-dw-needs-card-head="">
-        <span data-dw-needs-tag="">
-          <span data-dw-dot="coral" data-pulse="" />
-          <T>Approval needed</T>
-        </span>
-        <span data-dw-mono="muted">
-          {sourceTitle ? `${sourceTitle} · ${approval.requestKind}` : approval.requestKind}
-        </span>
-      </div>
-      <div data-dw-needs-copy="">
-        <strong>{approval.detail || gt("Your bot wants to run an action.")}</strong>
-      </div>
-      <div data-dw-needs-actions="">
-        <button
-          type="button"
-          data-dw-ghost-sm=""
-          disabled={busy}
-          onClick={() => void decide("decline")}
-        >
-          <T>Decline</T>
-        </button>
-        <button
-          type="button"
-          data-dw-white-pill=""
-          disabled={busy}
-          onClick={() => void decide("accept")}
-        >
-          <T>Approve</T>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function LiveUserInputCard({
-  input,
-  threadRef,
+/**
+ * AffectUI-inspired calm Decision Inbox:
+ * One elevated dark-glass card with a 0.5px hairline shadow.
+ * First item expanded, remaining items folded quietly to 1 line below.
+ */
+function AffectDecisionInbox({
+  entries,
+  projectName,
   onSaveRule,
 }: {
-  input: ThreadPendingUserInput;
-  threadRef: ScopedThreadRef;
+  entries: ReadonlyArray<InlineDecisionEntry>;
+  projectName: string;
   onSaveRule: (ruleText: string, quote: string) => void;
 }) {
   const gt = useGT();
-  const [busy, setBusy] = useState(false);
-  const [customText, setCustomText] = useState("");
-  const [selectedByQuestion, setSelectedByQuestion] = useState<Record<string, string>>({});
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [selectedByKey, setSelectedByKey] = useState<Record<string, string>>({});
+  const [customByKey, setCustomByKey] = useState<Record<string, string>>({});
 
+  const respondApproval = useOrchestrationCommand(threadEnvironment.respondToApproval, {
+    reportFailure: false,
+  });
   const respondInput = useOrchestrationCommand(threadEnvironment.respondToUserInput, {
     reportFailure: false,
   });
 
-  const questions = input.questions;
-  const firstQuestion = questions[0];
-  if (!firstQuestion) return null;
+  if (entries.length === 0) return null;
 
-  const chosen =
-    customText.trim() ||
-    selectedByQuestion[firstQuestion.id] ||
-    firstQuestion.options[0]?.label ||
-    "";
+  const activeKey =
+    expandedKey && entries.some((e) => e.key === expandedKey) ? expandedKey : entries[0]!.key;
 
-  const submitAnswer = async (alwaysDoThis: boolean) => {
-    if (busy || !chosen) return;
-    setBusy(true);
+  const decideApproval = async (
+    entry: Extract<InlineDecisionEntry, { kind: "approval" }>,
+    decision: ProviderApprovalDecision,
+  ) => {
+    if (busyKey) return;
+    setBusyKey(entry.key);
+    await respondApproval({
+      environmentId: entry.threadRef.environmentId,
+      input: {
+        threadId: entry.threadRef.threadId,
+        requestId: entry.approval.requestId,
+        decision,
+      },
+    });
+    setBusyKey(null);
+  };
+
+  const submitUserInput = async (
+    entry: Extract<InlineDecisionEntry, { kind: "input" }>,
+    chosen: string,
+    alwaysDoThis: boolean,
+  ) => {
+    if (busyKey || !chosen) return;
+    const firstQ = entry.input.questions[0];
+    if (!firstQ) return;
+    setBusyKey(entry.key);
     const answers: Record<string, string> = {};
-    for (const q of questions) {
-      answers[q.id] =
-        q.id === firstQuestion.id
-          ? chosen
-          : selectedByQuestion[q.id] || q.options[0]?.label || chosen;
+    for (const q of entry.input.questions) {
+      answers[q.id] = q.id === firstQ.id ? chosen : (q.options[0]?.label ?? chosen);
     }
     const res = await respondInput({
-      environmentId: threadRef.environmentId,
+      environmentId: entry.threadRef.environmentId,
       input: {
-        threadId: threadRef.threadId,
-        requestId: input.requestId,
+        threadId: entry.threadRef.threadId,
+        requestId: entry.input.requestId,
         answers,
       },
     });
     if (res._tag === "Success" && alwaysDoThis) {
-      onSaveRule(`When asked "${firstQuestion.question}": ${chosen}`, firstQuestion.question);
+      onSaveRule(`When asked "${firstQ.question}": ${chosen}`, firstQ.question);
     }
-    setBusy(false);
+    setBusyKey(null);
   };
 
   return (
-    <div data-dw-needs-card="">
-      <div data-dw-needs-card-head="">
-        <span data-dw-needs-tag="">
+    <div data-dw-affect-inbox="">
+      <div data-dw-affect-head="">
+        <span data-dw-affect-head-left="">
           <span data-dw-dot="coral" data-pulse="" />
-          <T>Needs You</T>
+          <span>
+            {entries.length === 1 ? (
+              <T>1 needs your input</T>
+            ) : (
+              <T>
+                <Var>{entries.length}</Var> need your input
+              </T>
+            )}
+          </span>
         </span>
-        <span data-dw-mono="muted">{firstQuestion.header}</span>
+        <span data-dw-mono="muted">{projectName}</span>
       </div>
-      <div data-dw-needs-copy="">
-        <strong>{firstQuestion.question}</strong>
-      </div>
-      {firstQuestion.options.length > 0 ? (
-        <div data-dw-needs-options="">
-          {firstQuestion.options.map((opt, idx) => {
-            const isSelected =
-              !customText.trim() &&
-              (selectedByQuestion[firstQuestion.id] ?? firstQuestion.options[0]?.label) ===
-                opt.label;
+
+      {entries.map((entry) => {
+        const isOpen = entry.key === activeKey;
+        const busy = busyKey === entry.key;
+
+        if (entry.kind === "approval") {
+          const title =
+            entry.approval.detail ||
+            gt("{source} wants approval to run an action.", {
+              source: entry.sourceTitle || gt("Your agent"),
+            });
+          if (!isOpen) {
             return (
               <button
-                key={opt.label}
+                key={entry.key}
                 type="button"
-                data-dw-option-row=""
-                aria-pressed={isSelected}
-                onClick={() => {
-                  setSelectedByQuestion((prev) => ({ ...prev, [firstQuestion.id]: opt.label }));
-                  setCustomText("");
-                }}
+                data-dw-affect-row="folded"
+                onClick={() => setExpandedKey(entry.key)}
               >
-                <span data-dw-option-left="">
-                  <span data-dw-radio={isSelected ? "on" : "off"} />
-                  <span>{opt.label}</span>
-                </span>
-                {idx === 0 ? (
-                  <span data-dw-badge="emerald">
-                    <T>Recommended</T>
-                  </span>
-                ) : null}
+                {title}
               </button>
             );
-          })}
-        </div>
-      ) : null}
-      <input
-        data-dw-custom-answer=""
-        value={customText}
-        onChange={(e) => setCustomText(e.currentTarget.value)}
-        placeholder={gt("Or type your own answer…")}
-      />
-      <div data-dw-needs-actions="">
-        <button
-          type="button"
-          data-dw-ghost-sm=""
-          disabled={busy || !chosen}
-          onClick={() => void submitAnswer(false)}
-        >
-          <T>Just this once</T>
-        </button>
-        <button
-          type="button"
-          data-dw-white-pill=""
-          disabled={busy || !chosen}
-          onClick={() => void submitAnswer(true)}
-        >
-          <T>Always do this</T>
-        </button>
-      </div>
+          }
+          return (
+            <div key={entry.key} data-dw-affect-row="open">
+              <p data-dw-affect-title="">{title}</p>
+              <p data-dw-affect-detail="">
+                {entry.sourceTitle ? `${entry.sourceTitle} · ` : ""}
+                {entry.approval.requestKind}
+              </p>
+              <div data-dw-affect-actions="">
+                <button
+                  type="button"
+                  data-dw-btn-solid=""
+                  disabled={busy}
+                  onClick={() => void decideApproval(entry, "accept")}
+                >
+                  <T>Approve</T>
+                </button>
+                <button
+                  type="button"
+                  data-dw-btn-ghost=""
+                  disabled={busy}
+                  onClick={() => void decideApproval(entry, "decline")}
+                >
+                  <T>Decline</T>
+                </button>
+              </div>
+            </div>
+          );
+        }
+
+        const q = entry.input.questions[0];
+        if (!q) return null;
+        if (!isOpen) {
+          return (
+            <button
+              key={entry.key}
+              type="button"
+              data-dw-affect-row="folded"
+              onClick={() => setExpandedKey(entry.key)}
+            >
+              {q.question}
+            </button>
+          );
+        }
+
+        const primaryOpt = q.options[0];
+        const secondaryOpt = q.options[1];
+        const extraOpts = q.options.slice(2);
+        const customText = customByKey[entry.key] ?? "";
+        const selectedLabel = selectedByKey[entry.key] ?? primaryOpt?.label ?? "";
+        const effectiveChoice = customText.trim() || selectedLabel;
+
+        return (
+          <div key={entry.key} data-dw-affect-row="open">
+            <p data-dw-affect-title="">{q.question}</p>
+            {q.header ? <p data-dw-affect-detail="">{q.header}</p> : null}
+
+            {q.options.length <= 2 && !customText.trim() ? (
+              <div data-dw-affect-actions="">
+                {primaryOpt ? (
+                  <button
+                    type="button"
+                    data-dw-btn-solid=""
+                    disabled={busy}
+                    onClick={() => void submitUserInput(entry, primaryOpt.label, false)}
+                  >
+                    {primaryOpt.label}
+                  </button>
+                ) : null}
+                {secondaryOpt ? (
+                  <button
+                    type="button"
+                    data-dw-btn-ghost=""
+                    disabled={busy}
+                    onClick={() => void submitUserInput(entry, secondaryOpt.label, false)}
+                  >
+                    {secondaryOpt.label}
+                  </button>
+                ) : null}
+                {primaryOpt ? (
+                  <button
+                    type="button"
+                    data-dw-btn-rule=""
+                    disabled={busy}
+                    onClick={() => void submitUserInput(entry, primaryOpt.label, true)}
+                  >
+                    <T>Always do this</T>
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                {q.options.length > 0 ? (
+                  <div data-dw-affect-choices="">
+                    {[primaryOpt, secondaryOpt, ...extraOpts].filter(Boolean).map((opt) => (
+                      <button
+                        key={opt!.label}
+                        type="button"
+                        data-dw-affect-choice=""
+                        aria-pressed={!customText.trim() && selectedLabel === opt!.label}
+                        onClick={() => {
+                          setSelectedByKey((prev) => ({ ...prev, [entry.key]: opt!.label }));
+                          setCustomByKey((prev) => ({ ...prev, [entry.key]: "" }));
+                        }}
+                      >
+                        {opt!.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <div data-dw-affect-actions="">
+                  <button
+                    type="button"
+                    data-dw-btn-solid=""
+                    disabled={busy || !effectiveChoice}
+                    onClick={() => void submitUserInput(entry, effectiveChoice, false)}
+                  >
+                    <T>Confirm</T>
+                  </button>
+                  <button
+                    type="button"
+                    data-dw-btn-rule=""
+                    disabled={busy || !effectiveChoice}
+                    onClick={() => void submitUserInput(entry, effectiveChoice, true)}
+                  >
+                    <T>Always do this</T>
+                  </button>
+                </div>
+              </>
+            )}
+
+            <input
+              data-dw-affect-input=""
+              value={customText}
+              onChange={(e) => {
+                const val = e.currentTarget.value;
+                setCustomByKey((prev) => ({ ...prev, [entry.key]: val }));
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && customText.trim()) {
+                  e.preventDefault();
+                  void submitUserInput(entry, customText.trim(), false);
+                }
+              }}
+              placeholder={gt("Or type your own answer and press Enter…")}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 function HelperChildApprovals({
   ownerRef,
-  headerCode,
+  projectName,
+  onSaveRule,
 }: {
   ownerRef: ScopedThreadRef;
-  headerCode: string;
+  projectName: string;
+  onSaveRule: (ruleText: string, quote: string) => void;
 }) {
   const childApprovals = useAtomValue(childThreadApprovalsAtom(ownerRef));
   if (childApprovals.length === 0) return null;
+  const entries: ReadonlyArray<InlineDecisionEntry> = childApprovals.map((entry) => ({
+    key: `${entry.thread.threadId}:${entry.approval.requestId}`,
+    kind: "approval",
+    threadRef: entry.thread,
+    sourceTitle: entry.title,
+    approval: entry.approval,
+  }));
   return (
-    <>
-      {childApprovals.map((entry) => (
-        <div key={`${entry.thread.threadId}:${entry.approval.requestId}`} data-dw-msg="bot">
-          <span data-dw-msg-avatar="bot">{headerCode}</span>
-          <div data-dw-msg-stack="">
-            <LiveApprovalCard
-              approval={entry.approval}
-              threadRef={entry.thread}
-              sourceTitle={entry.title}
-            />
-          </div>
-        </div>
-      ))}
-    </>
+    <AffectDecisionInbox entries={entries} projectName={projectName} onSaveRule={onSaveRule} />
   );
 }
 
@@ -326,6 +405,7 @@ export function DropwaveChatPillar() {
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<Array<PendingImageAttachment>>([]);
   const [workersFoldOpen, setWorkersFoldOpen] = useState(false);
+  const [openAgentMsgs, setOpenAgentMsgs] = useState<Record<string, boolean>>({});
   const [sendError, setSendError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -349,14 +429,9 @@ export function DropwaveChatPillar() {
   const directChildApprovals = useAtomValue(
     activeThreadRef ? childThreadApprovalsAtom(activeThreadRef) : EMPTY_CHILD_APPROVALS_ATOM,
   );
-  const providersByEnv = useEnvironmentProviders();
-  const liveProviders = activeThread ? (providersByEnv.get(activeThread.environmentId) ?? []) : [];
 
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
   const interruptTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
-    reportFailure: false,
-  });
-  const setModelCmd = useOrchestrationCommand(threadEnvironment.setModelSelection, {
     reportFailure: false,
   });
   const updateMetadataCmd = useOrchestrationCommand(threadEnvironment.updateMetadata, {
@@ -393,114 +468,7 @@ export function DropwaveChatPillar() {
 
   const liveBot = workspace.activeBot ?? workspace.lead;
   const headerName = activeThread?.title ?? liveBot?.title ?? gt("Chief of Staff");
-  const headerCode =
-    headerName
-      .split(/\s+/)
-      .map((w) => w[0] ?? "")
-      .join("")
-      .slice(0, 2)
-      .toUpperCase() || "CS";
-
-  const currentRisk: DropwaveRiskLevel =
-    workspace.lead?.source.dropwaveBot?.kind === "lead"
-      ? (workspace.lead.source.dropwaveBot.riskLevel ?? "yolo")
-      : "yolo";
-
-  const headerBadge =
-    liveBot?.source.dropwaveBot?.kind === "lead"
-      ? currentRisk === "yolo"
-        ? gt("Autonomous")
-        : gt("Guided")
-      : gt("Agent");
-  const headerSub = `${workspace.project?.title ?? gt("Workspace")} · ${
-    activeThread ? workState(activeThread) : gt("Ready")
-  }`;
-
   const isLiveRunning = activeThread ? workState(activeThread) === "working" : false;
-
-  const liveModelEntries: Array<{
-    readonly key: string;
-    readonly label: string;
-    readonly hint: string;
-    readonly instanceId: NonNullable<typeof activeThread>["source"]["modelSelection"]["instanceId"];
-    readonly model: string;
-  }> = [];
-  if (activeThread) {
-    const settings =
-      appAtomRegistry.get(environmentServerConfigsAtom).get(activeThread.environmentId)?.settings ??
-      DEFAULT_SERVER_SETTINGS;
-    const instances = providerInstanceEntriesFor(
-      liveProviders,
-      settings,
-      activeThread.projectId,
-    ).filter((entry) => entry.enabled && entry.isAvailable);
-    for (const inst of instances) {
-      for (const model of inst.models.slice(0, 6)) {
-        liveModelEntries.push({
-          key: `${inst.instanceId}::${model.slug}`,
-          label: model.name,
-          hint: inst.displayName,
-          instanceId: inst.instanceId,
-          model: model.slug,
-        });
-      }
-    }
-  }
-  const activeLiveModelKey = activeThread
-    ? `${activeThread.source.modelSelection.instanceId}::${activeThread.source.modelSelection.model}`
-    : "";
-  const modelOptions: ReadonlyArray<DropwaveSelectOption> =
-    liveModelEntries.length > 0
-      ? liveModelEntries.map((entry) => ({
-          value: entry.key,
-          label: entry.label,
-          hint: entry.hint,
-        }))
-      : activeThread
-        ? [
-            {
-              value: activeLiveModelKey,
-              label: activeThread.source.modelSelection.model,
-            },
-          ]
-        : [{ value: "none", label: gt("Connect a provider") }];
-
-  const handleModelChange = (nextKey: string) => {
-    if (!activeThread) return;
-    const found = liveModelEntries.find((e) => e.key === nextKey);
-    if (!found) return;
-    void setModelCmd({
-      environmentId: activeThread.environmentId,
-      input: {
-        threadId: activeThread.id,
-        modelSelection: {
-          instanceId: found.instanceId,
-          model: found.model,
-        },
-      },
-    });
-  };
-
-  const riskOptions: ReadonlyArray<DropwaveSelectOption<DropwaveRiskLevel>> = [
-    { value: "yolo", label: "YOLO", hint: gt("Decides 99% end-to-end") },
-    { value: "normal", label: gt("Normal"), hint: gt("Asks on ambiguous calls") },
-    { value: "careful", label: gt("Careful"), hint: gt("Checks in early") },
-  ];
-
-  const handleRiskChange = (nextRisk: DropwaveRiskLevel) => {
-    const lead = workspace.lead;
-    if (!lead || lead.source.dropwaveBot?.kind !== "lead") return;
-    void updateMetadataCmd({
-      environmentId: lead.environmentId,
-      input: {
-        threadId: lead.id,
-        dropwaveBot: {
-          ...lead.source.dropwaveBot,
-          riskLevel: nextRisk,
-        },
-      },
-    });
-  };
 
   const handleAttachFiles = (event: ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.currentTarget.files ?? []);
@@ -703,179 +671,212 @@ export function DropwaveChatPillar() {
           .map((bot) => scopeThreadRef(bot.environmentId, bot.id))
       : [];
 
+  // Combine direct approvals, user inputs, and child worker approvals into ONE calm AffectUI Decision Inbox!
+  const combinedDecisions: Array<InlineDecisionEntry> = [];
+  if (activeThreadRef) {
+    for (const userInput of liveUserInputs) {
+      combinedDecisions.push({
+        key: `input:${userInput.requestId}`,
+        kind: "input",
+        threadRef: activeThreadRef,
+        input: userInput,
+      });
+    }
+    for (const approval of liveApprovals) {
+      combinedDecisions.push({
+        key: `approval:${approval.requestId}`,
+        kind: "approval",
+        threadRef: activeThreadRef,
+        approval,
+      });
+    }
+  }
+  for (const child of directChildApprovals) {
+    combinedDecisions.push({
+      key: `child:${child.thread.threadId}:${child.approval.requestId}`,
+      kind: "approval",
+      threadRef: child.thread,
+      sourceTitle: child.title,
+      approval: child.approval,
+    });
+  }
+
+  const projectName = workspace.project?.title ?? gt("Workspace");
+
   return (
-    <div data-dw-pillar-body="">
-      <header data-dw-pillar-head="">
-        <div data-dw-head-identity="">
-          <button
-            type="button"
-            data-dw-avatar-ring=""
-            aria-label={gt("Bot and core loop settings")}
-            onClick={() => {
-              if (liveBot) {
-                workspace.openPanel({ kind: "profile", target: { kind: "edit", bot: liveBot } });
-              }
-            }}
-          >
-            {headerCode}
-          </button>
-          <div data-dw-head-meta="">
-            <div data-dw-head-title-row="">
-              <h2>{headerName}</h2>
-              <span data-dw-badge="violet">{headerBadge}</span>
+    <div data-dw-chat-stage="">
+      <div data-dw-chat-scroll="">
+        <div data-dw-chat-lane="">
+          {!activeThread ? (
+            <div data-dw-empty-chat="">
+              <DropwaveBotAvatar name={projectName} role="lead" size="lg" />
+              <h3>
+                <T>Set up your Chief of Staff</T>
+              </h3>
+              <p>
+                <T>
+                  Launch your project’s main bot with its own soul, core loop, and specialist team
+                  through a quick conversation.
+                </T>
+              </p>
+              <button
+                type="button"
+                data-dw-btn-solid=""
+                onClick={() => workspace.setMainView("setup")}
+              >
+                <T>Start conversational setup</T>
+              </button>
             </div>
-            <p>{headerSub}</p>
-          </div>
-        </div>
-
-        <div data-dw-head-actions="">
-          <button
-            type="button"
-            data-dw-header-pill=""
-            onClick={() => workspace.openPanel({ kind: "asks" })}
-          >
-            <T>Asks</T>
-            <strong>{workspace.openAsksCount}</strong>
-          </button>
-          <button
-            type="button"
-            data-dw-header-pill=""
-            onClick={() => workspace.setMainView("docs")}
-          >
-            <FileTextIcon className="size-3.5" />
-            <T>Docs</T>
-          </button>
-        </div>
-      </header>
-
-      <div data-dw-stream="">
-        {!activeThread ? (
-          <div data-dw-empty-chat="">
-            <div data-dw-avatar-ring="lg">DW</div>
-            <h3>
-              <T>Set up your Chief of Staff</T>
-            </h3>
-            <p>
-              <T>
-                Launch your project’s main agent with its own soul, core loop, and specialist team
-                through a quick conversation.
-              </T>
-            </p>
-            <button
-              type="button"
-              data-dw-white-pill=""
-              onClick={() => workspace.setMainView("setup")}
-            >
-              <T>Start conversational setup</T>
-            </button>
-          </div>
-        ) : (
-          <>
-            {liveMessages.length === 0 ? (
-              <div data-dw-empty-chat="">
-                <div data-dw-avatar-ring="lg">{headerCode}</div>
-                <h3>{headerName}</h3>
-                <p>
-                  {liveBot?.source.dropwaveBot?.brief || (
-                    <T>
-                      Dump ideas, decisions, or tasks. Everything is tracked through your core loop.
-                    </T>
-                  )}
-                </p>
-                <div data-dw-quick-chips="">
-                  <button
-                    type="button"
-                    data-dw-quick-chip=""
-                    onClick={() =>
-                      setDraft(
-                        gt(
-                          "Let us refine our core loop together. Ask me what shipped means and wire the steps with dropwave_team.",
-                        ),
-                      )
-                    }
-                  >
-                    <T>Refine core loop</T>
-                  </button>
-                  <button
-                    type="button"
-                    data-dw-quick-chip=""
-                    onClick={() =>
-                      setDraft(
-                        gt("Audit this project right now and propose the top 3 things to ship."),
-                      )
-                    }
-                  >
-                    <T>Audit & plan next work</T>
-                  </button>
-                </div>
-              </div>
-            ) : (
-              liveMessages.map((msg) =>
-                msg.role === "user" ? (
-                  <div key={msg.id} data-dw-msg="owner">
-                    <div data-dw-bubble="owner">
-                      <p>{msg.text}</p>
-                      <span data-dw-msg-time="">{formatClock(msg.createdAt.toString())}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div key={msg.id} data-dw-msg="bot">
-                    <span data-dw-msg-avatar="bot">{headerCode}</span>
-                    <div data-dw-msg-stack="">
-                      <div data-dw-bubble="bot">
-                        <DropwaveMarkdown text={msg.text} />
-                      </div>
-                    </div>
-                  </div>
-                ),
-              )
-            )}
-
-            {liveSubagents.length > 0 && activeThreadRef ? (
-              <div data-dw-msg="bot">
-                <span data-dw-msg-avatar="bot">{headerCode}</span>
-                <div data-dw-msg-stack="">
-                  <div data-dw-fold-wrap="">
+          ) : (
+            <>
+              {liveMessages.length === 0 ? (
+                <div data-dw-empty-chat="">
+                  <DropwaveBotAvatar
+                    name={headerName}
+                    seed={liveBot?.source.dropwaveBot?.avatarSeed}
+                    role={liveBot?.source.dropwaveBot?.kind === "lead" ? "lead" : "specialist"}
+                    size="lg"
+                  />
+                  <h3>{headerName}</h3>
+                  <p>
+                    {liveBot?.source.dropwaveBot?.brief || (
+                      <T>
+                        Dump ideas, decisions, or tasks. Everything is tracked through your core
+                        loop.
+                      </T>
+                    )}
+                  </p>
+                  <div data-dw-quick-chips="">
                     <button
                       type="button"
-                      data-dw-fold-pill=""
+                      data-dw-quick-chip=""
+                      onClick={() =>
+                        setDraft(
+                          gt(
+                            "Let us refine our core loop together. Ask me what shipped means and wire the steps with dropwave_team.",
+                          ),
+                        )
+                      }
+                    >
+                      <T>Refine core loop</T>
+                    </button>
+                    <button
+                      type="button"
+                      data-dw-quick-chip=""
+                      onClick={() =>
+                        setDraft(
+                          gt("Audit this project right now and propose the top 3 things to ship."),
+                        )
+                      }
+                    >
+                      <T>Audit & plan next work</T>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                liveMessages.map((msg) => {
+                  if (msg.role === "user" && msg.createdBy !== "user") {
+                    const isOpen = Boolean(openAgentMsgs[msg.id]);
+                    const senderBot = msg.senderThreadId
+                      ? workspace.bots.find((b) => b.id === msg.senderThreadId)
+                      : null;
+                    const senderLabel = senderBot
+                      ? gt("From {name}", { name: senderBot.title })
+                      : msg.text.startsWith("[Dropwave supervisor]")
+                        ? gt("Supervisor check")
+                        : gt("Agent update");
+                    const preview = msg.text
+                      .replace(/^\[Dropwave supervisor\]\s*/i, "")
+                      .replace(/^\[From [^\]]+\]\s*/i, "")
+                      .split("\n")[0]
+                      ?.slice(0, 72);
+                    return (
+                      <div key={msg.id} data-dw-turn="bot">
+                        <div data-dw-work-fold="">
+                          <button
+                            type="button"
+                            data-dw-work-trigger=""
+                            aria-expanded={isOpen}
+                            onClick={() =>
+                              setOpenAgentMsgs((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))
+                            }
+                          >
+                            <span data-dw-dot="indigo" />
+                            <span>{senderLabel}</span>
+                            {preview ? <span data-dw-mono="dim">· {preview}</span> : null}
+                            {isOpen ? (
+                              <ChevronUpIcon className="size-3 opacity-60" />
+                            ) : (
+                              <ChevronDownIcon className="size-3 opacity-60" />
+                            )}
+                          </button>
+                          <div data-dw-work-body={isOpen ? "open" : "closed"}>
+                            <div data-dw-work-body-inner="">
+                              <div data-dw-work-step="">
+                                <DropwaveMarkdown text={msg.text} />
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return msg.role === "user" ? (
+                    <div key={msg.id} data-dw-turn="owner">
+                      <div data-dw-owner-pill="">
+                        <p>{msg.text}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={msg.id} data-dw-turn="bot">
+                      <DropwaveMarkdown text={msg.text} />
+                    </div>
+                  );
+                })
+              )}
+
+              {/* AffectUI-style 1-line folding background runs pill */}
+              {liveSubagents.length > 0 && activeThreadRef ? (
+                <div data-dw-turn="bot">
+                  <div data-dw-work-fold="">
+                    <button
+                      type="button"
+                      data-dw-work-trigger=""
+                      aria-expanded={workersFoldOpen}
                       onClick={() => setWorkersFoldOpen((open) => !open)}
                     >
                       <span
-                        data-dw-dot={runningSubagent ? "emerald" : "indigo"}
+                        data-dw-dot={runningSubagent ? "emerald" : "emerald"}
                         data-pulse={runningSubagent ? "" : undefined}
                       />
-                      <strong>
-                        <T>
-                          <Var>{liveSubagents.length}</Var> delegated sessions
-                        </T>
-                      </strong>
-                      <span data-dw-muted-sep="">
+                      <span>
+                        {liveSubagents.length === 1 ? (
+                          <T>1 background run</T>
+                        ) : (
+                          <T>
+                            <Var>{liveSubagents.length}</Var> background runs
+                          </T>
+                        )}
+                      </span>
+                      <span data-dw-mono="dim">
                         ·{" "}
                         <T>
-                          <Var>
-                            {
-                              liveSubagents.filter(
-                                (s) => s.status === "running" || s.status === "pending",
-                              ).length
-                            }
-                          </Var>{" "}
-                          running,{" "}
-                          <Var>{liveSubagents.filter((s) => s.status === "completed").length}</Var>{" "}
-                          done
+                          <Var>{liveSubagents.filter((s) => s.status === "completed").length}</Var>/
+                          <Var>{liveSubagents.length}</Var> done
                         </T>
                       </span>
                       {workersFoldOpen ? (
-                        <ChevronUpIcon className="size-3" />
+                        <ChevronUpIcon className="size-3 opacity-60" />
                       ) : (
-                        <ChevronDownIcon className="size-3" />
+                        <ChevronDownIcon className="size-3 opacity-60" />
                       )}
                     </button>
-                    {workersFoldOpen ? (
-                      <div data-dw-fold-body="">
+
+                    <div data-dw-work-body={workersFoldOpen ? "open" : "closed"}>
+                      <div data-dw-work-body-inner="">
                         {liveSubagents.slice(-8).map((sub) => (
-                          <div key={sub.id} data-dw-fold-line="">
-                            <div data-dw-fold-worker-head="">
+                          <div key={sub.id} data-dw-work-step="">
+                            <div data-dw-work-step-head="">
                               <strong>{sub.title || sub.prompt.slice(0, 60)}</strong>
                               <span
                                 data-dw-mono={
@@ -883,13 +884,13 @@ export function DropwaveChatPillar() {
                                     ? "coral"
                                     : sub.status === "running"
                                       ? "emerald"
-                                      : "muted"
+                                      : "dim"
                                 }
                               >
                                 {sub.status}
                               </span>
                             </div>
-                            {sub.result ? <p>{sub.result.slice(0, 200)}</p> : null}
+                            {sub.result ? <p>{sub.result.slice(0, 220)}</p> : null}
                             {sub.childThreadId ? (
                               <button
                                 type="button"
@@ -903,101 +904,67 @@ export function DropwaveChatPillar() {
                                   )
                                 }
                               >
-                                <T>Inspect session</T>
+                                <T>Inspect run</T>
                               </button>
                             ) : null}
                           </div>
                         ))}
                       </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {streamingAssistant && streamingAssistant.item.type === "assistant_message" ? (
-              <div data-dw-msg="bot">
-                <span data-dw-msg-avatar="bot">{headerCode}</span>
-                <div data-dw-msg-stack="">
-                  <div data-dw-bubble="bot">
-                    <DropwaveMarkdown text={streamingAssistant.item.text || gt("Thinking…")} />
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            {activeThreadRef
-              ? liveApprovals.map((approval) => (
-                  <div key={approval.requestId} data-dw-msg="bot">
-                    <span data-dw-msg-avatar="bot">{headerCode}</span>
-                    <div data-dw-msg-stack="">
-                      <LiveApprovalCard approval={approval} threadRef={activeThreadRef} />
                     </div>
                   </div>
-                ))
-              : null}
+                </div>
+              ) : null}
 
-            {activeThreadRef
-              ? liveUserInputs.map((userInput) => (
-                  <div key={userInput.requestId} data-dw-msg="bot">
-                    <span data-dw-msg-avatar="bot">{headerCode}</span>
-                    <div data-dw-msg-stack="">
-                      <LiveUserInputCard
-                        input={userInput}
-                        threadRef={activeThreadRef}
-                        onSaveRule={handleSaveRule}
-                      />
-                    </div>
-                  </div>
-                ))
-              : null}
+              {streamingAssistant && streamingAssistant.item.type === "assistant_message" ? (
+                <div data-dw-turn="bot">
+                  <DropwaveMarkdown text={streamingAssistant.item.text || gt("Thinking…")} />
+                </div>
+              ) : null}
 
-            {directChildApprovals.map((entry) => (
-              <div key={`${entry.thread.threadId}:${entry.approval.requestId}`} data-dw-msg="bot">
-                <span data-dw-msg-avatar="bot">{headerCode}</span>
-                <div data-dw-msg-stack="">
-                  <LiveApprovalCard
-                    approval={entry.approval}
-                    threadRef={entry.thread}
-                    sourceTitle={entry.title}
+              {/* Calm AffectUI inline Decision Inbox */}
+              {combinedDecisions.length > 0 ? (
+                <div data-dw-turn="bot">
+                  <AffectDecisionInbox
+                    entries={combinedDecisions}
+                    projectName={projectName}
+                    onSaveRule={handleSaveRule}
                   />
                 </div>
-              </div>
-            ))}
-            {helperRefsForLead.map((helperRef) => (
-              <HelperChildApprovals
-                key={`${helperRef.environmentId}:${helperRef.threadId}`}
-                ownerRef={helperRef}
-                headerCode={headerCode}
-              />
-            ))}
-          </>
-        )}
-        <div ref={streamEndRef} />
+              ) : null}
+
+              {helperRefsForLead.map((helperRef) => (
+                <div key={`${helperRef.environmentId}:${helperRef.threadId}`} data-dw-turn="bot">
+                  <HelperChildApprovals
+                    ownerRef={helperRef}
+                    projectName={projectName}
+                    onSaveRule={handleSaveRule}
+                  />
+                </div>
+              ))}
+            </>
+          )}
+          <div ref={streamEndRef} />
+        </div>
       </div>
 
-      <div data-dw-composer-wrap="">
-        <div data-dw-ticker="">
-          <div data-dw-ticker-left="">
-            <span
-              data-dw-dot={recording ? "coral" : "emerald"}
-              data-pulse={isLiveRunning || recording ? "" : undefined}
-            />
-            {recording ? (
-              <span>
-                <T>Listening… speak naturally, click mic again when done</T>
-              </span>
-            ) : runningSubagent ? (
-              <>
-                <strong>{runningSubagent.title || gt("Worker session")}</strong>
+      {/* Luminous Frosted-Glass Composer with full T3 Provider/Model/Effort + Permissions */}
+      <div data-dw-composer-dock="">
+        <div data-dw-composer-lane="">
+          {recording || runningSubagent || runningTool || isLiveRunning ? (
+            <div data-dw-live-status="">
+              <span data-dw-dot={recording ? "coral" : "emerald"} data-pulse="" />
+              {recording ? (
                 <span>
+                  <T>Listening… speak naturally, click mic again when done</T>
+                </span>
+              ) : runningSubagent ? (
+                <span>
+                  <strong>{runningSubagent.title || gt("Worker")}</strong>{" "}
                   <T>is running in an isolated worktree…</T>
                 </span>
-              </>
-            ) : runningTool ? (
-              <>
-                <strong>{headerName}</strong>
+              ) : runningTool ? (
                 <span>
+                  <strong>{headerName}</strong>{" "}
                   <T>
                     is running{" "}
                     <Var>
@@ -1012,127 +979,115 @@ export function DropwaveChatPillar() {
                     …
                   </T>
                 </span>
-              </>
-            ) : isLiveRunning ? (
-              <>
-                <strong>{headerName}</strong>
+              ) : (
                 <span>
-                  <T>is working through the core loop…</T>
+                  <strong>{headerName}</strong> <T>is working…</T>
                 </span>
-              </>
-            ) : (
-              <span>
-                <T>
-                  <Var>{headerName}</Var> is standing by
-                </T>
-              </span>
-            )}
-          </div>
-        </div>
-
-        {sendError ? (
-          <p data-dropwave-form-error="" role="alert">
-            {sendError}
-          </p>
-        ) : null}
-
-        <form data-dw-composer-box="" onSubmit={handleSend}>
-          {attachments.length > 0 ? (
-            <div data-dw-attach-strip="">
-              {attachments.map((att) => (
-                <div key={att.id} data-dw-attach-chip="">
-                  <img src={att.dataUrl} alt={att.name} />
-                  <span>{att.name}</span>
-                  <button
-                    type="button"
-                    aria-label={gt("Remove attachment")}
-                    onClick={() =>
-                      setAttachments((prev) => prev.filter((item) => item.id !== att.id))
-                    }
-                  >
-                    <XIcon className="size-3" />
-                  </button>
-                </div>
-              ))}
+              )}
             </div>
           ) : null}
 
-          <textarea
-            ref={textareaRef}
-            rows={1}
-            value={draft}
-            onChange={(e) => setDraft(e.currentTarget.value)}
-            onKeyDown={handleTextareaKeyDown}
-            placeholder={gt("Dump ideas, asks, or reply to {name}…", { name: headerName })}
-            aria-label={gt("Message {name}", { name: headerName })}
-          />
-          <div data-dw-composer-bar="">
-            <div data-dw-composer-left="">
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                hidden
-                onChange={handleAttachFiles}
-              />
-              <button
-                type="button"
-                data-dw-composer-icon=""
-                aria-label={gt("Attach image")}
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <PaperclipIcon className="size-4" />
-              </button>
-              <DropwaveSelect
-                value={activeLiveModelKey || "none"}
-                options={modelOptions}
-                ariaLabel={gt("Select model")}
-                compact
-                onChange={handleModelChange}
-              />
-              <DropwaveSelect
-                value={currentRisk}
-                options={riskOptions}
-                ariaLabel={gt("Autonomy level")}
-                compact
-                onChange={handleRiskChange}
-              />
-            </div>
+          {sendError ? (
+            <p data-dropwave-form-error="" role="alert">
+              {sendError}
+            </p>
+          ) : null}
 
-            <div data-dw-composer-right="">
-              <button
-                type="button"
-                data-dw-composer-icon=""
-                data-recording={recording ? "true" : undefined}
-                aria-label={recording ? gt("Stop voice input") : gt("Voice input")}
-                aria-pressed={recording}
-                onClick={toggleVoice}
-              >
-                {recording ? <MicOffIcon className="size-4" /> : <MicIcon className="size-4" />}
-              </button>
-              {isLiveRunning ? (
+          <form data-dw-glass-composer="" onSubmit={handleSend}>
+            {attachments.length > 0 ? (
+              <div data-dw-attach-strip="">
+                {attachments.map((att) => (
+                  <div key={att.id} data-dw-attach-chip="">
+                    <img src={att.dataUrl} alt={att.name} />
+                    <span>{att.name}</span>
+                    <button
+                      type="button"
+                      aria-label={gt("Remove attachment")}
+                      onClick={() =>
+                        setAttachments((prev) => prev.filter((item) => item.id !== att.id))
+                      }
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <textarea
+              ref={textareaRef}
+              rows={1}
+              value={draft}
+              onChange={(e) => setDraft(e.currentTarget.value)}
+              onKeyDown={handleTextareaKeyDown}
+              placeholder={gt("Dump ideas, asks, or reply to {name}…", { name: headerName })}
+              aria-label={gt("Message {name}", { name: headerName })}
+            />
+
+            <div data-dw-composer-bar="">
+              <div data-dw-composer-left="">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  onChange={handleAttachFiles}
+                />
                 <button
                   type="button"
-                  data-dw-send-btn="stop"
-                  aria-label={gt("Stop run")}
-                  onClick={() => void handleStop()}
+                  data-dw-composer-icon=""
+                  aria-label={gt("Attach image")}
+                  onClick={() => fileInputRef.current?.click()}
                 >
-                  <SquareIcon className="size-3" />
+                  <PaperclipIcon className="size-4" />
                 </button>
-              ) : (
+
+                {activeThread ? (
+                  <DropwaveComposerControls
+                    thread={activeThread}
+                    project={workspace.project}
+                    prompt={draft}
+                    onPromptEdit={(edit) => setDraft((prev) => edit(prev))}
+                    disabled={sending}
+                  />
+                ) : null}
+              </div>
+
+              <div data-dw-composer-right="">
                 <button
-                  type="submit"
-                  data-dw-send-btn=""
-                  aria-label={gt("Send message")}
-                  disabled={(!draft.trim() && attachments.length === 0) || sending}
+                  type="button"
+                  data-dw-composer-icon=""
+                  data-recording={recording ? "true" : undefined}
+                  aria-label={recording ? gt("Stop voice input") : gt("Voice input")}
+                  aria-pressed={recording}
+                  onClick={toggleVoice}
                 >
-                  <ArrowUpIcon className="size-3.5" />
+                  {recording ? <MicOffIcon className="size-4" /> : <MicIcon className="size-4" />}
                 </button>
-              )}
+                {isLiveRunning ? (
+                  <button
+                    type="button"
+                    data-dw-send-btn="stop"
+                    aria-label={gt("Stop run")}
+                    onClick={() => void handleStop()}
+                  >
+                    <SquareIcon className="size-3" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    data-dw-send-btn=""
+                    aria-label={gt("Send message")}
+                    disabled={(!draft.trim() && attachments.length === 0) || sending}
+                  >
+                    <ArrowUpIcon className="size-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
       </div>
     </div>
   );

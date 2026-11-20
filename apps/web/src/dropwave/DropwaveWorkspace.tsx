@@ -8,19 +8,13 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import type {
-  DropwaveAsk,
-  DropwaveDocSummary,
-  DropwaveMemoryItem,
-  ScopedThreadRef,
-} from "@t3tools/contracts";
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { T, Var, useGT } from "gt-react";
-import { ChevronDownIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { PanelLeftOpenIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { SidebarProvider } from "../components/ui/sidebar";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useLocalStorage } from "../hooks/useLocalStorage";
@@ -37,49 +31,28 @@ import { serverEnvironment } from "../state/server";
 import { threadFamilies } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { buildThreadRouteParams } from "../threadRoutes";
+import { DropwaveAsksPanel } from "./DropwaveAsksPanel";
+import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
 import { DropwaveChatPillar } from "./DropwaveChatPillar";
 import { DropwaveConversationalSetup } from "./DropwaveConversationalSetup";
 import { DropwaveDocsView } from "./DropwaveDocsView";
 import { DropwaveLiveDecisionModal } from "./DropwaveLiveDecisionModal";
 import { DropwavePanels } from "./DropwavePanels";
 import { DropwaveSettingsDialog } from "./DropwaveSettingsDialog";
-import { DropwaveToolbar, useDropwaveAppearance } from "./DropwaveToolbar";
-import { DropwaveWidgetCard } from "./DropwaveWidgets";
+import { DropwaveSidebar } from "./DropwaveSidebar";
+import { useDropwaveAppearance } from "./DropwaveToolbar";
 import { botOwner, isWorkspaceBot, keyOfThread, needsOwner, newestWorkFirst } from "./model";
 import {
   DropwaveModeContext,
   DropwaveWorkspaceContext,
   type DropwaveMainView,
-  type DropwaveSlotLayout,
-  type DropwaveWidgetKind,
   type WorkspacePanel,
 } from "./workspaceContext";
 import "./workspace.css";
 
 const LAST_PROJECT_KEY = "dropwave:last-project";
 const ProjectKey = Schema.NullOr(Schema.String);
-const WidgetKindSchema = Schema.Literals([
-  "asks",
-  "agents",
-  "reviews",
-  "sessions",
-  "docs",
-  "memory",
-]);
-const SlotLayoutSchema = Schema.Struct({
-  topLeft: WidgetKindSchema,
-  bottomLeft: WidgetKindSchema,
-  topRight: WidgetKindSchema,
-  bottomRight: WidgetKindSchema,
-});
-const DEFAULT_SLOTS: DropwaveSlotLayout = {
-  topLeft: "asks",
-  bottomLeft: "agents",
-  topRight: "reviews",
-  bottomRight: "sessions",
-};
 const DefaultRiskSchema = Schema.Literals(["careful", "normal", "yolo"]);
-const MAX_TOPBAR_PROJECTS = 4;
 
 function keyOfProject(project: EnvironmentProject) {
   return scopedProjectKey({ environmentId: project.environmentId, projectId: project.id });
@@ -119,12 +92,11 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   );
 
   const [lastProject, setLastProject] = useLocalStorage(LAST_PROJECT_KEY, null, ProjectKey);
-  const [slots, setSlots] = useLocalStorage(
-    "dropwave:slot-layout-v2",
-    DEFAULT_SLOTS,
-    SlotLayoutSchema,
+  const [sidebarCollapsed, setSidebarCollapsed] = useLocalStorage(
+    "dropwave:sidebar-collapsed",
+    false,
+    Schema.Boolean,
   );
-  const [focusMode, setFocusMode] = useLocalStorage("dropwave:focus-mode", false, Schema.Boolean);
   const [defaultRisk, setDefaultRisk] = useLocalStorage(
     "dropwave:default-risk",
     "yolo",
@@ -134,15 +106,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
 
   const [panel, setPanel] = useState<WorkspacePanel | null>(null);
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
-  const [openDocPath, setOpenDocPath] = useState<string | null>(null);
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-  const [projectSearch, setProjectSearch] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decisionModalOpen, setDecisionModalOpen] = useState(false);
-
-  const [liveAsks, setLiveAsks] = useState<ReadonlyArray<DropwaveAsk>>([]);
-  const [liveDocs, setLiveDocs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
-  const [liveMemories, setLiveMemories] = useState<ReadonlyArray<DropwaveMemoryItem>>([]);
+  const [openAsksCount, setOpenAsksCount] = useState(0);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   const activeBot = botOwner(byKey, activeThread);
@@ -166,12 +132,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     .sort(newestWorkFirst);
 
   const listAsksCmd = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
-  const listDocsCmd = useAtomCommand(serverEnvironment.dropwaveDocsList, { reportFailure: false });
-  const listMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryList, { reportFailure: false });
-
   const activeUpdatedAt = activeThread?.updatedAt ?? null;
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live asks, docs, and memories for active project
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads open ask count for the active project
   useEffect(() => {
     if (!project || refreshNonce < 0) return;
     if (activeUpdatedAt === "__never__") return;
@@ -180,26 +143,14 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
       environmentId: project.environmentId,
       input: { projectId: project.id, includeClosed: false },
     }).then((res) => {
-      if (!cancelled && res._tag === "Success") setLiveAsks(res.value.asks);
-    });
-    void listDocsCmd({
-      environmentId: project.environmentId,
-      input: { projectId: project.id },
-    }).then((res) => {
-      if (!cancelled && res._tag === "Success") setLiveDocs(res.value.docs);
-    });
-    void listMemCmd({
-      environmentId: project.environmentId,
-      input: { projectId: project.id },
-    }).then((res) => {
-      if (!cancelled && res._tag === "Success") setLiveMemories(res.value.items);
+      if (!cancelled && res._tag === "Success") setOpenAsksCount(res.value.asks.length);
     });
     return () => {
       cancelled = true;
     };
-  }, [activeUpdatedAt, listAsksCmd, listDocsCmd, listMemCmd, project, refreshNonce]);
+  }, [activeUpdatedAt, listAsksCmd, project, refreshNonce]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps obsidian dark tokens active across all portals
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps obsidian glass tokens active across all portals & T3 pickers
   useEffect(() => {
     const root = document.documentElement;
     const hadDark = root.classList.contains("dark");
@@ -211,7 +162,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains active bot delegated session family
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- retains active bot delegated session family for sidebar sessions list
   useEffect(() => {
     const owner = activeBot ?? lead;
     if (!owner) return;
@@ -235,19 +186,23 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
   };
 
-  const setSlotWidget = (slot: keyof DropwaveSlotLayout, kind: DropwaveWidgetKind) => {
-    setSlots({ ...slots, [slot]: kind });
+  const selectProject = (chosen: EnvironmentProject) => {
+    setLastProject(keyOfProject(chosen));
+    setPanel(null);
+    const chosenLead = leadFor(chosen, roster);
+    if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
+      setMainView("chat");
+      openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
+    } else {
+      setMainView("setup");
+      void navigate({ to: "/" });
+    }
   };
 
-  const widgetData = {
-    liveAsks,
-    liveDocs,
-    liveMemories,
-    onOpenDoc: (path: string) => setOpenDocPath(path),
-  };
-
-  const visibleProjects = projects.slice(0, MAX_TOPBAR_PROJECTS);
-  const searchLower = projectSearch.trim().toLowerCase();
+  const headerBot = activeBot ?? lead;
+  const headerName = activeThread?.title ?? headerBot?.title ?? gt("Chief of Staff");
+  const headerRole =
+    headerBot?.source.dropwaveBot?.kind === "lead" ? "lead" : ("specialist" as const);
 
   return (
     <DropwaveWorkspaceContext
@@ -268,180 +223,115 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         needs,
         selectedProjectKey: project ? keyOfProject(project) : null,
         mainView,
-        setMainView,
-        openAsksCount: liveAsks.length,
-        refreshOpenAsksCount: () => setRefreshNonce((n) => n + 1),
-        selectProject: (chosen) => {
-          setLastProject(keyOfProject(chosen));
-          setPanel(null);
-          const chosenLead = leadFor(chosen, roster);
-          if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
-            setMainView("chat");
-            openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
-          } else {
-            setMainView("setup");
+        setMainView: (next) => {
+          setMainView(next);
+          if (next === "setup") {
             void navigate({ to: "/" });
           }
         },
+        openAsksCount,
+        refreshOpenAsksCount: () => setRefreshNonce((n) => n + 1),
+        selectProject,
         openThread,
         openPanel: setPanel,
-        slots,
-        setSlotWidget,
-        focusMode,
-        setFocusMode,
         openDecisionQueue: () => setDecisionModalOpen(true),
         openSettings: () => setSettingsOpen(true),
       }}
     >
       <DropwaveModeContext value={true}>
-        <div data-dw-cockpit="" style={appearance.style}>
-          {/* Top Venture Bar */}
-          <header data-dw-topbar="">
-            <div data-dw-topbar-left="">
-              <Popover open={projectMenuOpen} onOpenChange={setProjectMenuOpen}>
-                <PopoverTrigger type="button" data-dw-brand-btn="" aria-label={gt("All projects")}>
-                  <span data-dw-brand-dot="" />
-                  {/* oxlint-disable-next-line t3code/no-untranslated-copy -- product brand name */}
-                  <strong>Dropwave</strong>
-                  <ChevronDownIcon className="size-3.5 opacity-60" />
-                </PopoverTrigger>
-                <PopoverPopup align="start" width="md" padding="compact" data-dropwave-popover="">
-                  <div data-dw-project-switcher="">
-                    <label data-dw-switcher-search="">
-                      <SearchIcon className="size-3.5" />
-                      <input
-                        value={projectSearch}
-                        onChange={(e) => setProjectSearch(e.currentTarget.value)}
-                        placeholder={gt("Switch project…")}
-                        aria-label={gt("Switch project")}
-                      />
-                    </label>
-                    <div data-dw-switcher-list="">
-                      {projects
-                        .filter((p) => !searchLower || p.title.toLowerCase().includes(searchLower))
-                        .map((proj) => {
-                          const key = keyOfProject(proj);
-                          const active = project !== null && keyOfProject(project) === key;
-                          return (
-                            <button
-                              key={key}
-                              type="button"
-                              data-dw-switcher-item=""
-                              aria-current={active ? "true" : undefined}
-                              onClick={() => {
-                                setLastProject(key);
-                                setProjectMenuOpen(false);
-                                const chosenLead = leadFor(proj, roster);
-                                if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
-                                  setMainView("chat");
-                                  openThread(
-                                    scopeThreadRef(chosenLead.environmentId, chosenLead.id),
-                                  );
-                                } else {
-                                  setMainView("setup");
-                                  void navigate({ to: "/" });
-                                }
-                              }}
-                            >
-                              <span data-dw-switcher-left="">
-                                <span data-dw-dot={active ? "emerald" : "dim"} />
-                                <strong>{proj.title}</strong>
-                              </span>
-                            </button>
-                          );
-                        })}
-                    </div>
-                    <button
-                      type="button"
-                      data-dw-switcher-new=""
-                      onClick={() => {
-                        setProjectMenuOpen(false);
-                        setMainView("setup");
-                      }}
-                    >
-                      <PlusIcon className="size-3.5" />
-                      <T>New project setup</T>
-                    </button>
-                  </div>
-                </PopoverPopup>
-              </Popover>
+        <div
+          data-dw-atelier=""
+          data-collapsed={sidebarCollapsed ? "true" : undefined}
+          style={appearance.style}
+        >
+          {/* Left Frosted-Glass Sidebar (Bot faces, auto-collapsing Projects + Pins, Team, Sessions) */}
+          {!sidebarCollapsed ? (
+            <DropwaveSidebar appearance={appearance} onCollapse={() => setSidebarCollapsed(true)} />
+          ) : null}
 
-              <span data-dw-vdiv="" aria-hidden="true" />
-
-              <nav data-dw-ventures="" aria-label={gt("Projects")}>
-                {visibleProjects.map((proj) => {
-                  const key = keyOfProject(proj);
-                  const active = project !== null && keyOfProject(project) === key;
-                  const hasUrgent = needs.some((t) => {
-                    const owner = botOwner(byKey, t);
-                    return owner !== null && projectIncludes(proj, owner);
-                  });
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      data-dw-venture-pill=""
-                      aria-current={active ? "true" : undefined}
-                      onClick={() => {
-                        setLastProject(key);
-                        const chosenLead = leadFor(proj, roster);
-                        if (chosenLead && !hiddenKeys.has(keyOfThread(chosenLead))) {
-                          setMainView("chat");
-                          openThread(scopeThreadRef(chosenLead.environmentId, chosenLead.id));
-                        } else {
-                          setMainView("setup");
-                          void navigate({ to: "/" });
-                        }
-                      }}
-                    >
-                      <span
-                        data-dw-dot={active ? "emerald" : hasUrgent ? "coral" : "dim"}
-                        data-pulse={active ? "" : undefined}
-                      />
-                      <span>{proj.title}</span>
-                    </button>
-                  );
-                })}
-
-                {projects.length > MAX_TOPBAR_PROJECTS ? (
+          {/* Main Open Frosted-Glass Canvas */}
+          <main data-dw-canvas="">
+            <header data-dw-canvas-head="">
+              <div data-dw-canvas-left="">
+                {sidebarCollapsed ? (
                   <button
                     type="button"
-                    data-dw-venture-more=""
-                    onClick={() => setProjectMenuOpen(true)}
+                    data-dw-rail-icon=""
+                    aria-label={gt("Show sidebar")}
+                    onClick={() => setSidebarCollapsed(false)}
                   >
-                    <T>
-                      +<Var>{projects.length - MAX_TOPBAR_PROJECTS}</Var>
-                    </T>
+                    <PanelLeftOpenIcon className="size-4" />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  data-dw-canvas-bot=""
+                  aria-label={gt("Bot and core loop settings")}
+                  onClick={() => {
+                    if (headerBot) {
+                      setPanel({ kind: "profile", target: { kind: "edit", bot: headerBot } });
+                    }
+                  }}
+                >
+                  <DropwaveBotAvatar
+                    name={headerName}
+                    seed={headerBot?.source.dropwaveBot?.avatarSeed}
+                    role={headerRole}
+                    size="sm"
+                  />
+                  <strong>{headerName}</strong>
+                  {project ? <span>{project.title}</span> : null}
+                </button>
+              </div>
+
+              <div data-dw-canvas-right="">
+                {needs.length > 0 ? (
+                  <button
+                    type="button"
+                    data-dw-needs-pill="urgent"
+                    aria-label={gt("Needs you")}
+                    onClick={() => setDecisionModalOpen(true)}
+                  >
+                    <span data-dw-dot="coral" data-pulse="" />
+                    <span>
+                      <T>
+                        <Var>{needs.length}</Var> needs you
+                      </T>
+                    </span>
                   </button>
                 ) : null}
 
-                <button
-                  type="button"
-                  data-dw-venture-add=""
-                  aria-label={gt("New project setup")}
-                  onClick={() => {
-                    setMainView("setup");
-                    void navigate({ to: "/" });
-                  }}
-                >
-                  <PlusIcon className="size-3.5" />
-                </button>
-              </nav>
-            </div>
-
-            <DropwaveToolbar appearance={appearance} totalNeedsCount={needs.length} />
-          </header>
-
-          {/* Main Spatial 3-Zone Workspace */}
-          <main data-dw-spatial="" data-focus={focusMode ? "true" : undefined}>
-            {!focusMode ? (
-              <div data-dw-wing="left">
-                <DropwaveWidgetCard slot="topLeft" kind={slots.topLeft} data={widgetData} />
-                <DropwaveWidgetCard slot="bottomLeft" kind={slots.bottomLeft} data={widgetData} />
+                <div data-dw-canvas-tabs="" role="tablist" aria-label={gt("Workspace views")}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mainView === "chat"}
+                    onClick={() => setMainView("chat")}
+                  >
+                    <T>Chat</T>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mainView === "docs"}
+                    onClick={() => setMainView("docs")}
+                  >
+                    <T>Docs</T>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={mainView === "asks"}
+                    onClick={() => setMainView("asks")}
+                  >
+                    <T>Asks</T>
+                    {openAsksCount > 0 ? <em data-dw-tab-count="">{openAsksCount}</em> : null}
+                  </button>
+                </div>
               </div>
-            ) : null}
+            </header>
 
-            <section data-dw-center-pillar="">
+            <div data-dw-canvas-body="">
               {mainView === "setup" ? (
                 <DropwaveConversationalSetup
                   key={project ? keyOfProject(project) : "new"}
@@ -449,18 +339,15 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                   onCancel={() => setMainView("chat")}
                 />
               ) : mainView === "docs" ? (
-                <DropwaveDocsView initialDocPath={openDocPath} />
+                <DropwaveDocsView />
+              ) : mainView === "asks" ? (
+                <div data-dw-asks-canvas="">
+                  <DropwaveAsksPanel />
+                </div>
               ) : (
                 <DropwaveChatPillar />
               )}
-            </section>
-
-            {!focusMode ? (
-              <div data-dw-wing="right">
-                <DropwaveWidgetCard slot="topRight" kind={slots.topRight} data={widgetData} />
-                <DropwaveWidgetCard slot="bottomRight" kind={slots.bottomRight} data={widgetData} />
-              </div>
-            ) : null}
+            </div>
           </main>
 
           {/* Engine Settings route modal */}
@@ -468,7 +355,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         </div>
       </DropwaveModeContext>
 
-      {/* Live Decision Queue Modal */}
+      {/* Live Decision Queue Focus Modal */}
       <DropwaveLiveDecisionModal
         open={decisionModalOpen}
         needs={needs}
