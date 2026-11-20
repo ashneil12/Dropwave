@@ -292,6 +292,36 @@ it.effect(
           } as never,
         });
         expect(dispatched.length).toBe(dispatchedBefore);
+
+        // turn-item.updated fires repeatedly per item: the same item id only counts and
+        // nudges once, while a different item id counts separately.
+        yield* supervisor.handle({
+          id: EventId.make("ev-7"),
+          threadId: leadId,
+          occurredAt: now,
+          type: "turn-item.updated",
+          payload: {
+            id: "item:edit-1",
+            type: "file_change",
+            fileName: "apps/web/src/billing.tsx",
+            status: "completed",
+          } as never,
+        });
+        expect(dispatched.length).toBe(dispatchedBefore);
+        expect(yield* store.getSupervisorCounter(`lead-direct-edit:${leadId}`)).toBe(1);
+        yield* supervisor.handle({
+          id: EventId.make("ev-8"),
+          threadId: leadId,
+          occurredAt: now,
+          type: "turn-item.updated",
+          payload: {
+            id: "item:edit-3",
+            type: "file_change",
+            fileName: "apps/web/src/other.tsx",
+            status: "completed",
+          } as never,
+        });
+        expect(yield* store.getSupervisorCounter(`lead-direct-edit:${leadId}`)).toBe(2);
         expect(ProviderDriverKind.make("claudeAgent")).toBe("claudeAgent");
       }).pipe(Effect.provide(testLayer));
     }),

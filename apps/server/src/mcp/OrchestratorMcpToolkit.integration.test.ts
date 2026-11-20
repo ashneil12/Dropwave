@@ -419,6 +419,8 @@ describe("orchestrator MCP toolkit", () => {
         );
         expect(delegatedChild.thread.lineage.relationshipToParent).toBe("subagent");
         expect(isProviderNativeSubagentThread(delegatedChild.thread)).toBe(false);
+        const delegatedTaskPrompt = delegatedChild.messages[0]?.text ?? "";
+        expect(delegatedTaskPrompt).not.toContain("<dropwave_worker>");
         const followupStartSequence = yield* orchestrator.getThreadEventSequence(
           localChild(delegated.childThreadId),
         );

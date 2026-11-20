@@ -1,15 +1,11 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { wireChiefOfStaff as wireChiefOfStaffShared } from "@t3tools/client-runtime/dropwave-setup";
 import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
-import {
-  DEFAULT_SERVER_SETTINGS,
-  type DropwaveLoopStep,
-  type DropwavePersona,
-  type DropwaveRiskLevel,
-} from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, type DropwaveRiskLevel } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { T, msg, useGT, useMessages } from "gt-react";
 import { ArrowLeftIcon, CheckIcon, FolderOpenIcon, LoaderIcon } from "lucide-react";
@@ -30,15 +26,12 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
-const DEFAULT_SETUP_STEPS: ReadonlyArray<{
-  readonly id: string;
-  readonly title: ReturnType<typeof msg>;
-}> = [
-  { id: "s1", title: msg("Plan & split asks") },
-  { id: "s2", title: msg("Build in isolated worktrees") },
-  { id: "s3", title: msg("Verify & QA end-to-end") },
-  { id: "s4", title: msg("Fix issues & re-check") },
-  { id: "s5", title: msg("Ship & report proof") },
+const DEFAULT_SETUP_STEP_TITLES: ReadonlyArray<ReturnType<typeof msg>> = [
+  msg("Plan & split asks"),
+  msg("Build in isolated worktrees"),
+  msg("Verify & QA end-to-end"),
+  msg("Fix issues & re-check"),
+  msg("Ship & report proof"),
 ];
 
 function slugify(name: string): string {
@@ -113,49 +106,6 @@ export function DropwaveConversationalSetup({
 
   if (!workspace) return null;
 
-  const resolveChiefOfStaffPersona = async (): Promise<{
-    persona?: DropwavePersona;
-    firstRun?: boolean;
-    error?: string;
-  }> => {
-    const envId = workspace.project?.environmentId ?? primaryEnvId;
-    if (!envId) return { error: gt("No connected environment available yet.") };
-    const listed = await listPersonas({ environmentId: envId, input: {} });
-    if (listed._tag === "Success") {
-      const chief = listed.value.items.find((persona) => persona.role === "chief_of_staff");
-      if (chief) return { persona: chief, firstRun: false };
-    }
-    const existingLead = workspace.bots.find((bot) => bot.source.dropwaveBot?.kind === "lead");
-    if (existingLead) {
-      const created = await upsertPersona({
-        environmentId: envId,
-        input: {
-          name: existingLead.title,
-          role: "chief_of_staff",
-          roleLabel: gt("Chief of Staff"),
-          soul: existingLead.source.dropwaveBot?.soul ?? "",
-        },
-      });
-      if (created._tag === "Success") return { persona: created.value.item, firstRun: false };
-    }
-    const created = await upsertPersona({
-      environmentId: envId,
-      // No soul or identity: the store seeds identity with the IDENTITY.md template.
-      input: {
-        name: "Atlas",
-        role: "chief_of_staff",
-        roleLabel: gt("Chief of Staff"),
-      },
-    });
-    if (created._tag !== "Success") {
-      const cause = squashAtomCommandFailure(created);
-      return {
-        error: cause instanceof Error ? cause.message : gt("Could not create your Chief of Staff."),
-      };
-    }
-    return { persona: created.value.item, firstRun: true };
-  };
-
   async function wireChiefOfStaff(project: EnvironmentProject) {
     if (busy) return;
     setError(null);
@@ -183,80 +133,74 @@ export function DropwaveConversationalSetup({
       return;
     }
 
-    const resolved = await resolveChiefOfStaffPersona();
-    if (!resolved.persona) {
-      setBusy(false);
-      setError(resolved.error ?? gt("Could not prepare your Chief of Staff."));
-      return;
-    }
-    const persona = resolved.persona;
-    const firstRun = resolved.firstRun === true;
-
-    const loopSteps: Array<DropwaveLoopStep> = DEFAULT_SETUP_STEPS.map((step) => ({
-      id: step.id,
-      title: m(step.title as string),
-      ownerBotId: null,
-    }));
-    const leadId = newThreadId();
-    const leadRes = await createThread({
-      environmentId: envId,
-      input: {
-        threadId: leadId,
-        projectId: project.id,
-        title: persona.name,
-        dropwaveBot: {
-          kind: "lead",
-          brief: "",
-          workflow: loopSteps.map((step) => step.title),
-          rules: [],
-          riskLevel: defaultRisk,
-          fixRoundCap: 3,
-          loopSteps,
-          personaId: persona.id,
-          onboardingPhase: firstRun ? "first_run" : "project",
+    const existingLead = workspace?.bots.find((bot) => bot.source.dropwaveBot?.kind === "lead");
+    const result = await wireChiefOfStaffShared(
+      {
+        listPersonas: async () => {
+          const res = await listPersonas({ environmentId: envId, input: {} });
+          return res._tag === "Success" ? [...res.value.items] : [];
         },
+        upsertPersona: async (input) => {
+          const res = await upsertPersona({ environmentId: envId, input });
+          if (res._tag !== "Success") throw squashAtomCommandFailure(res);
+          return res.value.item;
+        },
+        createThread: async (input) => {
+          const res = await createThread({
+            environmentId: envId,
+            input: { ...input, branch: null, worktreePath: null },
+          });
+          if (res._tag !== "Success") throw squashAtomCommandFailure(res);
+        },
+        sendMessage: async (input) => {
+          const res = await startTurn({
+            environmentId: envId,
+            input: {
+              threadId: input.threadId,
+              message: {
+                messageId: input.messageId,
+                role: "user",
+                text: input.text,
+                attachments: [],
+              },
+              runtimeMode: input.runtimeMode,
+              interactionMode: input.interactionMode,
+            },
+          });
+          if (res._tag !== "Success") throw squashAtomCommandFailure(res);
+        },
+        newThreadId,
+        newMessageId,
+      },
+      {
+        project,
         modelSelection,
         runtimeMode: projectSettings.defaultRuntimeMode,
         interactionMode: "default",
-        branch: null,
-        worktreePath: null,
+        riskLevel: defaultRisk,
+        chiefRoleLabel: gt("Chief of Staff"),
+        loopStepTitles: DEFAULT_SETUP_STEP_TITLES.map((title) => m(title as string)),
+        existingLead: existingLead
+          ? {
+              title: existingLead.title,
+              soul: existingLead.source.dropwaveBot?.soul ?? "",
+            }
+          : undefined,
+        autoMessageText: ({ title, workspaceRoot }) =>
+          gt("New project: {title} ({root}).", { title, root: workspaceRoot }),
       },
-    });
-    if (leadRes._tag === "Failure") {
+    ).catch((cause) => ({ error: cause }));
+    if ("error" in result) {
       setBusy(false);
-      if (!isAtomCommandInterrupted(leadRes)) {
-        const cause = squashAtomCommandFailure(leadRes);
-        setError(cause instanceof Error ? cause.message : gt("Could not create Chief of Staff."));
-      }
+      const cause = result.error;
+      setError(cause instanceof Error ? cause.message : gt("Could not create Chief of Staff."));
       return;
     }
 
     setBusy(false);
     if (!workspace) return;
     workspace.refreshOpenAsksCount();
-    workspace.openThread(scopeThreadRef(envId, leadId));
-
-    if (!firstRun) {
-      // Project onboarding starts with the owner's first message so the lead can
-      // inspect the folder and greet by name.
-      await startTurn({
-        environmentId: envId,
-        input: {
-          threadId: leadId,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: gt("New project: {title} ({root}).", {
-              title: project.title,
-              root: project.workspaceRoot,
-            }),
-            attachments: [],
-          },
-          runtimeMode: projectSettings.defaultRuntimeMode,
-          interactionMode: "default",
-        },
-      });
-    }
+    workspace.openThread(scopeThreadRef(envId, result.leadThreadId));
   }
 
   const handleCreate = async (event: FormEvent) => {

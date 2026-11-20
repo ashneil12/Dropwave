@@ -438,6 +438,10 @@ it.live.each([10, 20])(
         );
         const workers = yield* Effect.forEach(tasks, () => Queue.take(started));
         yield* Effect.forEach(workers, running, { concurrency: "unbounded", discard: true });
+        const firstWorkerProjection = yield* orchestrator.getThreadProjection(
+          requireValue(tasks[0], "Expected a task").threadId,
+        );
+        assert.include(firstWorkerProjection.messages[0]?.text ?? "", "<dropwave_worker>");
         assert.sameMembers(
           workers.map(({ turn }) => turn.runId),
           tasks.map(({ runId }) => runId),

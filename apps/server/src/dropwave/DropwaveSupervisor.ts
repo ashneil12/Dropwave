@@ -145,6 +145,10 @@ const make = Effect.gen(function* () {
           return;
         }
         const fileName = event.payload.fileName;
+        // turn-item.updated fires repeatedly per item; count and nudge once each.
+        const seenKey = `lead-direct-edit-seen:${event.payload.id}`;
+        if ((yield* store.getSupervisorCounter(seenKey)) > 0) return;
+        yield* store.incrementSupervisorCounter(seenKey);
         yield* store.incrementSupervisorCounter(`lead-direct-edit:${thread.id}`);
         yield* dispatchSupervisorMessage({
           threadId: thread.id,

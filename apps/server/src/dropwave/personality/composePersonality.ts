@@ -58,7 +58,7 @@ Mechanism mapping (theirs -> Dropwave):
 - WORKING.md, open-loops.md, createTask, createTasks, getPendingTasks, commitment tracking -> the Ask Ledger (dropwave_asks). Every open loop is an ask; nothing lives only in your head.
 - createDocument, decision logs, foundation documents, notes, templates -> dropwave_docs (kind "foundation" for the business foundation, "brief"/"spec"/"note" otherwise).
 - createIdea, pattern observation, constraint tracking -> dropwave_asks with kind "idea" for ideas, dropwave_memory kind "fact"/"lesson" for patterns and constraints.
-- createCalendarEvent, cron jobs, heartbeats, scheduled checks, reminders -> Habits (Dropwave scheduled tasks). If you cannot create one yourself, propose it to the owner in one line.
+- createCalendarEvent, cron jobs, heartbeats, scheduled checks, reminders -> Habits, which are Dropwave scheduled tasks. Create, change, and remove them yourself with schedule_task, list_scheduled_tasks, and delete_scheduled_task, bound to your own thread so each run lands in your chat with the owner. Tell the owner in one line when you add or change one.
 - sub-agents, sessions_spawn, crewmates, ship/scout workers, Ralph loops -> delegate_task (isolated worktree workers) and durable teammates via t3_thread_send. Teammates and workers never address the owner directly; their questions come to the lead, and only real owner decisions go up via dropwave_ask_up or a user-input request.
 - channels (WhatsApp, Telegram, Discord), BOOTSTRAP channel setup, heartbeat polling, sudo, gateway/config commands -> not part of Dropwave. Skip those steps silently; never fake them.
 - Operator OS "Micro-Brainstorms" -> still do them, as one or two short next-step suggestions at the end of advisory replies.
@@ -162,4 +162,31 @@ export function composeDropwavePersonality(input: ComposeDropwavePersonalityInpu
   const skills = skillsBlock(input.skills);
   if (skills) parts.push(skills);
   return parts.join("\n\n");
+}
+
+/**
+ * Harness block appended to every delegate_task brief that a Dropwave bot sends, so workers
+ * get the first mate worker rules and the installed skills without anyone activating them.
+ */
+export function composeDropwaveWorkerBrief(input: {
+  readonly leadName: string;
+  readonly skills: ReadonlyArray<DropwaveSkillEntry>;
+}): string {
+  const poteto = input.skills.find((skill) => skill.name === "poteto-mode");
+  const lines = input.skills.map(
+    (skill) => `- ${skill.name} (${skill.path}): ${skill.description}`,
+  );
+  return [
+    "<dropwave_worker>",
+    `You are a worker for ${input.leadName}, this project's first mate. You never address the owner: your questions and your report go back to ${input.leadName}. Where the brief leaves a point open, act on the most reasonable reading and say in your report what you assumed. Work only in your own checkout.`,
+    poteto
+      ? `Before you start, read and follow the poteto-mode skill (${poteto.path}) for any code change.`
+      : "",
+    "Installed skills are always available; nobody has to activate them. Read and follow any skill below whose description matches your task.",
+    "End with a report: a summary, the files you changed, each check you ran with its exact result, evidence, open questions, and one short plain-English paragraph saying what happened and what it means. Your opinion of your own work is not evidence; the checks are.",
+    lines.length > 0 ? `<installed_skills>\n${lines.join("\n")}\n</installed_skills>` : "",
+    "</dropwave_worker>",
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }

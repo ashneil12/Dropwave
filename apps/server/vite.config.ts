@@ -104,6 +104,23 @@ export default mergeConfig(
             };
           },
         },
+        {
+          // Ship the Dropwave knowledge library next to the bundle so bots can rg it at runtime.
+          name: "t3code:dropwave-library",
+          async closeBundle() {
+            const { cpSync, existsSync } = await import("node:fs");
+            const src = NodePath.join(import.meta.dirname, "src/dropwave/personality/library");
+            const dest = NodePath.join(
+              packBootstrap
+                ? NodePath.join(import.meta.dirname, "dist-exe")
+                : packExecutable
+                  ? cliAssetDir
+                  : NodePath.join(import.meta.dirname, "dist"),
+              "personality/library",
+            );
+            if (existsSync(src)) cpSync(src, dest, { recursive: true });
+          },
+        },
       ],
       // SEA embeds one entry; expose the history worker as a hidden subcommand.
       entry: packBootstrap

@@ -135,6 +135,8 @@ import {
   taskPrompt,
 } from "./delegatedTaskModes.ts";
 import { assertTargetWithinLimits, isLiveCallerShell, threadNotFound } from "./threadAccess.ts";
+import { composeDropwaveWorkerBrief } from "../dropwave/personality/composePersonality.ts";
+import { discoverSkills } from "../dropwave/DropwaveSkillsDiscovery.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
@@ -2848,6 +2850,14 @@ const make = Effect.gen(function* () {
         parent.thread.dropwaveBot?.kind === "lead"
           ? parent.thread.dropwaveBot.workerModelSelection
           : undefined;
+      // Dropwave callers brief workers with the first mate worker rules and installed skills.
+      const workerBrief =
+        parent.thread.dropwaveBot === undefined
+          ? undefined
+          : composeDropwaveWorkerBrief({
+              leadName: parent.thread.title,
+              skills: yield* Effect.promise(discoverSkills),
+            });
       const effectiveTarget =
         leadWorkerModel &&
         input.target?.model === undefined &&
@@ -2922,7 +2932,10 @@ const make = Effect.gen(function* () {
               parentThreadId: scope.thread.threadId,
               parentRunId: parentRun.id,
               parentNodeId,
-              task: taskPrompt(input),
+              task:
+                workerBrief === undefined
+                  ? taskPrompt(input)
+                  : `${taskPrompt(input)}\n\n${workerBrief}`,
               ...(input.title === undefined ? {} : { title: input.title }),
               modelSelection: target.modelSelection,
               runtimeMode,
