@@ -72,10 +72,32 @@ function isDuplicateCandidate(item: DropwaveMemoryItem, input: MemoryWriteInput)
   const aliases = new Set((input.aliases ?? []).map(subjectKey));
   if (aliases.size > 0 && item.aliases.some((alias) => aliases.has(subjectKey(alias)))) return true;
   if (subject !== "" && item.aliases.some((alias) => subjectKey(alias) === subject)) return true;
+  // Two writes quoting overlapping owner words are the same fact even when the
+  // stored phrasing diverges enough to defeat bag-of-words text similarity.
+  if (quoteSimilarity(input.quote, item.quote) >= 0.6) return true;
   // Subject-less writes still dedupe on near-identical text.
   const inputTokens = tokenSet(`${input.subject ?? ""} ${input.text}`);
   const itemTokens = tokenSet(`${item.subject} ${item.text}`);
   return jaccard(inputTokens, itemTokens) >= 0.6;
+}
+
+/**
+ * 0..1 similarity between two evidence quotes. Containment scores 1: the same
+ * owner sentence can't ground two different facts. Short quotes only score by
+ * token overlap so a two-word quote can't false-positive.
+ */
+function quoteSimilarity(
+  quote: string | null | undefined,
+  other: string | null | undefined,
+): number {
+  if (!quote?.trim() || !other?.trim()) return 0;
+  const a = normalizeText(quote);
+  const b = normalizeText(other);
+  if (a.length < 12 || b.length < 12) return 0;
+  if (a === b) return 1;
+  if (a.length >= MIN_CONTAIN_CHARS && b.includes(a)) return 1;
+  if (b.length >= MIN_CONTAIN_CHARS && a.includes(b)) return 1;
+  return jaccard(tokenSet(a), tokenSet(b));
 }
 
 function sameSource(item: DropwaveMemoryItem, input: MemoryWriteInput): boolean {
@@ -199,6 +221,17 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
     }
   }
   if (best === undefined) return yield* store.saveMemory(input);
+  // Verbatim quote overlap outranks paraphrase distance: two writes grounded
+  // in the same owner words are one fact, so let them reach containment or
+  // the conflict prompt instead of saving a lexical lookalike twice.
+  for (const item of candidates) {
+    const quoteScore = quoteSimilarity(input.quote, item.quote);
+    if (quoteScore < 0.8) continue;
+    const score = quoteScore >= 1 ? 1 : 0.9;
+    if (score > best.score) {
+      best = { item, score };
+    }
+  }
   const threshold = sameSource(best.item, input)
     ? vectorsReady
       ? SAME_SOURCE_THRESHOLD

@@ -331,3 +331,44 @@ it.effect("updateMemory rejects a stale revision (CAS)", () =>
     expect(fresh?.text).toBe("First write.");
   }).pipe(Effect.provide(DropwaveStore.layerMemory)),
 );
+
+it.effect("overlapping evidence quotes route paraphrased rewrites to the merge verdict", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const first = yield* store.saveMemory({
+      ...baseInput,
+      kind: "rule",
+      text: "Require npm test before declaring work done in this project.",
+      quote: "in THIS project, always run npm test before you say anything is done",
+    });
+    const textGeneration = yield* TextGeneration.TextGeneration.pipe(
+      Effect.provide(
+        tgLayer(
+          '{"contradicts":false,"merged":"Always run npm test before declaring work done in PulseBilling."}',
+        ),
+      ),
+    );
+    const serverSettings = yield* ServerSettings.ServerSettingsService.pipe(
+      Effect.provide(settingsLayer),
+    );
+    // Same owner quote extended by a scope note; text is a paraphrase whose
+    // bag-of-words Jaccard sits far below every lexical threshold.
+    const merged = yield* saveMemoryMerged({
+      store,
+      embeddings: noEmbeddings,
+      textGeneration,
+      serverSettings,
+      workspaceRoot: "/tmp",
+      ...baseInput,
+      kind: "rule",
+      subject: "PulseBilling completion verification",
+      text: "In PulseBilling, always run npm test before claiming work is done. This rule applies only to this project.",
+      quote:
+        "in THIS project, always run npm test before you say anything is done - that's a project rule only.",
+      sourceMessageId: "msg-2",
+    });
+    expect(merged.id).toBe(first.id);
+    const all = yield* store.listMemories({ projectId, limit: 50 });
+    expect(all.filter((item) => item.kind === "rule")).toHaveLength(1);
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);

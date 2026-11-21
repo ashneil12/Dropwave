@@ -31,6 +31,7 @@ import { isOwnerTypedMessage, parseVerifiedModelAsks, quoteInMessage } from "./a
 import { DROPWAVE_ASK_EXTRACTION_PROMPT } from "./askExtractionPrompt.ts";
 import * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import * as MemoryExtractor from "./memoryExtractor.ts";
+import { saveMemoryMerged } from "./memoryDedupe.ts";
 
 const MODEL_EXTRACTION_TIMEOUT = "90 seconds";
 
@@ -82,19 +83,29 @@ const make = Effect.gen(function* () {
     readonly sourceMessageId: Parameters<typeof store.saveMemory>[0]["sourceMessageId"];
     readonly asks: ReadonlyArray<{ kind: string; summary: string; quote: string }>;
   }) {
-    for (const ask of input.asks) {
-      if (ask.kind !== "rule") continue;
-      yield* store
-        .saveMemory({
-          projectId: input.projectId,
-          botThreadId: input.botThreadId,
-          kind: "rule",
-          text: ask.summary,
-          quote: ask.quote,
-          sourceMessageId: input.sourceMessageId,
-          confidence: "confirmed",
-        })
-        .pipe(Effect.ignore);
+    const ruleAsks = input.asks.filter((ask) => ask.kind === "rule");
+    if (ruleAsks.length === 0) return;
+    const project = yield* projects
+      .get(input.projectId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    const workspaceRoot = Option.isSome(project) ? project.value.workspaceRoot : undefined;
+    const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+    for (const ask of ruleAsks) {
+      yield* saveMemoryMerged({
+        store,
+        embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+        textGeneration,
+        serverSettings,
+        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+        projectId: input.projectId,
+        botThreadId: input.botThreadId,
+        kind: "rule",
+        text: ask.summary,
+        quote: ask.quote,
+        sourceMessageId: input.sourceMessageId,
+        threadId: input.botThreadId,
+        confidence: "confirmed",
+      }).pipe(Effect.ignore);
     }
   });
 

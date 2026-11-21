@@ -53,6 +53,13 @@ export interface RecallResult {
       readonly via?: string;
     }>;
     readonly drops: ReadonlyArray<{ readonly id: string; readonly reason: string }>;
+    /** Wall-clock breakdown of the recall pass, for latency auditing. */
+    readonly timing?: {
+      readonly totalMs: number;
+      readonly ftsMs: number;
+      readonly vectorMs: number;
+      readonly graphMs: number;
+    };
   };
 }
 
@@ -149,7 +156,19 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
     ).pipe(Effect.ignore, Effect.as(result));
   if (gate !== undefined) return yield* finish(EMPTY);
 
-  const nowMs = DateTime.toEpochMillis(DateTime.nowUnsafe());
+  const startedMs = DateTime.toEpochMillis(DateTime.nowUnsafe());
+  const mark = () => DateTime.toEpochMillis(DateTime.nowUnsafe());
+  let ftsMs = 0;
+  let vectorMs = 0;
+  let graphMs = 0;
+  const timing = () => ({
+    totalMs: mark() - startedMs,
+    ftsMs,
+    vectorMs,
+    graphMs,
+  });
+
+  const nowMs = mark();
   const candidates = yield* input.store
     .listMemories({
       projectId: input.projectId,
@@ -170,6 +189,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
     (item) => historyQuery || item.tier !== "episodic" || item.kind === "decision",
   );
 
+  const ftsStart = mark();
   const ftsHits = yield* input.store
     .searchMemoryFts({
       query,
@@ -179,11 +199,13 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
       limit: 30,
     })
     .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<{ id: string; rank: number }>));
+  ftsMs = mark() - ftsStart;
   const ftsById = new Map(ftsHits.map((hit) => [hit.id, hit.rank]));
 
   const semanticById = new Map<string, number>();
   let vectorsUsed = false;
   const embeddings = input.embeddings;
+  const vectorStart = mark();
   if (embeddings !== undefined) {
     const status = yield* embeddings.status.pipe(Effect.orElseSucceed(() => undefined));
     if (status?.state === "ready") {
@@ -216,6 +238,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
       vectorsUsed = embedResult.size > 0 || status.state === "ready";
     }
   }
+  vectorMs = mark() - vectorStart;
 
   const seeds = new Set<string>([...ftsById.keys(), ...semanticById.keys()]);
   const byId = new Map(pool.map((item) => [item.id, item]));
@@ -232,6 +255,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
     else if (ftsById.has(id)) via.set(id, "words");
   }
 
+  const graphStart = mark();
   const relationHits = yield* Effect.forEach(
     [...seeds].slice(0, 8),
     (seedId) =>
@@ -249,6 +273,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
       ),
     { concurrency: 4 },
   ).pipe(Effect.orElseSucceed(() => []));
+  graphMs = mark() - graphStart;
   for (const relations of relationHits) {
     for (const relation of relations) {
       const item = byId.get(relation.neighborId);
@@ -344,6 +369,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
         candidates: scores.size,
         shown: [],
         drops,
+        timing: timing(),
       },
     });
   }
@@ -384,6 +410,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
         };
       }),
       drops: drops.slice(0, 20),
+      timing: timing(),
     },
   });
 });
