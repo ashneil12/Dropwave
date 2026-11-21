@@ -37,6 +37,8 @@ export interface MemoryEmbeddingStatus {
   readonly dim: number;
   readonly enabled: boolean;
   readonly lastError?: string;
+  /** 0..1 model download progress while state is "loading". */
+  readonly progress?: number;
 }
 
 export interface MemoryEmbeddingsShape {
@@ -80,6 +82,7 @@ interface WorkerReply {
   readonly type?: string;
   readonly vectors?: ReadonlyArray<ReadonlyArray<number>>;
   readonly error?: string;
+  readonly progress?: number;
 }
 
 const EMBED_TIMEOUT = "60 seconds";
@@ -111,6 +114,7 @@ export const layer: Layer.Layer<MemoryEmbeddings, never, ServerConfig.ServerConf
     let worker: NodeWorkerThreads.Worker | undefined;
     let workerState: MemoryEmbeddingStatus["state"] = enabled ? "loading" : "disabled";
     let lastError: string | undefined;
+    let downloadProgress: number | undefined;
     let nextRequestId = 1;
     const pending = new Map<
       number,
@@ -168,6 +172,10 @@ export const layer: Layer.Layer<MemoryEmbeddings, never, ServerConfig.ServerConf
       );
       worker = spawned;
       spawned.on("message", (reply: WorkerReply) => {
+        if (reply.type === "progress") {
+          downloadProgress = reply.progress;
+          return;
+        }
         if (reply.type === "ready" || reply.type === "error") return;
         if (reply.id === undefined) return;
         const entry = pending.get(reply.id);
@@ -200,6 +208,7 @@ export const layer: Layer.Layer<MemoryEmbeddings, never, ServerConfig.ServerConf
         }
       });
       yield* waitForReady(spawned);
+      downloadProgress = undefined;
       setState("ready");
     });
 
@@ -269,6 +278,9 @@ export const layer: Layer.Layer<MemoryEmbeddings, never, ServerConfig.ServerConf
       modelId: MEMORY_EMBEDDING_MODEL_ID,
       dim: MEMORY_EMBEDDING_DIM,
       enabled,
+      ...(workerState === "loading" && downloadProgress !== undefined
+        ? { progress: downloadProgress }
+        : {}),
       ...(lastError !== undefined ? { lastError } : {}),
     }));
 

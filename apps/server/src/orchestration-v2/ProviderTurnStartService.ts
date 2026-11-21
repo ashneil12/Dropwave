@@ -2107,7 +2107,7 @@ export const layer: Layer.Layer<
                     ownerTexts,
                   });
                   return result.block;
-                }).pipe(Effect.catch(() => Effect.succeed("")));
+                });
           const context =
             botContext === "" || compact || goalCommand || resumeNatively
               ? inlineHistory

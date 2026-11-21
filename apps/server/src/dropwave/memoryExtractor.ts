@@ -9,6 +9,7 @@ import type {
   ProjectId,
   ThreadId,
 } from "@t3tools/contracts";
+import { DropwaveOperationError } from "@t3tools/contracts";
 import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -38,6 +39,14 @@ const MAX_OPS_PER_WINDOW = 8;
 const MIN_OP_CONFIDENCE = 0.8;
 const WINDOW_MESSAGE_LIMIT = 60;
 const WINDOW_CHAR_BUDGET = 8000;
+
+const dependencyError =
+  (what: string) =>
+  (cause: unknown): DropwaveOperationErrorType =>
+    new DropwaveOperationError({
+      code: "storage_error",
+      message: `Memory extraction could not ${what}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    });
 const ASSISTANT_CLIP = 200;
 
 export interface MemoryExtractionOp {
@@ -217,9 +226,11 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
   const watermarkKey = `extractor:${input.botThreadId}`;
   const watermark = readWatermark(yield* input.store.getMemoryMeta(watermarkKey));
 
-  const records = yield* input.projections.getThreadRecords(input.botThreadId, ["messages"], {
-    messageRoles: ["user", "assistant"],
-  });
+  const records = yield* input.projections
+    .getThreadRecords(input.botThreadId, ["messages"], {
+      messageRoles: ["user", "assistant"],
+    })
+    .pipe(Effect.mapError(dependencyError("read thread messages")));
   const all = [...records.messages].sort(
     (a, b) => a.createdAt.epochMilliseconds - b.createdAt.epochMilliseconds,
   );
@@ -244,7 +255,9 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
   const hash = yield* Effect.promise(() => contentHash(window));
   if (hash === watermark.contentHash) return { applied: 0 };
 
-  const allSettings = yield* input.serverSettings.getSettings;
+  const allSettings = yield* input.serverSettings.getSettings.pipe(
+    Effect.mapError(dependencyError("read server settings")),
+  );
   const { settings } = resolveProjectSettings(allSettings, input.projectId);
   const modelSelection = settings.textGenerationModelSelection ?? settings.defaultModelSelection;
   if (modelSelection === undefined) return { applied: 0 };
@@ -268,7 +281,11 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
       prompt,
       modelSelection,
     })
-    .pipe(Effect.timeoutOption(MODEL_TIMEOUT));
+    .pipe(
+      Effect.mapError(dependencyError("run the memory model")),
+      Effect.timeoutOption(MODEL_TIMEOUT),
+      Effect.orElseSucceed(() => Option.none()),
+    );
   if (Option.isNone(reply)) {
     yield* Effect.logWarning("dropwave memory extraction timed out", {
       botThreadId: input.botThreadId,
@@ -300,7 +317,7 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
           kind: op.kind,
           by: "agent",
         })
-        .pipe(Effect.catch(() => Effect.void));
+        .pipe(Effect.ignore);
       applied += 1;
       continue;
     }
@@ -321,7 +338,7 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
       sourceMessageId,
       threadId: input.botThreadId,
       confidence: op.confidence,
-    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    }).pipe(Effect.orElseSucceed(() => undefined));
     if (item === undefined) continue;
     applied += 1;
   }

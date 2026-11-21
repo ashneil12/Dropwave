@@ -1559,19 +1559,23 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
     decayDreamRelations: (input) =>
       Effect.try({
         try: () => {
-          const decayed = db
-            .prepare(
-              `UPDATE memory_relations
+          const decayed = Number(
+            db
+              .prepare(
+                `UPDATE memory_relations
                SET confidence = confidence * ?
                WHERE origin = 'dream'`,
-            )
-            .run(input.scale).changes;
-          const pruned = db
-            .prepare(
-              `DELETE FROM memory_relations
+              )
+              .run(input.scale).changes,
+          );
+          const pruned = Number(
+            db
+              .prepare(
+                `DELETE FROM memory_relations
                WHERE origin = 'dream' AND confidence < ?`,
-            )
-            .run(input.pruneBelow).changes;
+              )
+              .run(input.pruneBelow).changes,
+          );
           return { decayed, pruned };
         },
         catch: storageError,

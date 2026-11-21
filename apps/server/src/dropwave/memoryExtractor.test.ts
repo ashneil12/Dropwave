@@ -1,4 +1,5 @@
 import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -12,13 +13,15 @@ import {
 const OWNER_MESSAGE =
   "From now on always reply in British English. Also remember that I hate long status updates.";
 
+let messageSeq = 0;
 function msg(partial: {
   role: "user" | "assistant" | "system";
   createdBy?: "user" | "agent" | "system";
   text: string;
 }): OrchestrationV2ConversationMessage {
+  messageSeq += 1;
   return {
-    id: `m_${Math.random().toString(36).slice(2)}` as never,
+    id: `m_${messageSeq}` as never,
     threadId: "t1" as never,
     runId: null,
     nodeId: null,
@@ -27,8 +30,9 @@ function msg(partial: {
     attachments: [],
     streaming: false,
     createdBy: partial.createdBy ?? (partial.role === "user" ? "user" : "agent"),
-    createdAt: new Date(0) as never,
-    updatedAt: new Date(0) as never,
+    creationSource: "web",
+    createdAt: DateTime.nowUnsafe() as never,
+    updatedAt: DateTime.nowUnsafe() as never,
   } as OrchestrationV2ConversationMessage;
 }
 

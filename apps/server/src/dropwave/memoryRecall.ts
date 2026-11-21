@@ -3,6 +3,7 @@
 // Row-Bot memory_policy.py (Apache-2.0).
 import type { DropwaveMemoryItem, ProjectId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 
 import type * as MemoryEmbeddings from "./memoryEmbeddings.ts";
@@ -131,16 +132,21 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
   readonly threadId: string;
   readonly turnKey: string;
   readonly ownerTexts: ReadonlyArray<string>;
+  /** UI search passes false: no recall stamps, shown marks or trace rows. */
+  readonly persist?: boolean;
 }): Effect.fn.Return<RecallResult, never, never> {
   const query = input.ownerTexts.join("\n").slice(0, 2000).trim();
   const gate = recallGate(query);
+  const persist = input.persist !== false;
   const finish = (result: RecallResult) =>
-    input.store
-      .recordRecallTrace({ threadId: input.threadId, turnKey: input.turnKey, trace: result.trace })
-      .pipe(
-        Effect.catch(() => Effect.void),
-        Effect.as(result),
-      );
+    (persist
+      ? input.store.recordRecallTrace({
+          threadId: input.threadId,
+          turnKey: input.turnKey,
+          trace: result.trace,
+        })
+      : Effect.void
+    ).pipe(Effect.ignore, Effect.as(result));
   if (gate !== undefined) return yield* finish(EMPTY);
 
   const nowMs = DateTime.toEpochMillis(DateTime.nowUnsafe());
@@ -182,7 +188,9 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
     const status = yield* embeddings.status.pipe(Effect.orElseSucceed(() => undefined));
     if (status?.state === "ready") {
       const embedResult = yield* Effect.gen(function* () {
-        yield* ensureMemoryVectors(input.store, embeddings, pool.slice(0, 300));
+        yield* ensureMemoryVectors(input.store, embeddings, pool.slice(0, 300)).pipe(
+          Effect.provide(Digest.layerWebCrypto),
+        );
         const [queryVector] = yield* embeddings.embed([query]);
         if (queryVector === undefined) return new Map<string, number>();
         const stored = yield* input.store.getMemoryVectors(
@@ -341,10 +349,10 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
   }
 
   const itemIds = picked.map(({ candidate }) => candidate.item.id);
-  yield* input.store.stampMemoryRecall(itemIds).pipe(Effect.catch(() => Effect.void));
-  yield* input.store
-    .markMemoriesShown(input.threadId, itemIds)
-    .pipe(Effect.catch(() => Effect.void));
+  if (persist) {
+    yield* input.store.stampMemoryRecall(itemIds).pipe(Effect.ignore);
+    yield* input.store.markMemoriesShown(input.threadId, itemIds).pipe(Effect.ignore);
+  }
 
   const lines = picked.map(({ candidate }) => {
     const viaTag = via.get(candidate.item.id);
@@ -365,15 +373,16 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
       queryChars: query.length,
       candidates: scores.size,
       vectors: vectorsUsed,
-      shown: picked.map(({ candidate, score }) => ({
-        id: candidate.item.id,
-        score: Number(score.toFixed(3)),
-        semantic: Number(candidate.semantic.toFixed(3)),
-        lexical: Number(candidate.lexical.toFixed(3)),
-        ...(candidate.via !== undefined || via.has(candidate.item.id)
-          ? { via: candidate.via ?? via.get(candidate.item.id) }
-          : {}),
-      })),
+      shown: picked.map(({ candidate, score }) => {
+        const viaValue = candidate.via ?? via.get(candidate.item.id);
+        return {
+          id: candidate.item.id,
+          score: Number(score.toFixed(3)),
+          semantic: Number(candidate.semantic.toFixed(3)),
+          lexical: Number(candidate.lexical.toFixed(3)),
+          ...(viaValue !== undefined ? { via: viaValue } : {}),
+        };
+      }),
       drops: drops.slice(0, 20),
     },
   });

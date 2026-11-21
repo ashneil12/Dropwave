@@ -5,6 +5,7 @@ import {
   OrchestratorMcpFailure,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
@@ -125,7 +126,7 @@ const handlers = {
           botThreadId: thread.id,
           ...(callerPersonaId !== undefined ? { personaId: callerPersonaId } : {}),
           threadId: thread.id,
-          turnKey: `mcp:${MessageId.make(`memory-search:${Date.now()}`)}`,
+          turnKey: `mcp:${MessageId.make(`memory-search:${DateTime.toEpochMillis(DateTime.nowUnsafe())}`)}`,
           ownerTexts,
         });
         const items = yield* Effect.forEach(result.itemIds, (id) =>

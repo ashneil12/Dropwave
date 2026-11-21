@@ -7,6 +7,7 @@ import type {
   DropwaveOperationError as DropwaveOperationErrorType,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import * as ServerSettings from "../serverSettings.ts";
@@ -79,7 +80,7 @@ function isDuplicateCandidate(item: DropwaveMemoryItem, input: MemoryWriteInput)
 
 function sameSource(item: DropwaveMemoryItem, input: MemoryWriteInput): boolean {
   const left = input.sourceMessageId ?? input.threadId ?? input.botThreadId ?? null;
-  const right = item.sourceMessageId ?? item.threadId ?? item.botThreadId ?? null;
+  const right = item.sourceMessageId ?? item.botThreadId ?? null;
   if (left === null || right === null) return true;
   return left === right;
 }
@@ -223,7 +224,7 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
               quote: input.quote.slice(0, 500),
               sourceMessageId: input.sourceMessageId ?? null,
               threadId: input.threadId ?? null,
-              at: new Date().toISOString(),
+              at: DateTime.formatIso(DateTime.nowUnsafe()),
             },
           ]
         : []);
@@ -289,7 +290,7 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
   )
     .replace("{{EXISTING}}", existing.text)
     .replace("{{CANDIDATE_SOURCE}}", input.threadId ?? "a new message")
-    .replace("{{CANDIDATE_DATE}}", new Date().toISOString().slice(0, 10))
+    .replace("{{CANDIDATE_DATE}}", DateTime.formatIso(DateTime.nowUnsafe()).slice(0, 10))
     .replace("{{CANDIDATE}}", input.text);
   const reply = yield* input.textGeneration
     .generateTranscriptionPostProcessing({
@@ -297,7 +298,10 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
       prompt,
       modelSelection,
     })
-    .pipe(Effect.timeoutOption(CONFLICT_TIMEOUT));
+    .pipe(
+      Effect.timeoutOption(CONFLICT_TIMEOUT),
+      Effect.orElseSucceed(() => Option.none()),
+    );
   if (Option.isNone(reply)) return yield* store.saveMemory(input);
   const verdict = parseConflictVerdict(reply.value.transcription);
   if (verdict === undefined) return yield* store.saveMemory(input);

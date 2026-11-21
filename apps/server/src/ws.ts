@@ -7,6 +7,8 @@ import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequ
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DropwaveDocsService from "./dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "./dropwave/DropwaveStore.ts";
+import * as MemoryEmbeddings from "./dropwave/memoryEmbeddings.ts";
+import * as MemoryRecall from "./dropwave/memoryRecall.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
 import * as PeerLinks from "./peer/PeerLinks.ts";
@@ -101,6 +103,10 @@ import {
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
+  ProjectId,
+  type DropwaveMemoryItem,
+  type DropwaveMemorySearchInput,
+  type DropwaveMemorySetEmbeddingEnabledInput,
   type TerminalMetadataStreamEvent,
   type PullRequestRef,
   WS_METHODS,
@@ -1618,6 +1624,81 @@ export const layerWsRpc = (
               }),
           ),
         );
+      const findDropwaveLeadThread = (projectId: ProjectId) =>
+        threadManagement.listProjectThreads({ includeSubagents: false }).pipe(
+          Effect.flatMap((entries) =>
+            Effect.forEach(
+              entries.filter((entry) => entry.projectId === projectId),
+              (entry) =>
+                threadManagement.getThreadShell(entry.id).pipe(
+                  Effect.map((shell) => (shell?.dropwaveBot?.kind === "lead" ? entry.id : null)),
+                  Effect.orElseSucceed(() => null),
+                ),
+              { concurrency: 4 },
+            ),
+          ),
+          Effect.map((ids) => ids.find((id) => id !== null) ?? undefined),
+          Effect.orElseSucceed(() => undefined),
+        );
+      interface DreamUndoSnapshot {
+        readonly id: string;
+        readonly text: string;
+        readonly subject: string;
+        readonly kind: string;
+        readonly status: string;
+        readonly aliases: ReadonlyArray<string>;
+      }
+      const isDreamLastTidy = (
+        value: unknown,
+      ): value is {
+        at: string;
+        summary: string;
+        merged: number;
+        enriched: number;
+        relationsPruned: number;
+        undo?: ReadonlyArray<DreamUndoSnapshot>;
+      } =>
+        typeof value === "object" &&
+        value !== null &&
+        typeof (value as { at?: unknown }).at === "string" &&
+        typeof (value as { summary?: unknown }).summary === "string";
+      const undoLastMemoryTidy = Effect.fn("ws.undoLastMemoryTidy")(function* (
+        store: DropwaveStore.DropwaveStoreShape,
+      ) {
+        const meta = yield* store.getMemoryMeta("dream:last");
+        if (!isDreamLastTidy(meta) || meta.undo === undefined || meta.undo.length === 0) {
+          return { undone: 0 };
+        }
+        let undone = 0;
+        for (const snapshot of meta.undo) {
+          const fresh = yield* store.getMemory(snapshot.id);
+          if (fresh === undefined || fresh.authority === "owner") continue;
+          const ok = yield* store
+            .updateMemory({
+              id: snapshot.id,
+              revision: fresh.revision,
+              text: snapshot.text,
+              subject: snapshot.subject,
+              kind: snapshot.kind as never,
+              status: snapshot.status as never,
+              aliases: snapshot.aliases,
+              by: "owner",
+            })
+            .pipe(
+              Effect.as(true),
+              Effect.orElseSucceed(() => false),
+            );
+          if (ok) undone += 1;
+        }
+        yield* store
+          .setMemoryMeta("dream:last", {
+            ...meta,
+            undo: [],
+            undoneAt: DateTime.formatIso(DateTime.nowUnsafe()),
+          })
+          .pipe(Effect.ignore);
+        return { undone };
+      });
       const sessions = yield* SessionStore.SessionStore;
       const processDiagnostics = yield* ProcessDiagnostics.ProcessDiagnostics;
       const triage = yield* TriageService.TriageService;
@@ -2064,6 +2145,103 @@ export const layerWsRpc = (
             ),
             Effect.map((item) => ({ item })),
           ),
+        [WS_METHODS.dropwaveMemoryUpdate]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) =>
+              store.updateMemory({
+                id: input.id,
+                revision: input.revision,
+                ...(input.text !== undefined ? { text: input.text } : {}),
+                ...(input.subject !== undefined ? { subject: input.subject } : {}),
+                ...(input.kind !== undefined ? { kind: input.kind } : {}),
+                by: "owner",
+              }),
+            ),
+            Effect.map((item) => ({ item })),
+          ),
+        [WS_METHODS.dropwaveMemoryUndo]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.undoMemory(input.id, "owner")),
+            Effect.map((item) => ({ item })),
+          ),
+        [WS_METHODS.dropwaveMemoryReview]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.resolveMemoryReview(input.id, input.action, "owner")),
+            Effect.map((item) => ({ item })),
+          ),
+        [WS_METHODS.dropwaveMemorySearch]: Effect.fn("ws.dropwaveMemorySearch")(function* (
+          input: DropwaveMemorySearchInput,
+        ) {
+          const store = yield* requireDropwaveStore();
+          const botThreadId =
+            input.botThreadId ?? (yield* findDropwaveLeadThread(input.projectId)) ?? undefined;
+          if (botThreadId === undefined) return { items: [], trace: undefined };
+          const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+          const result = yield* MemoryRecall.recallMemories({
+            store,
+            embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+            projectId: input.projectId,
+            botThreadId,
+            threadId: botThreadId,
+            turnKey: `memory-search:${DateTime.toEpochMillis(DateTime.nowUnsafe())}`,
+            ownerTexts: [input.query],
+            persist: false,
+          });
+          const items = yield* Effect.forEach(result.itemIds, (id) =>
+            store.getMemory(id).pipe(Effect.orElseSucceed(() => undefined)),
+          );
+          return {
+            items: items.filter((item): item is DropwaveMemoryItem => item !== undefined),
+            ...(result.trace.gate !== "empty"
+              ? {
+                  trace: {
+                    gate: result.trace.gate,
+                    shown: result.trace.shown,
+                    drops: result.trace.drops,
+                  },
+                }
+              : {}),
+          };
+        }),
+        [WS_METHODS.dropwaveMemoryTraces]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.listRecallTraces(input.threadId, input.limit ?? 20)),
+            Effect.map((traces) => ({ traces })),
+          ),
+        [WS_METHODS.dropwaveMemoryEmbeddingStatus]: Effect.fn("ws.dropwaveMemoryEmbeddingStatus")(
+          function* () {
+            const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+            const store = yield* requireDropwaveStore();
+            const lastTidy = yield* store
+              .getMemoryMeta("dream:last")
+              .pipe(Effect.orElseSucceed(() => undefined));
+            const status = Option.isSome(maybeEmbeddings)
+              ? yield* maybeEmbeddings.value.status
+              : {
+                  state: "disabled" as const,
+                  modelId: "",
+                  dim: 0,
+                  enabled: false,
+                };
+            return {
+              status,
+              ...(isDreamLastTidy(lastTidy) ? { lastTidy } : {}),
+            };
+          },
+        ),
+        [WS_METHODS.dropwaveMemorySetEmbeddingEnabled]: Effect.fn(
+          "ws.dropwaveMemorySetEmbeddingEnabled",
+        )(function* (input: DropwaveMemorySetEmbeddingEnabledInput) {
+          const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+          if (Option.isNone(maybeEmbeddings)) {
+            return { status: { state: "disabled" as const, modelId: "", dim: 0, enabled: false } };
+          }
+          yield* maybeEmbeddings.value.setEnabled(input.enabled);
+          const status = yield* maybeEmbeddings.value.status;
+          return { status };
+        }),
+        [WS_METHODS.dropwaveMemoryUndoTidy]: () =>
+          requireDropwaveStore().pipe(Effect.flatMap((store) => undoLastMemoryTidy(store))),
         [WS_METHODS.dropwavePersonaList]: () =>
           requireDropwaveStore().pipe(
             Effect.flatMap((store) => store.listPersonas()),

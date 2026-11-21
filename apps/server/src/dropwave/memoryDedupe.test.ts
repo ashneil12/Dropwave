@@ -301,10 +301,13 @@ it.effect("withTransaction rolls back every write when the effect fails", () =>
             subject: "Rollback",
             text: "This row must not survive the failed transaction.",
           });
-          return yield* Effect.fail(new Error("boom"));
+          return yield* Effect.fail({
+            _tag: "TestRollback" as const,
+            message: "boom",
+          });
         }),
       )
-      .pipe(Effect.catch(() => Effect.void));
+      .pipe(Effect.ignore);
     const after = yield* store.listMemories({ projectId, limit: 50 });
     expect(after.length).toBe(before.length);
     expect(after.some((item) => item.subject === "Rollback")).toBe(false);

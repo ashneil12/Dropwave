@@ -275,14 +275,15 @@ const make = Effect.gen(function* () {
         const trigger = yield* MemoryExtractor.noteOwnerMessage({
           store,
           botThreadId: thread.id,
-          now: Date.now(),
-        }).pipe(Effect.catch(() => Effect.succeed("skip" as const)));
+          now: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+        }).pipe(Effect.orElseSucceed(() => "skip" as const));
         if (trigger === "run") {
           yield* Effect.forkIn(runExtraction, serviceScope);
         } else if (trigger === "schedule") {
-          yield* MemoryExtractor.markExtractionScheduled({ store, botThreadId: thread.id }).pipe(
-            Effect.catch(() => Effect.void),
-          );
+          yield* MemoryExtractor.markExtractionScheduled({
+            store,
+            botThreadId: thread.id,
+          }).pipe(Effect.ignore);
           yield* Effect.forkIn(
             Effect.gen(function* () {
               // Wait out the idle window, then re-check: a newer owner message
@@ -292,7 +293,7 @@ const make = Effect.gen(function* () {
                 const due = yield* MemoryExtractor.extractionIdleDue({
                   store,
                   botThreadId: thread.id,
-                  now: Date.now(),
+                  now: DateTime.toEpochMillis(DateTime.nowUnsafe()),
                 });
                 if (due || attempt === 1) break;
               }
@@ -300,7 +301,7 @@ const make = Effect.gen(function* () {
               yield* MemoryExtractor.clearExtractionSchedule({
                 store,
                 botThreadId: thread.id,
-              }).pipe(Effect.catch(() => Effect.void));
+              }).pipe(Effect.ignore);
             }).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("dropwave idle memory extraction failed", {

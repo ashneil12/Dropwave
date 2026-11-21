@@ -28,7 +28,17 @@ async function main(): Promise<void> {
   }
   env.allowLocalModels = false;
 
-  const extractor = await pipeline("feature-extraction", MODEL_ID, { dtype: DTYPE });
+  const extractor = await pipeline("feature-extraction", MODEL_ID, {
+    dtype: DTYPE,
+    progress_callback: (progress: { status?: string; file?: string; progress?: number }) => {
+      parentPort?.postMessage({
+        type: "progress",
+        status: progress.status ?? "",
+        file: progress.file ?? "",
+        progress: typeof progress.progress === "number" ? progress.progress : 0,
+      });
+    },
+  });
   parentPort.postMessage({ type: "ready", modelId: MODEL_ID, dim: 384 });
 
   parentPort.on("message", (message: unknown) => {
