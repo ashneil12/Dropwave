@@ -159,36 +159,24 @@ describe("evaluateCheck", () => {
   it("memory_saved: matches scope, about, kind and keywords", () => {
     const s = state({
       memories: [
-        memory({ scope: "global", personaId: null, text: "Owner's name is Ash" }),
+        memory({ scope: "owner", personaId: null, text: "Owner's name is Ash" }),
         memory({ scope: "project", text: "use pnpm here" }),
-        memory({ scope: "global", personaId: "per-1", text: "Atlas is dry-witted" }),
+        memory({ scope: "bot", personaId: "per-1", text: "Atlas is dry-witted" }),
       ],
     });
     expect(
-      evaluateCheck(
-        { kind: "memory_saved", keywords: ["ash"], scope: "global", about: "owner" },
-        s,
-        ctx([]),
-      ).pass,
+      evaluateCheck({ kind: "memory_saved", keywords: ["ash"], scope: "owner" }, s, ctx([])).pass,
     ).toBe(true);
     expect(
       evaluateCheck({ kind: "memory_saved", keywords: ["pnpm"], scope: "project" }, s, ctx([]))
         .pass,
     ).toBe(true);
-    // a self memory must not satisfy an owner check
+    // a bot memory must not satisfy an owner check
     expect(
-      evaluateCheck(
-        { kind: "memory_saved", keywords: ["atlas"], scope: "global", about: "owner" },
-        s,
-        ctx([]),
-      ).pass,
+      evaluateCheck({ kind: "memory_saved", keywords: ["atlas"], scope: "owner" }, s, ctx([])).pass,
     ).toBe(false);
     expect(
-      evaluateCheck(
-        { kind: "memory_saved", keywords: ["atlas"], scope: "global", about: "self" },
-        s,
-        ctx([]),
-      ).pass,
+      evaluateCheck({ kind: "memory_saved", keywords: ["atlas"], scope: "bot" }, s, ctx([])).pass,
     ).toBe(true);
     expect(
       evaluateCheck(

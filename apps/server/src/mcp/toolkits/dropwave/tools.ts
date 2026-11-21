@@ -51,7 +51,7 @@ const DropwaveAsksTool = Tool.make("dropwave_asks", {
 
 const DropwaveMemoryTool = Tool.make("dropwave_memory", {
   description:
-    "Memory and chat summary tree. list/search: durable facts, rules, and preferences. save: record a durable fact (scope: project or global; about: owner or self, global only; include the owner's quote when known). zoom: expand a summary tree nodeId. search_tree: search older summarized chat history.",
+    "Memory and chat summary tree. list/search: durable facts, rules, and preferences. save: record a durable fact (scope: owner = shared everywhere, bot = this bot only, project = this project; about: owner or self as a shortcut; include the owner's quote when known). zoom: expand a summary tree nodeId. search_tree: search older summarized chat history.",
   parameters: Schema.Struct({
     action: Schema.Literals(["list", "search", "save", "zoom", "search_tree"]),
     query: Schema.optional(Schema.String),

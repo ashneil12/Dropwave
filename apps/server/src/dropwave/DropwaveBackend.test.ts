@@ -287,7 +287,7 @@ it.effect(
       });
       yield* store.saveMemory({
         projectId: projectA,
-        scope: "global",
+        scope: "owner",
         kind: "preference",
         text: "Owner likes dark mode",
       });
@@ -298,7 +298,7 @@ it.effect(
       });
       yield* store.saveMemory({
         projectId: projectA,
-        scope: "global",
+        scope: "bot",
         personaId: persona.id,
         kind: "fact",
         text: "Quill writes terse release notes",
@@ -509,7 +509,16 @@ it("compiles risk posture, core loop, open asks, memory, and docs into pre-turn 
         scope: "project",
         personaId: null,
         kind: "preference",
+        subject: "",
         text: "Ash wants plain English with recommendations",
+        aliases: [],
+        tags: [],
+        tier: "semantic",
+        status: "active",
+        authority: "agent",
+        evidence: [],
+        journal: [],
+        revision: 1,
         confidence: "confirmed",
         createdAt: "2026-11-20T00:00:00.000Z" as never,
         updatedAt: "2026-11-20T00:00:00.000Z" as never,
@@ -543,12 +552,12 @@ it.effect(
     Effect.gen(function* () {
       const store = yield* DropwaveStore.DropwaveStore;
 
-      // Global owner memory saved in project A is listed for a bot in project B.
+      // Owner memory saved in project A is listed for a bot in project B.
       yield* store.saveMemory({
         projectId: projectA,
         kind: "fact",
         text: "Owner's name is Ash",
-        scope: "global",
+        scope: "owner",
         personaId: null,
       });
       // Project memory in A stays in A.
@@ -583,12 +592,12 @@ it.effect(
       const listed = yield* store.listPersonas();
       expect(listed.map((p) => p.id).sort()).toEqual([atlas.id, quinn.id].sort());
 
-      // Global self memory for persona P is listed for P in B but not for Q.
+      // Bot memory for persona P is listed for P in B but not for Q.
       yield* store.saveMemory({
         projectId: projectA,
         kind: "lesson",
         text: "I push back when scope creeps silently",
-        scope: "global",
+        scope: "bot",
         personaId: atlas.id,
       });
       const forAtlas = yield* store.listMemories({
@@ -607,14 +616,16 @@ it.effect(
       expect(betaMems.some((m) => m.text.includes("scope creeps"))).toBe(false);
 
       // setMemoryScope flips visibility both ways.
-      const promoted = yield* store.setMemoryScope(projectOnly.id, "global");
-      expect(promoted.scope).toBe("global");
+      const promoted = yield* store.setMemoryScope(projectOnly.id, "owner");
+      expect(promoted.scope).toBe("owner");
       const betaAfterPromote = yield* store.listMemories({
         projectId: projectB,
         botThreadId: leadThreadB,
       });
       expect(betaAfterPromote.some((m) => m.text === "Alpha ships every Friday")).toBe(true);
-      const demoted = yield* store.setMemoryScope(projectOnly.id, "project");
+      const demoted = yield* store.setMemoryScope(projectOnly.id, "project", {
+        projectId: projectA,
+      });
       expect(demoted.scope).toBe("project");
       const betaAfterDemote = yield* store.listMemories({
         projectId: projectB,
@@ -665,24 +676,33 @@ it("renders onboarding blocks only for the matching phase and all three memory s
   });
   const memory = (
     id: string,
-    scope: "project" | "global",
+    scope: "project" | "owner" | "bot",
     personaId: string | null,
     text: string,
   ) => ({
     id,
-    projectId: projectA,
+    projectId: scope === "project" ? projectA : null,
     botThreadId: leadThreadA,
     scope,
     personaId,
     kind: "fact" as const,
+    subject: "",
     text,
+    aliases: [] as ReadonlyArray<string>,
+    tags: [] as ReadonlyArray<string>,
+    tier: "semantic" as const,
+    status: "active" as const,
+    authority: "agent" as const,
+    evidence: [],
+    journal: [],
+    revision: 1,
     confidence: "learned" as const,
     createdAt: "2026-11-20T00:00:00.000Z" as never,
     updatedAt: "2026-11-20T00:00:00.000Z" as never,
   });
   const memories = [
-    memory("m-owner", "global", null, "Owner's name is Ash"),
-    memory("m-self", "global", "persona-1", "I keep reports short"),
+    memory("m-owner", "owner", null, "Owner's name is Ash"),
+    memory("m-self", "bot", "persona-1", "I keep reports short"),
     memory("m-project", "project", null, "Alpha ships weekly"),
   ];
 

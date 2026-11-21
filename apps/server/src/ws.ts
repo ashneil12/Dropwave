@@ -2056,7 +2056,12 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.dropwaveMemorySetScope]: (input) =>
           requireDropwaveStore().pipe(
-            Effect.flatMap((store) => store.setMemoryScope(input.id, input.scope)),
+            Effect.flatMap((store) =>
+              store.setMemoryScope(input.id, input.scope, {
+                ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
+                ...(input.personaId !== undefined ? { personaId: input.personaId } : {}),
+              }),
+            ),
             Effect.map((item) => ({ item })),
           ),
         [WS_METHODS.dropwavePersonaList]: () =>

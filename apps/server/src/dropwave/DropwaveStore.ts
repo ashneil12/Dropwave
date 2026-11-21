@@ -11,10 +11,12 @@ import {
   type DropwaveAskKind,
   type DropwaveAskStatus,
   type DropwaveAskStep,
+  type DropwaveMemoryAuthority,
   type DropwaveMemoryConfidence,
   type DropwaveMemoryItem,
   type DropwaveMemoryKind,
   type DropwaveMemoryScope,
+  type DropwaveMemoryStatus,
   DropwaveOperationError,
   type DropwavePersona,
   type DropwavePersonaRole,
@@ -62,7 +64,7 @@ function isOpenAskStatus(status: DropwaveAskStatus): boolean {
   return status !== "done" && status !== "dropped";
 }
 
-function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
+export function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
   db.exec(`
     PRAGMA busy_timeout = 5000;
     PRAGMA journal_mode = WAL;
@@ -175,6 +177,235 @@ function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
   db.exec(
     "CREATE INDEX IF NOT EXISTS idx_dropwave_memories_scope ON dropwave_memories (scope, persona_id, active)",
   );
+  initializeMemoryV2Schema(db);
+}
+
+// Memory v2 (Row-Bot knowledge_graph.py / memory_policy.py, Apache-2.0):
+// scope 'global' splits into 'owner' (no persona) and 'bot' (persona set);
+// 'project' stays. project_id becomes nullable for owner/bot rows.
+function initializeMemoryV2Schema(db: NodeSqlite.DatabaseSync): void {
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(dropwave_memories)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  if (!columns.has("subject")) {
+    // Pre-v2 table: rebuild with the full column set and migrate rows in one
+    // transaction so no memory is lost. Scope 'global' + persona_id NULL becomes
+    // 'owner', 'global' + persona_id becomes 'bot', 'project' is unchanged.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`
+        CREATE TABLE dropwave_memories_v2 (
+          id TEXT PRIMARY KEY,
+          scope TEXT NOT NULL,
+          persona_id TEXT,
+          project_id TEXT,
+          bot_thread_id TEXT,
+          kind TEXT NOT NULL,
+          subject TEXT NOT NULL DEFAULT '',
+          text TEXT NOT NULL,
+          aliases_json TEXT NOT NULL DEFAULT '[]',
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          tier TEXT NOT NULL DEFAULT 'semantic',
+          status TEXT NOT NULL DEFAULT 'active',
+          authority TEXT NOT NULL DEFAULT 'agent',
+          confidence TEXT NOT NULL,
+          evidence_json TEXT NOT NULL DEFAULT '[]',
+          quote TEXT,
+          source_message_id TEXT,
+          supersedes_id TEXT,
+          superseded_by_id TEXT,
+          conflict_json TEXT,
+          journal_json TEXT NOT NULL DEFAULT '[]',
+          revision INTEGER NOT NULL DEFAULT 1,
+          last_user_modified_at TEXT,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO dropwave_memories_v2 (
+          id, scope, persona_id, project_id, bot_thread_id, kind, subject, text,
+          aliases_json, tags_json, tier, status, authority, confidence,
+          evidence_json, quote, source_message_id, supersedes_id, superseded_by_id,
+          conflict_json, journal_json, revision, last_user_modified_at, active,
+          created_at, updated_at
+        )
+        SELECT
+          id,
+          CASE
+            WHEN scope = 'global' AND persona_id IS NULL THEN 'owner'
+            WHEN scope = 'global' THEN 'bot'
+            ELSE 'project'
+          END,
+          persona_id,
+          CASE WHEN scope = 'project' THEN project_id ELSE NULL END,
+          bot_thread_id,
+          kind,
+          '',
+          text,
+          '[]',
+          '[]',
+          'semantic',
+          CASE WHEN active = 0 THEN 'archived' ELSE 'active' END,
+          'agent',
+          CASE WHEN confidence IN ('mentioned', 'learned', 'confirmed') THEN confidence ELSE 'mentioned' END,
+          CASE
+            WHEN quote IS NOT NULL AND quote != '' THEN
+              json_array(json_object('quote', quote, 'source_message_id', source_message_id, 'at', updated_at))
+            ELSE '[]'
+          END,
+          quote,
+          source_message_id,
+          NULL,
+          NULL,
+          NULL,
+          '[]',
+          1,
+          NULL,
+          CASE WHEN active = 0 THEN 0 ELSE 1 END,
+          created_at,
+          updated_at
+        FROM dropwave_memories;
+        DROP TABLE dropwave_memories;
+        ALTER TABLE dropwave_memories_v2 RENAME TO dropwave_memories;
+      `);
+      db.exec("COMMIT");
+    } catch (cause) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // ignore rollback failure; surface the original error
+      }
+      throw cause;
+    }
+  } else {
+    // v2 table exists; fill any column a partial migration may have missed.
+    const v2Defaults: Record<string, string> = {
+      subject: "TEXT NOT NULL DEFAULT ''",
+      aliases_json: "TEXT NOT NULL DEFAULT '[]'",
+      tags_json: "TEXT NOT NULL DEFAULT '[]'",
+      tier: "TEXT NOT NULL DEFAULT 'semantic'",
+      status: "TEXT NOT NULL DEFAULT 'active'",
+      authority: "TEXT NOT NULL DEFAULT 'agent'",
+      evidence_json: "TEXT NOT NULL DEFAULT '[]'",
+      journal_json: "TEXT NOT NULL DEFAULT '[]'",
+      revision: "INTEGER NOT NULL DEFAULT 1",
+      active: "INTEGER NOT NULL DEFAULT 1",
+    };
+    for (const [name, ddl] of Object.entries(v2Defaults)) {
+      if (!columns.has(name)) {
+        db.exec(`ALTER TABLE dropwave_memories ADD COLUMN ${name} ${ddl}`);
+      }
+    }
+    for (const name of [
+      "persona_id",
+      "project_id",
+      "bot_thread_id",
+      "quote",
+      "source_message_id",
+      "supersedes_id",
+      "superseded_by_id",
+      "conflict_json",
+      "last_user_modified_at",
+    ]) {
+      if (!columns.has(name)) {
+        db.exec(`ALTER TABLE dropwave_memories ADD COLUMN ${name} TEXT`);
+      }
+    }
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_dropwave_memories_scope_v2
+      ON dropwave_memories (scope, persona_id, status);
+    CREATE INDEX IF NOT EXISTS idx_dropwave_memories_project_v2
+      ON dropwave_memories (project_id, status, updated_at DESC);
+
+    -- Controlled relation types (Row-Bot knowledge_graph.py RELATION_ALIASES,
+    -- trimmed to the set Dropwave memory actually uses).
+    CREATE TABLE IF NOT EXISTS memory_relations (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      confidence REAL NOT NULL DEFAULT 1,
+      origin TEXT NOT NULL DEFAULT 'agent',
+      created_at TEXT NOT NULL,
+      UNIQUE (source_id, target_id, type),
+      CHECK (source_id != target_id),
+      CHECK (type IN ('about', 'part_of', 'depends_on', 'replaces', 'contradicts', 'owned_by', 'uses', 'decided_in'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_relations_source
+      ON memory_relations (source_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_relations_target
+      ON memory_relations (target_id);
+
+    -- FTS5 keyword index over the meaning fields only (Row-Bot knowledge_graph.py
+    -- search index); provenance columns are never indexed.
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+      item_id UNINDEXED,
+      subject,
+      text,
+      aliases,
+      tags
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_vectors (
+      item_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      dim INTEGER NOT NULL,
+      vector BLOB NOT NULL,
+      content_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (item_id, model_id)
+    );
+
+    -- Recall stamps live apart from the item so a recall never rewrites it
+    -- (Row-Bot memory_recall_stamps).
+    CREATE TABLE IF NOT EXISTS memory_recall_stamps (
+      item_id TEXT PRIMARY KEY,
+      last_recalled_at TEXT NOT NULL,
+      recall_count INTEGER NOT NULL DEFAULT 0
+    );
+
+    -- Diff-only recall: an item is shown once per conversation segment
+    -- (Row-Bot turn_context.py shown-ids diff).
+    CREATE TABLE IF NOT EXISTS memory_shown (
+      thread_id TEXT NOT NULL,
+      item_id TEXT NOT NULL,
+      shown_at TEXT NOT NULL,
+      PRIMARY KEY (thread_id, item_id)
+    );
+
+    -- Dream rejection cache: hash(model + exact prompt) -> verdict, 30 days.
+    CREATE TABLE IF NOT EXISTS memory_rejections (
+      hash TEXT PRIMARY KEY,
+      verdict_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL
+    );
+
+    -- Per-turn recall traces for the Memory screen's "why did it remember".
+    CREATE TABLE IF NOT EXISTS memory_recall_traces (
+      id TEXT PRIMARY KEY,
+      thread_id TEXT NOT NULL,
+      turn_key TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      trace_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_recall_traces_thread
+      ON memory_recall_traces (thread_id, created_at DESC);
+  `);
+
+  // Backfill FTS for rows that predate the index. The NOT EXISTS guard keeps
+  // this idempotent regardless of how many rows are already indexed.
+  db.exec(`
+    INSERT INTO memory_fts (item_id, subject, text, aliases, tags)
+    SELECT m.id, m.subject, m.text, m.aliases_json, m.tags_json
+    FROM dropwave_memories m
+    WHERE m.status NOT IN ('archived', 'superseded')
+      AND NOT EXISTS (SELECT 1 FROM memory_fts f WHERE f.item_id = m.id);
+  `);
 }
 
 interface AskRow {
@@ -200,15 +431,29 @@ interface AskRow {
 
 interface MemoryRow {
   readonly id: string;
-  readonly project_id: string;
-  readonly bot_thread_id: string | null;
   readonly scope: string;
   readonly persona_id: string | null;
+  readonly project_id: string | null;
+  readonly bot_thread_id: string | null;
   readonly kind: string;
+  readonly subject: string;
   readonly text: string;
+  readonly aliases_json: string;
+  readonly tags_json: string;
+  readonly tier: string;
+  readonly status: string;
+  readonly authority: string;
+  readonly confidence: string;
+  readonly evidence_json: string;
   readonly quote: string | null;
   readonly source_message_id: string | null;
-  readonly confidence: string;
+  readonly supersedes_id: string | null;
+  readonly superseded_by_id: string | null;
+  readonly conflict_json: string | null;
+  readonly journal_json: string;
+  readonly revision: number;
+  readonly last_user_modified_at: string | null;
+  readonly active: number;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -270,20 +515,150 @@ interface PersonaRow {
 }
 
 function rowToMemory(row: MemoryRow): DropwaveMemoryItem {
+  const evidence = parseJsonArray<{
+    quote: string;
+    source_message_id?: string | null;
+    thread_id?: string | null;
+    at: string;
+  }>(row.evidence_json).map((entry) => ({
+    quote: entry.quote,
+    ...(entry.source_message_id !== undefined ? { sourceMessageId: entry.source_message_id } : {}),
+    ...(entry.thread_id !== undefined ? { threadId: entry.thread_id } : {}),
+    at: asIsoDateTime(entry.at),
+  }));
+  const conflictRaw = row.conflict_json ? parseJsonObject(row.conflict_json) : null;
+  const conflict =
+    conflictRaw && typeof conflictRaw.candidate === "string"
+      ? {
+          candidate: conflictRaw.candidate,
+          reason: typeof conflictRaw.reason === "string" ? conflictRaw.reason : "",
+          at: asIsoDateTime(typeof conflictRaw.at === "string" ? conflictRaw.at : row.updated_at),
+        }
+      : undefined;
   return {
     id: row.id,
-    projectId: ProjectId.make(row.project_id),
+    projectId: row.project_id ? ProjectId.make(row.project_id) : null,
     botThreadId: row.bot_thread_id ? ThreadId.make(row.bot_thread_id) : null,
-    scope: (row.scope === "global" ? "global" : "project") as DropwaveMemoryScope,
+    scope: (row.scope === "owner" || row.scope === "bot"
+      ? row.scope
+      : "project") as DropwaveMemoryScope,
     personaId: row.persona_id ?? null,
     kind: row.kind as DropwaveMemoryKind,
+    subject: row.subject ?? "",
     text: row.text,
+    aliases: parseJsonArray<string>(row.aliases_json ?? "[]"),
+    tags: parseJsonArray<string>(row.tags_json ?? "[]"),
+    tier: (row.tier === "core" || row.tier === "episodic" ? row.tier : "semantic") as
+      | "core"
+      | "semantic"
+      | "episodic",
+    status: (row.status === "needs_review" ||
+    row.status === "superseded" ||
+    row.status === "archived"
+      ? row.status
+      : "active") as DropwaveMemoryStatus,
+    authority: (row.authority === "owner" || row.authority === "import"
+      ? row.authority
+      : "agent") as DropwaveMemoryAuthority,
+    evidence,
     ...(row.quote ? { quote: row.quote } : {}),
     ...(row.source_message_id ? { sourceMessageId: row.source_message_id } : {}),
+    ...(row.supersedes_id ? { supersedesId: row.supersedes_id } : {}),
+    ...(row.superseded_by_id ? { supersededById: row.superseded_by_id } : {}),
+    ...(conflict ? { conflict } : {}),
+    journal: parseJsonArray<{
+      at: string;
+      by: string;
+      action: string;
+      before?: unknown;
+      after?: unknown;
+    }>(row.journal_json ?? "[]").map((entry) => ({
+      at: asIsoDateTime(entry.at),
+      by: entry.by,
+      action: entry.action,
+      ...(entry.before !== undefined ? { before: entry.before } : {}),
+      ...(entry.after !== undefined ? { after: entry.after } : {}),
+    })),
+    revision: row.revision ?? 1,
+    ...(row.last_user_modified_at
+      ? { lastUserModifiedAt: asIsoDateTime(row.last_user_modified_at) }
+      : {}),
     confidence: row.confidence as DropwaveMemoryConfidence,
     createdAt: asIsoDateTime(row.created_at),
     updatedAt: asIsoDateTime(row.updated_at),
   };
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+const MEMORY_JOURNAL_LIMIT = 50;
+
+function appendJournal(
+  journalJson: string,
+  by: string,
+  action: string,
+  before?: unknown,
+  after?: unknown,
+): string {
+  const journal = parseJsonArray<{
+    at: string;
+    by: string;
+    action: string;
+    before?: unknown;
+    after?: unknown;
+  }>(journalJson);
+  journal.push({
+    at: nowIso(),
+    by,
+    action,
+    ...(before !== undefined ? { before } : {}),
+    ...(after !== undefined ? { after } : {}),
+  });
+  return JSON.stringify(journal.slice(-MEMORY_JOURNAL_LIMIT));
+}
+
+function mergeEvidenceJson(existingJson: string, additions: ReadonlyArray<unknown>): string {
+  const merged = parseJsonArray<Record<string, unknown>>(existingJson);
+  const seen = new Set(
+    merged.map((entry) => `${entry.quote ?? ""}|${entry.source_message_id ?? ""}`),
+  );
+  for (const addition of additions) {
+    const record = addition as Record<string, unknown>;
+    const key = `${record.quote ?? ""}|${record.source_message_id ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(record as never);
+    if (merged.length >= 8) break;
+  }
+  return JSON.stringify(merged.slice(-8));
+}
+
+function ftsTextList(json: string): string {
+  return parseJsonArray<string>(json).join(" ");
+}
+
+// Keep the FTS index in step with the row: provenance columns never indexed.
+function syncMemoryFts(db: NodeSqlite.DatabaseSync, row: MemoryRow): void {
+  db.prepare("DELETE FROM memory_fts WHERE item_id = ?").run(row.id);
+  if (row.status === "archived" || row.status === "superseded") return;
+  db.prepare(
+    "INSERT INTO memory_fts (item_id, subject, text, aliases, tags) VALUES (?, ?, ?, ?, ?)",
+  ).run(
+    row.id,
+    row.subject ?? "",
+    row.text,
+    ftsTextList(row.aliases_json ?? "[]"),
+    ftsTextList(row.tags_json ?? "[]"),
+  );
 }
 
 function rowToPersona(row: PersonaRow): DropwavePersona {
@@ -374,6 +749,9 @@ export interface DropwaveStoreShape {
     readonly botThreadId?: ThreadId | undefined;
     readonly personaId?: string | undefined;
     readonly query?: string | undefined;
+    readonly statuses?: ReadonlyArray<DropwaveMemoryStatus> | undefined;
+    readonly scope?: DropwaveMemoryScope | undefined;
+    readonly limit?: number | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveMemoryItem>, DropwaveOperationError>;
 
   readonly saveMemory: (input: {
@@ -382,17 +760,48 @@ export interface DropwaveStoreShape {
     readonly scope?: DropwaveMemoryScope | undefined;
     readonly personaId?: string | null | undefined;
     readonly kind: DropwaveMemoryKind;
+    readonly subject?: string | undefined;
     readonly text: string;
+    readonly aliases?: ReadonlyArray<string> | undefined;
+    readonly tags?: ReadonlyArray<string> | undefined;
+    readonly tier?: "core" | "semantic" | "episodic" | undefined;
     readonly quote?: string | undefined;
     readonly sourceMessageId?: string | null | undefined;
+    readonly threadId?: string | null | undefined;
+    readonly evidence?:
+      | ReadonlyArray<{
+          readonly quote: string;
+          readonly sourceMessageId?: string | null;
+          readonly threadId?: string | null;
+          readonly at: string;
+        }>
+      | undefined;
+    readonly authority?: "owner" | "agent" | "import" | undefined;
     readonly confidence?: DropwaveMemoryConfidence | undefined;
+    readonly supersedesId?: string | null | undefined;
   }) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
 
-  readonly removeMemory: (id: string) => Effect.Effect<boolean, DropwaveOperationError>;
+  readonly updateMemory: (input: {
+    readonly id: string;
+    readonly revision: number;
+    readonly text?: string | undefined;
+    readonly subject?: string | undefined;
+    readonly aliases?: ReadonlyArray<string> | undefined;
+    readonly tags?: ReadonlyArray<string> | undefined;
+    readonly kind?: DropwaveMemoryKind | undefined;
+    readonly status?: DropwaveMemoryStatus | undefined;
+    readonly by?: string | undefined;
+  }) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
+
+  readonly removeMemory: (
+    id: string,
+    by?: string,
+  ) => Effect.Effect<boolean, DropwaveOperationError>;
 
   readonly setMemoryScope: (
     id: string,
     scope: DropwaveMemoryScope,
+    context?: { readonly projectId?: ProjectId; readonly personaId?: string | null },
   ) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
 
   readonly listPersonas: () => Effect.Effect<
@@ -878,25 +1287,37 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
                 ? " AND (bot_thread_id IS NULL OR bot_thread_id = ?)"
                 : "") +
               ")",
-            "(scope = 'global' AND persona_id IS NULL)",
+            "scope = 'owner'",
           ];
           const params: Array<string> = [input.projectId];
           if (input.botThreadId !== undefined) params.push(input.botThreadId);
           if (input.personaId !== undefined) {
-            scopeClauses.push("(scope = 'global' AND persona_id = ?)");
+            scopeClauses.push("(scope = 'bot' AND persona_id = ?)");
             params.push(input.personaId);
           }
-          const clauses = [`(${scopeClauses.join(" OR ")})`, "active = 1"];
+          const statuses = input.statuses ?? ["active"];
+          const clauses = [
+            `(${scopeClauses.join(" OR ")})`,
+            `status IN (${statuses.map(() => "?").join(",")})`,
+          ];
+          params.push(...statuses);
+          if (input.scope !== undefined) {
+            clauses.push("scope = ?");
+            params.push(input.scope);
+          }
           if (input.query?.trim()) {
             const like = `%${input.query.trim().toLowerCase()}%`;
-            clauses.push("(LOWER(text) LIKE ? OR LOWER(COALESCE(quote, '')) LIKE ?)");
-            params.push(like, like);
+            clauses.push(
+              "(LOWER(text) LIKE ? OR LOWER(COALESCE(subject, '')) LIKE ? OR LOWER(COALESCE(quote, '')) LIKE ?)",
+            );
+            params.push(like, like, like);
           }
+          const limit = Math.min(Math.max(input.limit ?? 100, 1), 500);
           const rows = getAll<MemoryRow>(
             `SELECT * FROM dropwave_memories
              WHERE ${clauses.join(" AND ")}
              ORDER BY CASE confidence WHEN 'confirmed' THEN 0 WHEN 'learned' THEN 1 ELSE 2 END, updated_at DESC
-             LIMIT 100`,
+             LIMIT ${limit}`,
             ...params,
           );
           return rows.map(rowToMemory);
@@ -910,76 +1331,226 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           const text = oneLine(input.text).slice(0, 600);
           const timestamp = nowIso();
           const scope: DropwaveMemoryScope = input.scope ?? "project";
-          const personaId = scope === "global" ? (input.personaId ?? null) : null;
-          // The heuristic and model ask passes phrase a rule differently but carry the same
-          // owner quote, so a quote match counts as the same memory.
-          const quoteNorm = input.quote ? clipQuote(input.quote) : null;
+          const personaId = scope === "bot" ? (input.personaId ?? null) : null;
+          const projectId = scope === "project" ? input.projectId : null;
+          const authority = input.authority ?? "agent";
+          const evidenceJson = JSON.stringify(
+            (
+              input.evidence ??
+              (input.quote
+                ? [
+                    {
+                      quote: clipQuote(input.quote),
+                      sourceMessageId: input.sourceMessageId ?? null,
+                      threadId: input.threadId ?? null,
+                      at: timestamp,
+                    },
+                  ]
+                : [])
+            ).slice(0, 8),
+          );
+          const quote = input.quote ? clipQuote(input.quote) : null;
+          // Exact-text or same-quote duplicates inside the same scope fold into
+          // the existing row (evidence + confidence upgrade); richer dedupe,
+          // merge and conflict handling lives in memoryDedupe.ts.
           const duplicate = getOne<MemoryRow>(
-            scope === "global"
+            scope === "project"
               ? `SELECT * FROM dropwave_memories
-                 WHERE scope = 'global' AND active = 1 AND persona_id IS ?
+                 WHERE scope = 'project' AND project_id = ? AND status = 'active'
                    AND (LOWER(text) = LOWER(?) OR (? IS NOT NULL AND LOWER(quote) = LOWER(?)))
                  LIMIT 1`
               : `SELECT * FROM dropwave_memories
-                 WHERE scope = 'project' AND project_id = ? AND active = 1
+                 WHERE scope = ? AND persona_id IS ? AND status = 'active'
                    AND (LOWER(text) = LOWER(?) OR (? IS NOT NULL AND LOWER(quote) = LOWER(?)))
                  LIMIT 1`,
-            ...(scope === "global"
-              ? [personaId, text, quoteNorm, quoteNorm]
-              : [input.projectId, text, quoteNorm, quoteNorm]),
+            ...(scope === "project"
+              ? [input.projectId, text, quote, quote]
+              : [scope, personaId, text, quote, quote]),
           );
           if (duplicate) {
             const confidence = input.confidence ?? duplicate.confidence;
+            const mergedEvidence = mergeEvidenceJson(
+              duplicate.evidence_json,
+              input.evidence ??
+                (quote
+                  ? [
+                      {
+                        quote,
+                        sourceMessageId: input.sourceMessageId ?? null,
+                        threadId: input.threadId ?? null,
+                        at: timestamp,
+                      },
+                    ]
+                  : []),
+            );
             db.prepare(
-              `UPDATE dropwave_memories SET confidence = ?, updated_at = ?, quote = COALESCE(?, quote) WHERE id = ?`,
-            ).run(confidence, timestamp, input.quote ? clipQuote(input.quote) : null, duplicate.id);
+              `UPDATE dropwave_memories
+               SET confidence = ?, updated_at = ?, quote = COALESCE(?, quote),
+                   evidence_json = ?, revision = revision + 1
+               WHERE id = ?`,
+            ).run(confidence, timestamp, quote, mergedEvidence, duplicate.id);
             const row = getOne<MemoryRow>(
               "SELECT * FROM dropwave_memories WHERE id = ?",
               duplicate.id,
             )!;
+            syncMemoryFts(db, row);
             return rowToMemory(row);
           }
           const id = makeId("mem");
+          const journal = JSON.stringify([
+            {
+              at: timestamp,
+              by: authority === "owner" ? "owner" : (input.threadId ?? "agent"),
+              action: "create",
+              after: { text, kind: input.kind, scope },
+            },
+          ]);
           db.prepare(
             `INSERT INTO dropwave_memories
-              (id, project_id, bot_thread_id, scope, persona_id, kind, text, quote, source_message_id, confidence, active, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+              (id, scope, persona_id, project_id, bot_thread_id, kind, subject, text,
+               aliases_json, tags_json, tier, status, authority, confidence,
+               evidence_json, quote, source_message_id, journal_json, revision,
+               last_user_modified_at, active, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, 1, ?, 1, ?, ?)`,
           ).run(
             id,
-            input.projectId,
-            scope === "global" ? null : (input.botThreadId ?? null),
             scope,
             personaId,
+            projectId,
+            scope === "project" ? (input.botThreadId ?? null) : null,
             input.kind,
+            (input.subject ?? "").slice(0, 120),
             text,
-            input.quote ? clipQuote(input.quote) : null,
-            input.sourceMessageId ?? null,
+            JSON.stringify((input.aliases ?? []).slice(0, 12)),
+            JSON.stringify((input.tags ?? []).slice(0, 12)),
+            input.tier ?? "semantic",
+            authority,
             input.confidence ?? "learned",
+            evidenceJson,
+            quote,
+            input.sourceMessageId ?? null,
+            journal,
+            authority === "owner" ? timestamp : null,
             timestamp,
             timestamp,
           );
           const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id)!;
+          syncMemoryFts(db, row);
           return rowToMemory(row);
         },
         catch: storageError,
       }),
 
-    removeMemory: (id) =>
+    updateMemory: (input) =>
       Effect.try({
         try: () => {
-          const res = db
-            .prepare("UPDATE dropwave_memories SET active = 0, updated_at = ? WHERE id = ?")
-            .run(nowIso(), id);
-          return Number(res.changes) > 0;
+          const existing = getOne<MemoryRow>(
+            "SELECT * FROM dropwave_memories WHERE id = ?",
+            input.id,
+          );
+          if (!existing) {
+            throw new DropwaveOperationError({
+              code: "not_found",
+              message: `Memory "${input.id}" not found.`,
+            });
+          }
+          // Compare-and-swap: a write against a moved revision is rejected, not merged.
+          if (existing.revision !== input.revision) {
+            throw new DropwaveOperationError({
+              code: "conflict",
+              message: `Memory "${input.id}" changed since it was read (revision ${existing.revision}).`,
+            });
+          }
+          const timestamp = nowIso();
+          const by = input.by ?? "agent";
+          const isOwnerEdit = by === "owner";
+          const nextText =
+            input.text !== undefined ? oneLine(input.text).slice(0, 600) : existing.text;
+          const nextSubject =
+            input.subject !== undefined ? input.subject.slice(0, 120) : existing.subject;
+          const nextKind = input.kind ?? (existing.kind as DropwaveMemoryKind);
+          const nextStatus = input.status ?? (existing.status as DropwaveMemoryStatus);
+          const nextAliases =
+            input.aliases !== undefined
+              ? JSON.stringify(input.aliases.slice(0, 12))
+              : existing.aliases_json;
+          const nextTags =
+            input.tags !== undefined ? JSON.stringify(input.tags.slice(0, 12)) : existing.tags_json;
+          const journal = appendJournal(
+            existing.journal_json,
+            by,
+            input.status !== undefined && input.status !== existing.status
+              ? `status:${existing.status}->${nextStatus}`
+              : "update",
+            {
+              text: existing.text,
+              subject: existing.subject,
+              kind: existing.kind,
+              status: existing.status,
+            },
+            {
+              text: nextText,
+              subject: nextSubject,
+              kind: nextKind,
+              status: nextStatus,
+            },
+          );
+          const active = nextStatus === "active" || nextStatus === "needs_review" ? 1 : 0;
+          db.prepare(
+            `UPDATE dropwave_memories
+             SET text = ?, subject = ?, kind = ?, status = ?, aliases_json = ?, tags_json = ?,
+                 journal_json = ?, revision = revision + 1, updated_at = ?,
+                 last_user_modified_at = ?, active = ?,
+                 authority = CASE WHEN ? = 'owner' THEN 'owner' ELSE authority END
+             WHERE id = ?`,
+          ).run(
+            nextText,
+            nextSubject,
+            nextKind,
+            nextStatus,
+            nextAliases,
+            nextTags,
+            journal,
+            timestamp,
+            isOwnerEdit ? timestamp : existing.last_user_modified_at,
+            active,
+            isOwnerEdit ? "owner" : "agent",
+            input.id,
+          );
+          const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", input.id)!;
+          syncMemoryFts(db, row);
+          return rowToMemory(row);
+        },
+        catch: (cause) => (isDropwaveError(cause) ? cause : storageError(cause)),
+      }),
+
+    removeMemory: (id, by) =>
+      Effect.try({
+        try: () => {
+          const existing = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id);
+          if (!existing || existing.status === "archived") {
+            return false;
+          }
+          const timestamp = nowIso();
+          const journal = appendJournal(existing.journal_json, by ?? "agent", "archive", {
+            status: existing.status,
+          });
+          db.prepare(
+            `UPDATE dropwave_memories
+             SET status = 'archived', active = 0, journal_json = ?, revision = revision + 1, updated_at = ?
+             WHERE id = ?`,
+          ).run(journal, timestamp, id);
+          db.prepare("DELETE FROM memory_fts WHERE item_id = ?").run(id);
+          return true;
         },
         catch: storageError,
       }),
 
-    setMemoryScope: (id, scope) =>
+    setMemoryScope: (id, scope, context) =>
       Effect.try({
         try: () => {
           const existing = getOne<MemoryRow>(
-            "SELECT * FROM dropwave_memories WHERE id = ? AND active = 1",
+            "SELECT * FROM dropwave_memories WHERE id = ? AND status != 'archived'",
             id,
           );
           if (!existing) {
@@ -988,13 +1559,38 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
               message: `Memory "${id}" not found.`,
             });
           }
-          // Promoting to global detaches it from a single bot; demoting reattaches to the origin.
-          const botThreadId = scope === "global" ? null : existing.bot_thread_id;
-          const personaId = scope === "global" ? existing.persona_id : null;
+          const projectId = scope === "project" ? (context?.projectId ?? null) : null;
+          const personaId = scope === "bot" ? (context?.personaId ?? existing.persona_id) : null;
+          if (scope === "project" && projectId === null) {
+            throw new DropwaveOperationError({
+              code: "invalid_input",
+              message: "Moving a memory to project scope needs a project.",
+            });
+          }
+          const timestamp = nowIso();
+          const journal = appendJournal(existing.journal_json, "owner", "scope", {
+            scope: existing.scope,
+            project_id: existing.project_id,
+            persona_id: existing.persona_id,
+          });
           db.prepare(
-            "UPDATE dropwave_memories SET scope = ?, bot_thread_id = ?, persona_id = ?, updated_at = ? WHERE id = ?",
-          ).run(scope, botThreadId, personaId, nowIso(), id);
+            `UPDATE dropwave_memories
+             SET scope = ?, project_id = ?, persona_id = ?, bot_thread_id = ?,
+                 journal_json = ?, revision = revision + 1, updated_at = ?,
+                 last_user_modified_at = ?, authority = 'owner'
+             WHERE id = ?`,
+          ).run(
+            scope,
+            projectId,
+            personaId,
+            scope === "project" ? existing.bot_thread_id : null,
+            journal,
+            timestamp,
+            timestamp,
+            id,
+          );
           const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id)!;
+          syncMemoryFts(db, row);
           return rowToMemory(row);
         },
         catch: (cause) =>

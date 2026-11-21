@@ -655,8 +655,7 @@ async function runCase(
         await call(
           server.rpc["dropwave.memory.save"]({
             projectId,
-            scope: "global",
-            about: "owner",
+            scope: "owner",
             kind: "fact",
             text,
           } as never),

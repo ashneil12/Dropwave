@@ -1,5 +1,6 @@
 import {
   type DropwaveBotProfile,
+  type DropwaveMemoryScope,
   MessageId,
   OrchestratorMcpFailure,
   ThreadId,
@@ -103,21 +104,18 @@ const handlers = {
           return yield* fail("invalid_request", "save requires text.");
         }
         const callerPersonaId = thread.dropwaveBot?.personaId;
-        // Global "self" memories bind to the caller's persona; without one they fall
-        // back to project scope so they still only reach this bot.
-        const scope =
-          input.scope === "global"
-            ? input.about === "self" && callerPersonaId === undefined
-              ? "project"
-              : "global"
-            : "project";
-        const personaId =
-          scope === "global" && input.about === "self" ? (callerPersonaId ?? null) : null;
+        // Scope vocabulary: owner = shared with every bot, bot = this persona only,
+        // project = this project. `about` stays as the legacy owner/self shortcut.
+        const scope: DropwaveMemoryScope =
+          input.scope ??
+          (input.about === "self" ? "bot" : input.about === "owner" ? "owner" : "project");
+        const effectiveScope = scope === "bot" && callerPersonaId === undefined ? "project" : scope;
+        const personaId = effectiveScope === "bot" ? (callerPersonaId ?? null) : null;
         const item = yield* store
           .saveMemory({
             projectId: thread.projectId,
             botThreadId: thread.id,
-            scope,
+            scope: effectiveScope,
             personaId,
             kind: input.kind ?? "fact",
             text: input.text,

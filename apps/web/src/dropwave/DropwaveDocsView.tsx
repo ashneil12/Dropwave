@@ -346,11 +346,16 @@ export function DropwaveDocsView({
   };
 
   const toggleMemoryScope = async (item: DropwaveMemoryItem) => {
-    if (busy) return;
+    if (busy || item.scope === "bot") return;
     setBusy(true);
+    const nextScope = item.scope === "project" ? "owner" : "project";
     const res = await setScopeCmd({
       environmentId: project.environmentId,
-      input: { id: item.id, scope: item.scope === "global" ? "project" : "global" },
+      input: {
+        id: item.id,
+        scope: nextScope,
+        ...(nextScope === "project" ? { projectId: project.id } : {}),
+      },
     });
     setBusy(false);
     if (res._tag === "Success") triggerReload();
@@ -634,20 +639,21 @@ export function DropwaveDocsView({
                 <li key={item.id}>
                   <div>
                     <span data-dropwave-doc-pill="">{item.kind}</span>
-                    <button
-                      type="button"
-                      data-dropwave-doc-pill=""
-                      onClick={() => void toggleMemoryScope(item)}
-                    >
-                      {item.scope === "global" ? gt("Everywhere") : gt("This project")}
-                    </button>
-                    {item.scope === "global" ? (
+                    {item.scope === "bot" ? (
                       <span data-dropwave-doc-pill="">
                         {item.personaId === null
-                          ? gt("About you")
+                          ? gt("Bot")
                           : (personaNames.get(item.personaId) ?? gt("Bot"))}
                       </span>
-                    ) : null}
+                    ) : (
+                      <button
+                        type="button"
+                        data-dropwave-doc-pill=""
+                        onClick={() => void toggleMemoryScope(item)}
+                      >
+                        {item.scope === "owner" ? gt("Everywhere") : gt("This project")}
+                      </button>
+                    )}
                     <p>{item.text}</p>
                     {item.quote ? <small>“{item.quote}”</small> : null}
                   </div>

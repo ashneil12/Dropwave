@@ -35,7 +35,7 @@ export type Check =
   | {
       readonly kind: "memory_saved";
       readonly keywords: ReadonlyArray<string>;
-      readonly scope: "global" | "project";
+      readonly scope: "owner" | "bot" | "project";
       readonly about?: "owner" | "self";
       readonly memoryKind?: "fact" | "preference" | "decision" | "rule" | "lesson";
     }
@@ -246,8 +246,8 @@ export const LIVE_EVAL_CASES: ReadonlyArray<LiveEvalCase> = [
     ],
     timeoutMinutes: 25,
     checks: [
-      { kind: "memory_saved", keywords: ["ash"], scope: "global", about: "owner" },
-      { kind: "memory_saved", keywords: ["main"], scope: "global", about: "owner" },
+      { kind: "memory_saved", keywords: ["ash"], scope: "owner" },
+      { kind: "memory_saved", keywords: ["main"], scope: "owner" },
       { kind: "persona", role: "chief_of_staff", name: "Atlas", identityEdited: true },
       { kind: "lead_uses_persona", personaName: "Atlas" },
       { kind: "doc_exists", docKind: "foundation", keywords: ["pulsebilling"] },
@@ -290,7 +290,7 @@ export const LIVE_EVAL_CASES: ReadonlyArray<LiveEvalCase> = [
         mustNotContain: ["what should I call you", "your name"],
       },
       { kind: "memory_saved", keywords: ["pnpm"], scope: "project" },
-      { kind: "memory_saved", keywords: ["dash"], scope: "global", about: "owner" },
+      { kind: "memory_saved", keywords: ["dash"], scope: "owner" },
       { kind: "onboarding_complete" },
       { kind: "no_lead_project_edits" },
     ],

@@ -1480,7 +1480,10 @@ export const layer = Layer.effect(
         const { settings } = resolveProjectSettings(allSettings, task.projectId);
         const modelSelection =
           settings.textGenerationModelSelection ?? settings.defaultModelSelection;
-        const promptHash = (yield* digest.digestHex(Digest.sha256, task.prompt)).slice(0, 24);
+        const promptHash = (yield* digest.digestHex(
+          Digest.sha256,
+          new TextEncoder().encode(task.prompt),
+        )).slice(0, 24);
         let summary = habitSummaryFallback(task.prompt);
         if (modelSelection !== undefined && Option.isSome(textGeneration)) {
           const reply = yield* textGeneration.value
