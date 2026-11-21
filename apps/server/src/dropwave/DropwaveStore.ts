@@ -533,6 +533,7 @@ function rowToMemory(row: MemoryRow): DropwaveMemoryItem {
           candidate: conflictRaw.candidate,
           reason: typeof conflictRaw.reason === "string" ? conflictRaw.reason : "",
           at: asIsoDateTime(typeof conflictRaw.at === "string" ? conflictRaw.at : row.updated_at),
+          ...(typeof conflictRaw.with_id === "string" ? { withId: conflictRaw.with_id } : {}),
         }
       : undefined;
   return {
@@ -790,6 +791,14 @@ export interface DropwaveStoreShape {
     readonly tags?: ReadonlyArray<string> | undefined;
     readonly kind?: DropwaveMemoryKind | undefined;
     readonly status?: DropwaveMemoryStatus | undefined;
+    readonly conflict?:
+      | {
+          readonly candidate: string;
+          readonly reason: string;
+          readonly withId?: string | null;
+        }
+      | null
+      | undefined;
     readonly by?: string | undefined;
   }) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
 
@@ -803,6 +812,128 @@ export interface DropwaveStoreShape {
     scope: DropwaveMemoryScope,
     context?: { readonly projectId?: ProjectId; readonly personaId?: string | null },
   ) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
+
+  readonly getMemory: (
+    id: string,
+  ) => Effect.Effect<DropwaveMemoryItem | undefined, DropwaveOperationError>;
+
+  readonly undoMemory: (
+    id: string,
+    by?: string,
+  ) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
+
+  readonly resolveMemoryReview: (
+    id: string,
+    action: "keep_old" | "use_new" | "keep_both",
+    by?: string,
+  ) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
+
+  readonly addMemoryRelation: (input: {
+    readonly sourceId: string;
+    readonly targetId: string;
+    readonly type:
+      | "about"
+      | "part_of"
+      | "depends_on"
+      | "replaces"
+      | "contradicts"
+      | "owned_by"
+      | "uses"
+      | "decided_in";
+    readonly confidence?: number | undefined;
+    readonly origin?: "owner" | "agent" | "import" | "dream" | undefined;
+  }) => Effect.Effect<{ readonly id: string }, DropwaveOperationError>;
+
+  readonly listMemoryRelations: (memoryId: string) => Effect.Effect<
+    ReadonlyArray<{
+      readonly id: string;
+      readonly sourceId: string;
+      readonly targetId: string;
+      readonly type: string;
+      readonly confidence: number;
+      readonly origin: string;
+    }>,
+    DropwaveOperationError
+  >;
+
+  readonly removeMemoryRelation: (
+    relationId: string,
+  ) => Effect.Effect<boolean, DropwaveOperationError>;
+
+  readonly stampMemoryRecall: (
+    itemIds: ReadonlyArray<string>,
+  ) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly getShownMemoryIds: (
+    threadId: string,
+  ) => Effect.Effect<ReadonlyArray<string>, DropwaveOperationError>;
+
+  readonly markMemoriesShown: (
+    threadId: string,
+    itemIds: ReadonlyArray<string>,
+  ) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly recordRecallTrace: (input: {
+    readonly threadId: string;
+    readonly turnKey: string;
+    readonly trace: unknown;
+  }) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly listRecallTraces: (
+    threadId: string,
+    limit?: number,
+  ) => Effect.Effect<
+    ReadonlyArray<{
+      readonly id: string;
+      readonly turnKey: string;
+      readonly createdAt: string;
+      readonly trace: unknown;
+    }>,
+    DropwaveOperationError
+  >;
+
+  readonly getMemoryRejection: (
+    hash: string,
+  ) => Effect.Effect<unknown | undefined, DropwaveOperationError>;
+
+  readonly putMemoryRejection: (input: {
+    readonly hash: string;
+    readonly verdict: unknown;
+    readonly ttlDays?: number | undefined;
+  }) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly getMemoryVectors: (
+    itemIds: ReadonlyArray<string>,
+    modelId: string,
+  ) => Effect.Effect<
+    ReadonlyMap<
+      string,
+      { readonly dim: number; readonly vector: Float32Array; readonly contentHash: string }
+    >,
+    DropwaveOperationError
+  >;
+
+  readonly putMemoryVector: (input: {
+    readonly itemId: string;
+    readonly modelId: string;
+    readonly dim: number;
+    readonly vector: Float32Array;
+    readonly contentHash: string;
+  }) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly deleteMemoryVector: (
+    itemId: string,
+    modelId?: string,
+  ) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly getMemoryMeta: (
+    key: string,
+  ) => Effect.Effect<unknown | undefined, DropwaveOperationError>;
+
+  readonly setMemoryMeta: (
+    key: string,
+    value: unknown,
+  ) => Effect.Effect<void, DropwaveOperationError>;
 
   readonly listPersonas: () => Effect.Effect<
     ReadonlyArray<DropwavePersona>,
@@ -1476,6 +1607,17 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
               : existing.aliases_json;
           const nextTags =
             input.tags !== undefined ? JSON.stringify(input.tags.slice(0, 12)) : existing.tags_json;
+          const nextConflict =
+            input.conflict === undefined
+              ? existing.conflict_json
+              : input.conflict === null
+                ? null
+                : JSON.stringify({
+                    candidate: input.conflict.candidate,
+                    reason: input.conflict.reason,
+                    at: timestamp,
+                    ...(input.conflict.withId ? { with_id: input.conflict.withId } : {}),
+                  });
           const journal = appendJournal(
             existing.journal_json,
             by,
@@ -1499,6 +1641,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           db.prepare(
             `UPDATE dropwave_memories
              SET text = ?, subject = ?, kind = ?, status = ?, aliases_json = ?, tags_json = ?,
+                 conflict_json = ?,
                  journal_json = ?, revision = revision + 1, updated_at = ?,
                  last_user_modified_at = ?, active = ?,
                  authority = CASE WHEN ? = 'owner' THEN 'owner' ELSE authority END
@@ -1510,6 +1653,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             nextStatus,
             nextAliases,
             nextTags,
+            nextConflict,
             journal,
             timestamp,
             isOwnerEdit ? timestamp : existing.last_user_modified_at,
@@ -1600,6 +1744,444 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
                 code: "storage_error",
                 message: cause instanceof Error ? cause.message : String(cause),
               }),
+      }),
+
+    getMemory: (id) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id);
+          return row ? rowToMemory(row) : undefined;
+        },
+        catch: storageError,
+      }),
+
+    undoMemory: (id, by) =>
+      Effect.try({
+        try: () => {
+          const existing = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id);
+          if (!existing) {
+            throw new DropwaveOperationError({
+              code: "not_found",
+              message: `Memory "${id}" not found.`,
+            });
+          }
+          const journal = parseJsonArray<{
+            at: string;
+            by: string;
+            action: string;
+            before?: {
+              text?: string;
+              subject?: string;
+              kind?: string;
+              status?: string;
+              scope?: string;
+              project_id?: string | null;
+              persona_id?: string | null;
+            };
+            after?: unknown;
+          }>(existing.journal_json);
+          const last = journal[journal.length - 1];
+          if (!last || last.action === "undo" || last.action === "create") {
+            throw new DropwaveOperationError({
+              code: "invalid_input",
+              message: `Memory "${id}" has no change to undo.`,
+            });
+          }
+          const before = last.before;
+          const timestamp = nowIso();
+          const nextStatus =
+            before?.status === "active" || before?.status === "needs_review"
+              ? before.status
+              : existing.status === "archived"
+                ? "active"
+                : existing.status;
+          const journalNext = appendJournal(existing.journal_json, by ?? "owner", "undo", {
+            status: existing.status,
+          });
+          db.prepare(
+            `UPDATE dropwave_memories
+             SET text = COALESCE(?, text), subject = COALESCE(?, subject),
+                 kind = COALESCE(?, kind), status = ?, scope = COALESCE(?, scope),
+                 project_id = COALESCE(?, project_id), persona_id = COALESCE(?, persona_id),
+                 journal_json = ?, revision = revision + 1, updated_at = ?,
+                 active = ?, authority = CASE WHEN ? = 'owner' THEN 'owner' ELSE authority END
+             WHERE id = ?`,
+          ).run(
+            before?.text ?? null,
+            before?.subject ?? null,
+            before?.kind ?? null,
+            nextStatus,
+            before?.scope ?? null,
+            before?.project_id ?? null,
+            before?.persona_id ?? null,
+            journalNext,
+            timestamp,
+            nextStatus === "active" || nextStatus === "needs_review" ? 1 : 0,
+            by ?? "owner",
+            id,
+          );
+          const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id)!;
+          syncMemoryFts(db, row);
+          return rowToMemory(row);
+        },
+        catch: (cause) => (isDropwaveError(cause) ? cause : storageError(cause)),
+      }),
+
+    resolveMemoryReview: (id, action, by) =>
+      Effect.try({
+        try: () => {
+          const existing = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id);
+          if (!existing) {
+            throw new DropwaveOperationError({
+              code: "not_found",
+              message: `Memory "${id}" not found.`,
+            });
+          }
+          if (existing.status !== "needs_review") {
+            throw new DropwaveOperationError({
+              code: "invalid_input",
+              message: `Memory "${id}" is not awaiting review.`,
+            });
+          }
+          const timestamp = nowIso();
+          const conflict = parseJsonObject(existing.conflict_json ?? "");
+          const conflictsWith =
+            conflict && typeof conflict.with_id === "string" ? conflict.with_id : null;
+          let nextStatus: string;
+          if (action === "keep_old") {
+            nextStatus = "archived";
+          } else {
+            nextStatus = "active";
+            // use_new retires the memory it contradicts; keep_both leaves it.
+            if (action === "use_new" && conflictsWith !== null) {
+              const old = getOne<MemoryRow>(
+                "SELECT * FROM dropwave_memories WHERE id = ?",
+                conflictsWith,
+              );
+              if (old && old.authority !== "owner" && old.status === "active") {
+                db.prepare(
+                  `UPDATE dropwave_memories
+                   SET status = 'superseded', superseded_by_id = ?, active = 0,
+                       journal_json = ?, revision = revision + 1, updated_at = ?
+                   WHERE id = ?`,
+                ).run(
+                  id,
+                  appendJournal(old.journal_json, by ?? "owner", "superseded", {
+                    status: old.status,
+                  }),
+                  timestamp,
+                  old.id,
+                );
+                db.prepare("DELETE FROM memory_fts WHERE item_id = ?").run(old.id);
+              }
+            }
+          }
+          const journal = appendJournal(
+            existing.journal_json,
+            by ?? "owner",
+            `review:${action}`,
+            { status: existing.status },
+            { status: nextStatus },
+          );
+          db.prepare(
+            `UPDATE dropwave_memories
+             SET status = ?, active = ?, conflict_json = NULL, journal_json = ?,
+                 revision = revision + 1, updated_at = ?,
+                 authority = CASE WHEN ? = 'owner' THEN 'owner' ELSE authority END
+             WHERE id = ?`,
+          ).run(nextStatus, nextStatus === "active" ? 1 : 0, journal, timestamp, by ?? "owner", id);
+          const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", id)!;
+          syncMemoryFts(db, row);
+          return rowToMemory(row);
+        },
+        catch: (cause) => (isDropwaveError(cause) ? cause : storageError(cause)),
+      }),
+
+    addMemoryRelation: (input) =>
+      Effect.try({
+        try: () => {
+          if (input.sourceId === input.targetId) {
+            throw new DropwaveOperationError({
+              code: "invalid_input",
+              message: "A memory cannot relate to itself.",
+            });
+          }
+          for (const id of [input.sourceId, input.targetId]) {
+            const exists = getOne<{ id: string }>(
+              "SELECT id FROM dropwave_memories WHERE id = ?",
+              id,
+            );
+            if (!exists) {
+              throw new DropwaveOperationError({
+                code: "not_found",
+                message: `Memory "${id}" not found.`,
+              });
+            }
+          }
+          const id = makeId("mrel");
+          db.prepare(
+            `INSERT INTO memory_relations
+              (id, source_id, target_id, type, confidence, origin, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (source_id, target_id, type) DO UPDATE SET
+               confidence = excluded.confidence, origin = excluded.origin`,
+          ).run(
+            id,
+            input.sourceId,
+            input.targetId,
+            input.type,
+            Math.min(Math.max(input.confidence ?? 1, 0), 1),
+            input.origin ?? "agent",
+            nowIso(),
+          );
+          const row = getOne<{ id: string }>(
+            "SELECT id FROM memory_relations WHERE source_id = ? AND target_id = ? AND type = ?",
+            input.sourceId,
+            input.targetId,
+            input.type,
+          );
+          return { id: row?.id ?? id };
+        },
+        catch: (cause) => (isDropwaveError(cause) ? cause : storageError(cause)),
+      }),
+
+    listMemoryRelations: (memoryId) =>
+      Effect.try({
+        try: () =>
+          getAll<{
+            id: string;
+            source_id: string;
+            target_id: string;
+            type: string;
+            confidence: number;
+            origin: string;
+          }>(
+            `SELECT * FROM memory_relations
+             WHERE source_id = ? OR target_id = ?
+             ORDER BY created_at DESC`,
+            memoryId,
+            memoryId,
+          ).map((row) => ({
+            id: row.id,
+            sourceId: row.source_id,
+            targetId: row.target_id,
+            type: row.type,
+            confidence: row.confidence,
+            origin: row.origin,
+          })),
+        catch: storageError,
+      }),
+
+    removeMemoryRelation: (relationId) =>
+      Effect.try({
+        try: () => {
+          const res = db.prepare("DELETE FROM memory_relations WHERE id = ?").run(relationId);
+          return Number(res.changes) > 0;
+        },
+        catch: storageError,
+      }),
+
+    stampMemoryRecall: (itemIds) =>
+      Effect.try({
+        try: () => {
+          if (itemIds.length === 0) return;
+          const timestamp = nowIso();
+          const stmt = db.prepare(
+            `INSERT INTO memory_recall_stamps (item_id, last_recalled_at, recall_count)
+             VALUES (?, ?, 1)
+             ON CONFLICT (item_id) DO UPDATE SET
+               last_recalled_at = excluded.last_recalled_at,
+               recall_count = recall_count + 1`,
+          );
+          for (const itemId of itemIds) stmt.run(itemId, timestamp);
+        },
+        catch: storageError,
+      }),
+
+    getShownMemoryIds: (threadId) =>
+      Effect.try({
+        try: () =>
+          getAll<{ item_id: string }>(
+            "SELECT item_id FROM memory_shown WHERE thread_id = ?",
+            threadId,
+          ).map((row) => row.item_id),
+        catch: storageError,
+      }),
+
+    markMemoriesShown: (threadId, itemIds) =>
+      Effect.try({
+        try: () => {
+          if (itemIds.length === 0) return;
+          const timestamp = nowIso();
+          const stmt = db.prepare(
+            `INSERT INTO memory_shown (thread_id, item_id, shown_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT (thread_id, item_id) DO NOTHING`,
+          );
+          for (const itemId of itemIds) stmt.run(threadId, itemId, timestamp);
+        },
+        catch: storageError,
+      }),
+
+    recordRecallTrace: (input) =>
+      Effect.try({
+        try: () => {
+          const timestamp = nowIso();
+          db.prepare(
+            `INSERT INTO memory_recall_traces (id, thread_id, turn_key, created_at, trace_json)
+             VALUES (?, ?, ?, ?, ?)`,
+          ).run(
+            makeId("mtrace"),
+            input.threadId,
+            input.turnKey,
+            timestamp,
+            JSON.stringify(input.trace),
+          );
+          // Retain the last 50 turns per thread.
+          db.prepare(
+            `DELETE FROM memory_recall_traces WHERE thread_id = ? AND id NOT IN (
+               SELECT id FROM memory_recall_traces WHERE thread_id = ?
+               ORDER BY created_at DESC LIMIT 50
+             )`,
+          ).run(input.threadId, input.threadId);
+        },
+        catch: storageError,
+      }),
+
+    listRecallTraces: (threadId, limit) =>
+      Effect.try({
+        try: () =>
+          getAll<{ id: string; turn_key: string; created_at: string; trace_json: string }>(
+            `SELECT id, turn_key, created_at, trace_json FROM memory_recall_traces
+             WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?`,
+            threadId,
+            Math.min(Math.max(limit ?? 10, 1), 50),
+          ).map((row) => ({
+            id: row.id,
+            turnKey: row.turn_key,
+            createdAt: row.created_at,
+            trace: parseJsonObject(row.trace_json),
+          })),
+        catch: storageError,
+      }),
+
+    getMemoryRejection: (hash) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<{ verdict_json: string }>(
+            "SELECT verdict_json FROM memory_rejections WHERE hash = ? AND expires_at > ?",
+            hash,
+            nowIso(),
+          );
+          return row ? parseJsonObject(row.verdict_json) : undefined;
+        },
+        catch: storageError,
+      }),
+
+    putMemoryRejection: (input) =>
+      Effect.try({
+        try: () => {
+          const ttlDays = input.ttlDays ?? 30;
+          const expires = DateTime.formatIso(DateTime.add(DateTime.nowUnsafe(), { days: ttlDays }));
+          db.prepare(
+            `INSERT INTO memory_rejections (hash, verdict_json, created_at, expires_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT (hash) DO UPDATE SET
+               verdict_json = excluded.verdict_json,
+               created_at = excluded.created_at,
+               expires_at = excluded.expires_at`,
+          ).run(input.hash, JSON.stringify(input.verdict), nowIso(), expires);
+        },
+        catch: storageError,
+      }),
+
+    getMemoryVectors: (itemIds, modelId) =>
+      Effect.try({
+        try: () => {
+          const result = new Map<
+            string,
+            { dim: number; vector: Float32Array; contentHash: string }
+          >();
+          if (itemIds.length === 0) return result;
+          const placeholders = itemIds.map(() => "?").join(",");
+          const rows = getAll<{
+            item_id: string;
+            dim: number;
+            vector: Uint8Array;
+            content_hash: string;
+          }>(
+            `SELECT item_id, dim, vector, content_hash FROM memory_vectors
+             WHERE model_id = ? AND item_id IN (${placeholders})`,
+            modelId,
+            ...itemIds,
+          );
+          for (const row of rows) {
+            const bytes = new Uint8Array(row.dim * 4);
+            bytes.set(row.vector.subarray(0, row.dim * 4));
+            result.set(row.item_id, {
+              dim: row.dim,
+              vector: new Float32Array(bytes.buffer),
+              contentHash: row.content_hash,
+            });
+          }
+          return result;
+        },
+        catch: storageError,
+      }),
+
+    putMemoryVector: (input) =>
+      Effect.try({
+        try: () => {
+          const bytes = new Uint8Array(input.dim * 4);
+          new Float32Array(bytes.buffer).set(input.vector.subarray(0, input.dim));
+          db.prepare(
+            `INSERT INTO memory_vectors (item_id, model_id, dim, vector, content_hash, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT (item_id, model_id) DO UPDATE SET
+               dim = excluded.dim, vector = excluded.vector,
+               content_hash = excluded.content_hash, updated_at = excluded.updated_at`,
+          ).run(input.itemId, input.modelId, input.dim, bytes, input.contentHash, nowIso());
+        },
+        catch: storageError,
+      }),
+
+    deleteMemoryVector: (itemId, modelId) =>
+      Effect.try({
+        try: () => {
+          if (modelId === undefined) {
+            db.prepare("DELETE FROM memory_vectors WHERE item_id = ?").run(itemId);
+          } else {
+            db.prepare("DELETE FROM memory_vectors WHERE item_id = ? AND model_id = ?").run(
+              itemId,
+              modelId,
+            );
+          }
+        },
+        catch: storageError,
+      }),
+
+    getMemoryMeta: (key) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<{ value_json: string }>(
+            "SELECT value_json FROM dropwave_supervisor_kv WHERE key = ?",
+            `memory:${key}`,
+          );
+          return row ? parseJsonObject(row.value_json) : undefined;
+        },
+        catch: storageError,
+      }),
+
+    setMemoryMeta: (key, value) =>
+      Effect.try({
+        try: () => {
+          db.prepare(
+            `INSERT INTO dropwave_supervisor_kv (key, value_json, updated_at)
+             VALUES (?, ?, ?)
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`,
+          ).run(`memory:${key}`, JSON.stringify(value), nowIso());
+        },
+        catch: storageError,
       }),
 
     listPersonas: () =>

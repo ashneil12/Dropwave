@@ -635,6 +635,170 @@ it.effect(
     }).pipe(Effect.provide(DropwaveStore.layerMemory)),
 );
 
+it.effect("memory v2 store: CAS, journal undo, relations, recall stamps, traces, vectors", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+
+    const item = yield* store.saveMemory({
+      projectId: projectA,
+      kind: "fact",
+      subject: "deploy freeze",
+      text: "Deploys freeze on Fridays",
+      tags: ["deploy"],
+    });
+    expect(item.revision).toBe(1);
+    expect(item.journal.map((entry) => entry.action)).toEqual(["create"]);
+
+    // CAS: a stale revision is rejected, the current one writes.
+    const stale = yield* store
+      .updateMemory({ id: item.id, revision: 99, text: "stale write" })
+      .pipe(Effect.flip);
+    expect(stale.code).toBe("conflict");
+    const updated = yield* store.updateMemory({
+      id: item.id,
+      revision: item.revision,
+      text: "Deploys freeze on Fridays and holidays",
+      by: "owner",
+    });
+    expect(updated.revision).toBe(2);
+    expect(updated.authority).toBe("owner");
+    expect(updated.journal.at(-1)?.action).toBe("update");
+
+    // Undo restores the pre-update text and journals the undo.
+    const undone = yield* store.undoMemory(item.id, "owner");
+    expect(undone.text).toBe("Deploys freeze on Fridays");
+    expect(undone.journal.at(-1)?.action).toBe("undo");
+
+    // Relations: controlled types, no self-loops, dedupe on (s,t,type).
+    const other = yield* store.saveMemory({
+      projectId: projectA,
+      kind: "rule",
+      text: "Never deploy on Friday",
+    });
+    const selfLoop = yield* store
+      .addMemoryRelation({ sourceId: item.id, targetId: item.id, type: "about" })
+      .pipe(Effect.flip);
+    expect(selfLoop.code).toBe("invalid_input");
+    const rel = yield* store.addMemoryRelation({
+      sourceId: item.id,
+      targetId: other.id,
+      type: "contradicts",
+      origin: "agent",
+    });
+    const rels = yield* store.listMemoryRelations(item.id);
+    expect(rels).toHaveLength(1);
+    expect(rels[0]!.type).toBe("contradicts");
+    expect(yield* store.removeMemoryRelation(rel.id)).toBe(true);
+    expect(yield* store.listMemoryRelations(item.id)).toHaveLength(0);
+
+    // Recall stamps never touch the item row.
+    const beforeStamp = yield* store.getMemory(item.id);
+    yield* store.stampMemoryRecall([item.id, item.id]);
+    const afterStamp = yield* store.getMemory(item.id);
+    expect(afterStamp?.updatedAt).toBe(beforeStamp?.updatedAt);
+    expect(afterStamp?.revision).toBe(beforeStamp?.revision);
+
+    // Shown-once tracking per thread.
+    yield* store.markMemoriesShown(leadThreadA, [item.id]);
+    yield* store.markMemoriesShown(leadThreadA, [item.id]);
+    expect(yield* store.getShownMemoryIds(leadThreadA)).toEqual([item.id]);
+    expect(yield* store.getShownMemoryIds(leadThreadB)).toEqual([]);
+
+    // Traces retain and return parsed JSON, capped per thread.
+    yield* store.recordRecallTrace({ threadId: leadThreadA, turnKey: "t1", trace: { gate: "ok" } });
+    const traces = yield* store.listRecallTraces(leadThreadA);
+    expect(traces).toHaveLength(1);
+    expect(traces[0]!.trace).toEqual({ gate: "ok" });
+
+    // Rejection cache honours TTL.
+    yield* store.putMemoryRejection({ hash: "h1", verdict: { merge: false } });
+    expect(yield* store.getMemoryRejection("h1")).toEqual({ merge: false });
+    expect(yield* store.getMemoryRejection("missing")).toBeUndefined();
+
+    // Vectors round-trip as Float32.
+    const vector = new Float32Array([0.1, 0.2, 0.3, 0.4]);
+    yield* store.putMemoryVector({
+      itemId: item.id,
+      modelId: "test-model",
+      dim: 4,
+      vector,
+      contentHash: "ch1",
+    });
+    const vectors = yield* store.getMemoryVectors([item.id], "test-model");
+    expect(vectors.get(item.id)?.dim).toBe(4);
+    const roundTripped = Array.from(vectors.get(item.id)!.vector);
+    for (const [index, expected] of [0.1, 0.2, 0.3, 0.4].entries()) {
+      expect(roundTripped[index]).toBeCloseTo(expected, 6);
+    }
+    yield* store.deleteMemoryVector(item.id, "test-model");
+    expect((yield* store.getMemoryVectors([item.id], "test-model")).size).toBe(0);
+
+    // Memory meta round-trips through the kv table under a namespaced key.
+    yield* store.setMemoryMeta("extractor:thread-a", { lastMessageId: "m-9" });
+    expect(yield* store.getMemoryMeta("extractor:thread-a")).toEqual({
+      lastMessageId: "m-9",
+    });
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it.effect("memory v2 review resolution and owner-authority protection", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const old = yield* store.saveMemory({
+      projectId: projectA,
+      kind: "fact",
+      text: "Deploy window is 9am",
+      authority: "owner",
+    });
+    const agentOld = yield* store.saveMemory({
+      projectId: projectA,
+      kind: "fact",
+      text: "Staging deploys at noon",
+    });
+    const candidate = yield* store.saveMemory({
+      projectId: projectA,
+      kind: "fact",
+      text: "Deploy window is 5pm",
+      quote: "actually deploys at 5pm now",
+    });
+    const flagged = yield* store.updateMemory({
+      id: candidate.id,
+      revision: candidate.revision,
+      status: "needs_review",
+      conflict: {
+        candidate: "Deploy window is 5pm",
+        reason: "contradicts an existing memory",
+        withId: old.id,
+      },
+    });
+    expect(flagged.conflict?.withId).toBe(old.id);
+
+    // use_new activates the candidate but must NOT supersede an owner-authority row.
+    const used = yield* store.resolveMemoryReview(candidate.id, "use_new", "owner");
+    expect(used.status).toBe("active");
+    expect((yield* store.getMemory(old.id))?.status).toBe("active");
+
+    // keep_old archives the review item and leaves everything else alone.
+    const candidate2 = yield* store.saveMemory({
+      projectId: projectA,
+      kind: "fact",
+      text: "Staging deploys at 3pm",
+    });
+    yield* store.updateMemory({
+      id: candidate2.id,
+      revision: candidate2.revision,
+      status: "needs_review",
+      conflict: { candidate: "Staging deploys at 3pm", reason: "clash", withId: agentOld.id },
+    });
+    const kept = yield* store.resolveMemoryReview(candidate2.id, "use_new", "owner");
+    expect(kept.status).toBe("active");
+    // agent-authored old row IS superseded by use_new.
+    const agentOldAfter = yield* store.getMemory(agentOld.id);
+    expect(agentOldAfter?.status).toBe("superseded");
+    expect(agentOldAfter?.supersededById).toBe(candidate2.id);
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
 it("renders onboarding blocks only for the matching phase and all three memory sections", () => {
   const now = DateTime.nowUnsafe();
   const baseBot = {

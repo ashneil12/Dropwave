@@ -209,6 +209,7 @@ export const DropwaveMemoryConflict = Schema.Struct({
   candidate: Schema.String,
   reason: Schema.String,
   at: IsoDateTime,
+  withId: Schema.optional(Schema.NullOr(Schema.String)),
 });
 export type DropwaveMemoryConflict = typeof DropwaveMemoryConflict.Type;
 
