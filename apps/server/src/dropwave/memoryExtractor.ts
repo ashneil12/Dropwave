@@ -1,0 +1,501 @@
+// Memory v2 writers: windowed extraction over owner messages, idle/count
+// triggered, quote-verified, score >= 0.8. Prompts verbatim in memoryPrompts.ts.
+import type {
+  DropwaveMemoryConfidence,
+  DropwaveMemoryItem,
+  DropwaveMemoryKind,
+  DropwaveMemoryScope,
+  DropwaveOperationError as DropwaveOperationErrorType,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
+import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+
+import * as ServerSettings from "../serverSettings.ts";
+import type * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { quoteInMessage } from "./askExtraction.ts";
+import type { DropwaveStoreShape } from "./DropwaveStore.ts";
+import {
+  DROPWAVE_MEMORY_CONFLICT_PROMPT,
+  DROPWAVE_MEMORY_EXTRACTION_PROMPT,
+} from "./memoryPrompts.ts";
+
+const VALID_SCOPES = new Set<DropwaveMemoryScope>(["owner", "bot", "project"]);
+const VALID_KINDS = new Set<DropwaveMemoryKind>([
+  "fact",
+  "preference",
+  "rule",
+  "decision",
+  "lesson",
+  "person",
+  "project",
+  "tool",
+]);
+const MAX_OPS_PER_WINDOW = 8;
+const MAX_CONFLICT_CHECKS = 2;
+const MIN_OP_CONFIDENCE = 0.8;
+const WINDOW_MESSAGE_LIMIT = 60;
+const WINDOW_CHAR_BUDGET = 8000;
+const ASSISTANT_CLIP = 200;
+
+export interface MemoryExtractionOp {
+  readonly op: "add" | "update";
+  readonly id?: string;
+  readonly scope: DropwaveMemoryScope;
+  readonly kind: DropwaveMemoryKind;
+  readonly subject: string;
+  readonly text: string;
+  readonly quote: string;
+  readonly score: number;
+  readonly confidence: DropwaveMemoryConfidence;
+}
+
+export function confidenceFromScore(score: number): DropwaveMemoryConfidence {
+  if (score >= 0.9) return "confirmed";
+  if (score >= 0.8) return "learned";
+  return "mentioned";
+}
+
+function parseFirstJsonArray(raw: string): Array<unknown> | undefined {
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  if (start === -1 || end <= start) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw.slice(start, end + 1));
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isOwnerMessage(message: OrchestrationV2ConversationMessage): boolean {
+  return message.role === "user" && message.createdBy === "user";
+}
+
+/** Format the extraction window: owner lines full, assistant clipped, rest skipped. */
+export function formatExtractionWindow(
+  messages: ReadonlyArray<OrchestrationV2ConversationMessage>,
+): { readonly window: string; readonly ownerTexts: ReadonlyArray<string> } {
+  const lines: Array<string> = [];
+  const ownerTexts: Array<string> = [];
+  let budget = WINDOW_CHAR_BUDGET;
+  for (const message of messages) {
+    if (budget <= 0) break;
+    if (isOwnerMessage(message)) {
+      const text = message.text.trim();
+      if (!text) continue;
+      ownerTexts.push(text);
+      const clipped = text.length > budget ? text.slice(0, budget) : text;
+      lines.push(`Owner: ${clipped}`);
+      budget -= clipped.length;
+    } else if (message.role === "assistant") {
+      const text = message.text.replace(/\s+/g, " ").trim();
+      if (!text) continue;
+      const clipped = text.length > ASSISTANT_CLIP ? `${text.slice(0, ASSISTANT_CLIP)}…` : text;
+      lines.push(`Assistant: ${clipped}`);
+      budget -= clipped.length;
+    }
+    // system/tool output never enters the window.
+  }
+  return { window: lines.join("\n"), ownerTexts };
+}
+
+/**
+ * Parse + quote-verify extraction ops against the window's owner messages.
+ * The raw 0..1 score is kept; the caller applies the 0.8 floor.
+ */
+export function parseExtractionOps(
+  rawReply: string,
+  ownerTexts: ReadonlyArray<string>,
+): Array<MemoryExtractionOp> {
+  const items = parseFirstJsonArray(rawReply);
+  if (!items) return [];
+  const ops: Array<MemoryExtractionOp> = [];
+  for (const entry of items) {
+    if (ops.length >= MAX_OPS_PER_WINDOW) break;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const op = record.op === "update" ? "update" : "add";
+    const scope = typeof record.scope === "string" ? record.scope : "project";
+    const kind = typeof record.kind === "string" ? record.kind : "fact";
+    const text = typeof record.text === "string" ? record.text.trim().slice(0, 600) : "";
+    const quote = typeof record.quote === "string" ? record.quote : "";
+    const subject = typeof record.subject === "string" ? record.subject.trim().slice(0, 120) : "";
+    if (!text || !VALID_SCOPES.has(scope as DropwaveMemoryScope)) continue;
+    if (!VALID_KINDS.has(kind as DropwaveMemoryKind)) continue;
+    // Every op must carry the owner's exact words from SOME owner line in the window.
+    if (!quote || !ownerTexts.some((ownerText) => quoteInMessage(quote, ownerText))) {
+      continue;
+    }
+    const score =
+      typeof record.confidence === "number" && Number.isFinite(record.confidence)
+        ? Math.min(1, Math.max(0, record.confidence))
+        : 0;
+    ops.push({
+      op,
+      ...(op === "update" && typeof record.id === "string" ? { id: record.id } : {}),
+      scope: scope as DropwaveMemoryScope,
+      kind: kind as DropwaveMemoryKind,
+      subject,
+      text,
+      quote: quote.slice(0, 500),
+      score,
+      confidence: confidenceFromScore(score),
+    });
+  }
+  return ops;
+}
+
+export function formatExistingMemories(items: ReadonlyArray<DropwaveMemoryItem>): string {
+  if (items.length === 0) return "(none)";
+  return items
+    .slice(0, 40)
+    .map(
+      (item) =>
+        `${item.id} | ${item.scope}/${item.kind}${item.subject ? `/${item.subject}` : ""} | ${item.text}`,
+    )
+    .join("\n");
+}
+
+export function buildExtractionPrompt(input: {
+  readonly botName: string;
+  readonly botRole: string;
+  readonly projectName: string;
+  readonly existing: ReadonlyArray<DropwaveMemoryItem>;
+  readonly window: string;
+}): string {
+  return DROPWAVE_MEMORY_EXTRACTION_PROMPT.replace("{{BOT_NAME}}", input.botName)
+    .replace("{{BOT_ROLE}}", input.botRole)
+    .replace("{{PROJECT_NAME}}", input.projectName)
+    .replace("{{EXISTING}}", formatExistingMemories(input.existing))
+    .replace("{{WINDOW}}", input.window);
+}
+
+interface ExtractorWatermark {
+  readonly lastMessageId?: string;
+  readonly contentHash?: string;
+}
+
+function readWatermark(raw: unknown): ExtractorWatermark {
+  if (raw === null || typeof raw !== "object") return {};
+  const record = raw as Record<string, unknown>;
+  return {
+    ...(typeof record.lastMessageId === "string" ? { lastMessageId: record.lastMessageId } : {}),
+    ...(typeof record.contentHash === "string" ? { contentHash: record.contentHash } : {}),
+  };
+}
+
+const MODEL_TIMEOUT = "60 seconds";
+
+async function contentHash(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * One extraction pass over the messages newer than the watermark. Idempotent:
+ * same window content -> same hash -> no model call, no writes.
+ */
+export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly projections: ProjectionStore.ProjectionStoreV2Shape;
+  readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
+  readonly projectId: ProjectId;
+  readonly botThreadId: ThreadId;
+  readonly personaId?: string | undefined;
+  readonly botName: string;
+  readonly botRole: string;
+  readonly projectName: string;
+  readonly workspaceRoot: string;
+}): Effect.fn.Return<{ readonly applied: number }, DropwaveOperationErrorType, never> {
+  const watermarkKey = `extractor:${input.botThreadId}`;
+  const watermark = readWatermark(yield* input.store.getMemoryMeta(watermarkKey));
+
+  const records = yield* input.projections.getThreadRecords(input.botThreadId, ["messages"], {
+    messageRoles: ["user", "assistant"],
+  });
+  const all = [...records.messages].sort(
+    (a, b) => a.createdAt.epochMilliseconds - b.createdAt.epochMilliseconds,
+  );
+  const watermarkIndex =
+    watermark.lastMessageId === undefined
+      ? -1
+      : all.findIndex((message) => message.id === watermark.lastMessageId);
+  // Unknown watermark (compacted history): take the recent tail only.
+  const windowMessages =
+    watermarkIndex >= 0 ? all.slice(watermarkIndex + 1) : all.slice(-WINDOW_MESSAGE_LIMIT);
+  const { window, ownerTexts } = formatExtractionWindow(windowMessages);
+  const lastMessageId = all.at(-1)?.id ?? watermark.lastMessageId;
+  if (ownerTexts.length === 0 || window.trim().length === 0) {
+    if (lastMessageId !== undefined) {
+      yield* input.store.setMemoryMeta(watermarkKey, {
+        lastMessageId,
+        ...(watermark.contentHash !== undefined ? { contentHash: watermark.contentHash } : {}),
+      });
+    }
+    return { applied: 0 };
+  }
+  const hash = yield* Effect.promise(() => contentHash(window));
+  if (hash === watermark.contentHash) return { applied: 0 };
+
+  const allSettings = yield* input.serverSettings.getSettings;
+  const { settings } = resolveProjectSettings(allSettings, input.projectId);
+  const modelSelection = settings.textGenerationModelSelection ?? settings.defaultModelSelection;
+  if (modelSelection === undefined) return { applied: 0 };
+
+  const existing = yield* input.store.listMemories({
+    projectId: input.projectId,
+    botThreadId: input.botThreadId,
+    ...(input.personaId !== undefined ? { personaId: input.personaId } : {}),
+    limit: 60,
+  });
+  const prompt = buildExtractionPrompt({
+    botName: input.botName,
+    botRole: input.botRole,
+    projectName: input.projectName,
+    existing,
+    window,
+  });
+  const reply = yield* input.textGeneration
+    .generateTranscriptionPostProcessing({
+      cwd: input.workspaceRoot,
+      prompt,
+      modelSelection,
+    })
+    .pipe(Effect.timeoutOption(MODEL_TIMEOUT));
+  if (Option.isNone(reply)) {
+    yield* Effect.logWarning("dropwave memory extraction timed out", {
+      botThreadId: input.botThreadId,
+    });
+    return { applied: 0 };
+  }
+  const ops = parseExtractionOps(reply.value.transcription, ownerTexts).filter(
+    (op) => op.score >= MIN_OP_CONFIDENCE,
+  );
+
+  let applied = 0;
+  const sourceMessageId = windowMessages.findLast(isOwnerMessage)?.id ?? null;
+  for (const op of ops) {
+    // bot scope needs a persona; without one it degrades to project scope.
+    const scope: DropwaveMemoryScope =
+      op.scope === "bot" && input.personaId === undefined ? "project" : op.scope;
+    const personaId = scope === "bot" ? (input.personaId ?? null) : null;
+    if (op.op === "update" && op.id !== undefined) {
+      const current = yield* input.store.getMemory(op.id);
+      if (current === undefined) continue;
+      // Automated writers never overwrite owner-authority records.
+      if (current.authority === "owner") continue;
+      yield* input.store
+        .updateMemory({
+          id: op.id,
+          revision: current.revision,
+          ...(op.text !== current.text ? { text: op.text } : {}),
+          ...(op.subject !== current.subject ? { subject: op.subject } : {}),
+          kind: op.kind,
+          by: "agent",
+        })
+        .pipe(Effect.catch(() => Effect.void));
+      applied += 1;
+      continue;
+    }
+    const item = yield* input.store
+      .saveMemory({
+        projectId: input.projectId,
+        botThreadId: input.botThreadId,
+        scope,
+        personaId,
+        kind: op.kind,
+        subject: op.subject,
+        text: op.text,
+        quote: op.quote,
+        sourceMessageId,
+        threadId: input.botThreadId,
+        confidence: op.confidence,
+      })
+      .pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (item === undefined) continue;
+    applied += 1;
+    yield* checkMemoryConflict({
+      store: input.store,
+      textGeneration: input.textGeneration,
+      serverSettings: input.serverSettings,
+      projectId: input.projectId,
+      workspaceRoot: input.workspaceRoot,
+      item,
+    }).pipe(Effect.catch(() => Effect.void));
+  }
+  yield* input.store.setMemoryMeta(watermarkKey, {
+    ...(lastMessageId !== undefined ? { lastMessageId } : {}),
+    contentHash: hash,
+  });
+  return { applied };
+});
+
+// Conflict pass: same-scope items sharing a subject (or both subject-less with
+// the same kind) get one model verdict; contradictions park the NEW item in
+// needs_review linked to the old one. Owner-authority rows are never flagged.
+const checkMemoryConflict = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly textGeneration: TextGeneration.TextGeneration["Service"];
+  readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
+  readonly projectId: ProjectId;
+  readonly workspaceRoot: string;
+  readonly item: DropwaveMemoryItem;
+}): Effect.fn.Return<void, DropwaveOperationErrorType, never> {
+  const candidates = yield* input.store.listMemories({
+    projectId: input.projectId,
+    statuses: ["active"],
+    limit: 100,
+  });
+  const rivals = candidates.filter((other) => {
+    if (other.id === input.item.id || other.status !== "active") return false;
+    if (other.scope !== input.item.scope) return false;
+    if (other.authority === "owner") return false;
+    if (other.personaId !== input.personaId) return false;
+    if (input.item.subject !== "" && other.subject === input.item.subject) return true;
+    return (
+      input.item.subject === "" &&
+      other.subject === "" &&
+      other.kind === input.item.kind &&
+      other.text !== input.item.text
+    );
+  });
+  if (rivals.length === 0) return;
+  const allSettings = yield* input.serverSettings.getSettings;
+  const { settings } = resolveProjectSettings(allSettings, input.projectId);
+  const modelSelection = settings.textGenerationModelSelection ?? settings.defaultModelSelection;
+  if (modelSelection === undefined) return;
+  for (const rival of rivals.slice(0, MAX_CONFLICT_CHECKS)) {
+    const prompt = DROPWAVE_MEMORY_CONFLICT_PROMPT.replace(
+      "{{EXISTING_DATE}}",
+      rival.updatedAt.slice(0, 10),
+    )
+      .replace("{{EXISTING}}", rival.text)
+      .replace("{{CANDIDATE_SOURCE}}", "a new message")
+      .replace("{{CANDIDATE_DATE}}", input.item.updatedAt.slice(0, 10))
+      .replace("{{CANDIDATE}}", input.item.text);
+    const reply = yield* input.textGeneration
+      .generateTranscriptionPostProcessing({
+        cwd: input.workspaceRoot,
+        prompt,
+        modelSelection,
+      })
+      .pipe(Effect.timeoutOption("30 seconds"));
+    if (Option.isNone(reply)) continue;
+    const verdict = parseConflictVerdict(reply.value.transcription);
+    if (verdict?.contradicts !== true) continue;
+    const fresh = yield* input.store.getMemory(input.item.id);
+    if (fresh === undefined || fresh.status !== "active") return;
+    yield* input.store
+      .updateMemory({
+        id: input.item.id,
+        revision: fresh.revision,
+        status: "needs_review",
+        conflict: {
+          candidate: input.item.text,
+          reason: verdict.reason || "This clashes with something already remembered.",
+          withId: rival.id,
+        },
+        by: "agent",
+      })
+      .pipe(Effect.catch(() => Effect.void));
+    return;
+  }
+});
+
+function parseConflictVerdict(
+  raw: string,
+): { readonly contradicts: boolean; readonly reason: string } | undefined {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start === -1 || end <= start) return undefined;
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+    return {
+      contradicts: parsed.contradicts === true,
+      reason: typeof parsed.reason === "string" ? parsed.reason : "",
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+const OWNER_MESSAGES_PER_EXTRACTION = 6;
+export const EXTRACTION_IDLE_MS = 2 * 60 * 1000;
+
+interface TriggerState {
+  ownerCount: number;
+  lastOwnerAt: number;
+  scheduled: boolean;
+}
+
+function readTriggerState(raw: unknown): TriggerState {
+  const record = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    ownerCount: typeof record.ownerCount === "number" ? record.ownerCount : 0,
+    lastOwnerAt: typeof record.lastOwnerAt === "number" ? record.lastOwnerAt : 0,
+    scheduled: record.scheduled === true,
+  };
+}
+
+/**
+ * Records an owner message and decides whether extraction should run now.
+ * Returns "run" when the count threshold hit; "schedule" asks the caller to
+ * arm the idle timer; "skip" means an idle check is already pending.
+ */
+export const noteOwnerMessage = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly botThreadId: ThreadId;
+  readonly now: number;
+}): Effect.fn.Return<"run" | "schedule" | "skip", DropwaveOperationErrorType, never> {
+  const key = `extractor-trigger:${input.botThreadId}`;
+  const state = readTriggerState(yield* input.store.getMemoryMeta(key));
+  const next: TriggerState = {
+    ownerCount: state.ownerCount + 1,
+    lastOwnerAt: input.now,
+    scheduled: state.scheduled,
+  };
+  if (next.ownerCount >= OWNER_MESSAGES_PER_EXTRACTION) {
+    yield* input.store.setMemoryMeta(key, { ...next, ownerCount: 0, scheduled: false });
+    return "run";
+  }
+  yield* input.store.setMemoryMeta(key, next);
+  return next.scheduled ? "skip" : "schedule";
+});
+
+/** Marks the idle timer armed; the delayed fiber calls this before extract. */
+export const markExtractionScheduled = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly botThreadId: ThreadId;
+}): Effect.fn.Return<void, DropwaveOperationErrorType, never> {
+  const key = `extractor-trigger:${input.botThreadId}`;
+  const state = readTriggerState(yield* input.store.getMemoryMeta(key));
+  yield* input.store.setMemoryMeta(key, { ...state, scheduled: true });
+});
+
+export const clearExtractionSchedule = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly botThreadId: ThreadId;
+}): Effect.fn.Return<void, DropwaveOperationErrorType, never> {
+  const key = `extractor-trigger:${input.botThreadId}`;
+  const state = readTriggerState(yield* input.store.getMemoryMeta(key));
+  yield* input.store.setMemoryMeta(key, { ...state, scheduled: false });
+});
+
+/** Idle check: true when no owner message arrived within the idle window. */
+export const extractionIdleDue = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly botThreadId: ThreadId;
+  readonly now: number;
+}): Effect.fn.Return<boolean, DropwaveOperationErrorType, never> {
+  const key = `extractor-trigger:${input.botThreadId}`;
+  const state = readTriggerState(yield* input.store.getMemoryMeta(key));
+  return input.now - state.lastOwnerAt >= EXTRACTION_IDLE_MS;
+});

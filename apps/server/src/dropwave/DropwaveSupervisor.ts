@@ -29,6 +29,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
 import { parseVerifiedModelAsks, quoteInMessage } from "./askExtraction.ts";
 import { DROPWAVE_ASK_EXTRACTION_PROMPT } from "./askExtractionPrompt.ts";
+import * as MemoryExtractor from "./memoryExtractor.ts";
 
 const MODEL_EXTRACTION_TIMEOUT = "90 seconds";
 
@@ -239,6 +240,75 @@ const make = Effect.gen(function* () {
           ),
           serviceScope,
         );
+        // Memory v2 writer trigger (design §3b): count owner messages; run the
+        // extractor every 6, otherwise arm a ~2-minute idle check. The watermark
+        // inside extractMemoriesForThread keeps re-runs idempotent.
+        const botProfile = thread.dropwaveBot;
+        const runExtraction = Effect.gen(function* () {
+          const projectOption = yield* projects.get(thread.projectId);
+          if (Option.isNone(projectOption)) return;
+          yield* MemoryExtractor.extractMemoriesForThread({
+            store,
+            projections,
+            textGeneration,
+            serverSettings,
+            projectId: thread.projectId,
+            botThreadId: thread.id,
+            personaId: botProfile?.personaId,
+            botName: thread.title,
+            botRole:
+              botProfile?.kind === "teammate" ? (botProfile.role ?? "teammate") : "Chief of Staff",
+            projectName: projectOption.value.title,
+            workspaceRoot: projectOption.value.workspaceRoot,
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("dropwave memory extraction failed", {
+              botThreadId: thread.id,
+              cause,
+            }),
+          ),
+        );
+        const trigger = yield* MemoryExtractor.noteOwnerMessage({
+          store,
+          botThreadId: thread.id,
+          now: Date.now(),
+        }).pipe(Effect.catch(() => Effect.succeed("skip" as const)));
+        if (trigger === "run") {
+          yield* Effect.forkIn(runExtraction, serviceScope);
+        } else if (trigger === "schedule") {
+          yield* MemoryExtractor.markExtractionScheduled({ store, botThreadId: thread.id }).pipe(
+            Effect.catch(() => Effect.void),
+          );
+          yield* Effect.forkIn(
+            Effect.gen(function* () {
+              // Wait out the idle window, then re-check: a newer owner message
+              // pushes the deadline out once before we extract anyway.
+              for (let attempt = 0; attempt < 2; attempt += 1) {
+                yield* Effect.sleep(MemoryExtractor.EXTRACTION_IDLE_MS);
+                const due = yield* MemoryExtractor.extractionIdleDue({
+                  store,
+                  botThreadId: thread.id,
+                  now: Date.now(),
+                });
+                if (due || attempt === 1) break;
+              }
+              yield* runExtraction;
+              yield* MemoryExtractor.clearExtractionSchedule({
+                store,
+                botThreadId: thread.id,
+              }).pipe(Effect.catch(() => Effect.void));
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("dropwave idle memory extraction failed", {
+                  botThreadId: thread.id,
+                  cause,
+                }),
+              ),
+            ),
+            serviceScope,
+          );
+        }
         yield* store.appendTurnSummary({
           threadId: thread.id,
           messageId: message.id,
