@@ -19,6 +19,7 @@ import * as Option from "effect/Option";
 import * as ProjectService from "../project/ProjectService.ts";
 import { dropwaveBotInstructions } from "../orchestration-v2/dropwaveBotInstructions.ts";
 import {
+  coversSentence,
   extractRuleAsks,
   parseVerifiedMemories,
   parseVerifiedModelAsks,
@@ -85,6 +86,61 @@ it("extracts every distinct ask from a long dictated rant and rejects hallucinat
   expect(mems).toHaveLength(1);
   expect(mems[0]!.text).toBe("Always run checks before merging");
   expect(quoteInMessage("remove the All threads button", dump)).toBe(true);
+});
+
+it("splits the eval messy dump into five verified asks, rejects invented quotes, and keeps a safety-net maybe", () => {
+  const dump =
+    "ok so a few things, sorry this is all over the place. the annual price is wrong, it's charging 12 months but the comment says two months free, fix that. oh and while you're in there the invoice formatting shows $9 instead of $9.00 which looks cheap. also quick q, why is the canary plan at 0, is that intentional or did I mess up? and from now on always run npm test before you tell me anything is done. random idea for later, maybe a usage dashboard, don't do it now";
+  const rawModel = JSON.stringify([
+    {
+      quote:
+        "the annual price is wrong, it's charging 12 months but the comment says two months free, fix that",
+      summary: "Fix annual price to charge ten months",
+      kind: "do",
+    },
+    {
+      quote: "the invoice formatting shows $9 instead of $9.00 which looks cheap",
+      summary: "Format invoice amounts with two decimals",
+      kind: "do",
+    },
+    {
+      quote: "why is the canary plan at 0, is that intentional or did I mess up",
+      summary: "Explain why the canary plan is priced at 0",
+      kind: "answer",
+    },
+    {
+      quote: "from now on always run npm test before you tell me anything is done",
+      summary: "Always run npm test before reporting done",
+      kind: "rule",
+    },
+    {
+      quote: "maybe a usage dashboard, don't do it now",
+      summary: "Consider a usage dashboard for later",
+      kind: "idea",
+    },
+    {
+      quote: "the invoice is formatted in euros which is wrong",
+      summary: "Invented ask not in the message",
+      kind: "do",
+    },
+  ]);
+  const verified = parseVerifiedModelAsks(rawModel, dump);
+  expect(verified).toBeDefined();
+  const items = verified!;
+  expect(items.some((a) => a.summary === "Invented ask not in the message")).toBe(false);
+  const real = items.filter((a) => a.maybe !== true);
+  expect(real).toHaveLength(5);
+  expect(real.map((a) => a.kind).sort()).toEqual(["answer", "do", "do", "idea", "rule"].sort());
+  // Every sentence the heuristic caught is either covered by the model or kept as a maybe net.
+  for (const candidate of extractRuleAsks(dump)) {
+    expect(
+      items.some(
+        (a) =>
+          coversSentence(a.quote, candidate.quote) ||
+          (a.maybe === true && a.quote === candidate.quote),
+      ),
+    ).toBe(true);
+  }
 });
 
 it.effect(

@@ -1,7 +1,7 @@
 import type { OrchestrationV2TurnItem } from "@t3tools/contracts";
 import { T, Var, useGT } from "gt-react";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface VisibleTurnEntry {
   readonly item: OrchestrationV2TurnItem;
@@ -76,11 +76,15 @@ export function DropwaveWorkingBlock({
   const gt = useGT();
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const [expandedIds, setExpandedIds] = useState<Record<string, boolean>>({});
+  const [showEarlierSteps, setShowEarlierSteps] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
+  const stepsRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- live elapsed seconds counter while agent is actively working
   useEffect(() => {
     if (!isRunning) return;
+    stickToBottomRef.current = true;
     const started = Date.now();
     const id = window.setInterval(() => {
       setElapsedSec(Math.max(1, Math.floor((Date.now() - started) / 1000)));
@@ -88,7 +92,7 @@ export function DropwaveWorkingBlock({
     return () => window.clearInterval(id);
   }, [isRunning]);
 
-  const steps: Array<{
+  const allSteps: Array<{
     readonly id: string;
     readonly label: string;
     readonly detail?: string | undefined;
@@ -96,10 +100,10 @@ export function DropwaveWorkingBlock({
     readonly streaming: boolean;
   }> = [];
 
-  for (const entry of visibleItems.slice(-24)) {
+  for (const entry of visibleItems) {
     const info = summarizeStep(entry.item, gt);
     if (!info) continue;
-    steps.push({
+    allSteps.push({
       id: entry.item.id,
       label: info.label,
       detail: info.detail,
@@ -110,7 +114,23 @@ export function DropwaveWorkingBlock({
     });
   }
 
-  if (!isRunning && steps.length === 0) return null;
+  // Long runs render the newest steps; the rest stay one click away.
+  const hiddenSteps = !showEarlierSteps && allSteps.length > 50 ? allSteps.length - 50 : 0;
+  const steps = hiddenSteps > 0 ? allSteps.slice(-50) : allSteps;
+
+  const lastStepId = steps.length > 0 ? steps[steps.length - 1]!.id : null;
+
+  // Keep the latest step in view while running unless the owner scrolled up inside the steps list.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the steps list scroll position pinned to the newest step
+  useEffect(() => {
+    if (!isRunning) return;
+    const el = stepsRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- lastStepId re-fires the scroll when a new step arrives
+  }, [isRunning, lastStepId]);
+
+  if (!isRunning && allSteps.length === 0) return null;
 
   // Open automatically while running; auto-collapses once settled unless user explicitly toggled it.
   const isOpen = userOpen !== null ? userOpen : isRunning;
@@ -150,15 +170,32 @@ export function DropwaveWorkingBlock({
             )
           ) : (
             <T>
-              Worked · <Var>{steps.length}</Var> steps
+              Worked · <Var>{allSteps.length}</Var> steps
             </T>
           )}
         </span>
       </button>
 
       <div data-dw-working-drawer={isOpen ? "open" : "closed"}>
-        <div data-dw-working-drawer-inner="">
-          {steps.slice(-10).map((step) => {
+        <div
+          ref={stepsRef}
+          data-dw-working-drawer-inner=""
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            stickToBottomRef.current = nearBottom;
+          }}
+        >
+          {hiddenSteps > 0 ? (
+            <button type="button" data-dw-step-trigger="" onClick={() => setShowEarlierSteps(true)}>
+              <span>
+                <T>
+                  Show earlier steps (<Var>{hiddenSteps}</Var>)
+                </T>
+              </span>
+            </button>
+          ) : null}
+          {steps.map((step) => {
             const isStepOpen = Boolean(expandedIds[step.id]);
             const showLivePeek = Boolean(isRunning && activeThought?.id === step.id && !isStepOpen);
             return (

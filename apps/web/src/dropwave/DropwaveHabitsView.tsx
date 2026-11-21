@@ -13,14 +13,19 @@ import { AsyncResult } from "effect/reactivity";
 import { T, Var, useGT } from "gt-react";
 import {
   CalendarClockIcon,
+  MessageSquareIcon,
   PauseIcon,
   PlayIcon,
   PlusIcon,
   RepeatIcon,
   Trash2Icon,
 } from "lucide-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useState, type FormEvent } from "react";
+import { useNowSecond } from "../hooks/useNowSecond";
+import { useClientSettings } from "../hooks/useSettings";
 
+import { formatUpcomingTimestamp } from "../timestampFormat";
 import { resolveProjectDefaultProviderModelSelection } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readEnvironmentProviders } from "../state/environments";
@@ -92,6 +97,8 @@ function DropwaveHabitsContent({ envId }: { envId: EnvironmentId }) {
   const tasksResult = useAtomValue(
     serverEnvironment.scheduledTasksLive({ environmentId: envId, input: {} }),
   );
+  const nowMs = useNowSecond();
+  const timestampFormat = useClientSettings((s) => s.timestampFormat);
 
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     reportFailure: false,
@@ -123,13 +130,19 @@ function DropwaveHabitsContent({ envId }: { envId: EnvironmentId }) {
     e.preventDefault();
     const targetProject = project ?? workspace.projects[0];
     if (!targetProject || !title.trim() || !prompt.trim() || busy) return;
+    // Habits run inside the project's Lead thread so each run lands in the Lead's chat.
+    const lead = workspace.lead;
+    if (!lead) {
+      setError(gt("Create your Lead bot first so habit runs land in its chat."));
+      return;
+    }
 
     const providers = readEnvironmentProviders(targetProject.environmentId) ?? [];
     const settings =
       appAtomRegistry.get(environmentServerConfigsAtom).get(targetProject.environmentId)
         ?.settings ?? DEFAULT_SERVER_SETTINGS;
     const modelSelection =
-      workspace.lead?.source.modelSelection ??
+      lead.source.modelSelection ??
       targetProject.defaultModelSelection ??
       resolveProjectDefaultProviderModelSelection(providers, settings, targetProject.id);
 
@@ -148,10 +161,10 @@ function DropwaveHabitsContent({ envId }: { envId: EnvironmentId }) {
         enabled: true,
         schedule: cadenceToSchedule(cadence),
         projectId: targetProject.id,
-        ...(workspace.lead ? { threadId: workspace.lead.id } : {}),
+        threadId: lead.id,
         workspaceStrategy: { type: "root" },
         modelSelection,
-        runtimeMode: workspace.lead?.source.runtimeMode ?? "full-access",
+        runtimeMode: lead.source.runtimeMode ?? "full-access",
         interactionMode: "default",
       },
     });
@@ -248,16 +261,39 @@ function DropwaveHabitsContent({ envId }: { envId: EnvironmentId }) {
                   <span data-dw-mono="muted">{formatHabitSchedule(task, gt)}</span>
                 </div>
                 <p>{task.prompt}</p>
-                {task.lastRunStatus ? (
-                  <small>
+                <small>
+                  {task.nextRunAt ? (
                     <T>
-                      Last run: <Var>{task.lastRunStatus}</Var>
+                      Next:{" "}
+                      <Var>{formatUpcomingTimestamp(task.nextRunAt, timestampFormat, nowMs)}</Var>
                     </T>
-                  </small>
-                ) : null}
+                  ) : (
+                    <T>
+                      Next: <Var>{gt("Not scheduled")}</Var>
+                    </T>
+                  )}
+                  {task.lastRunStatus !== "never" ? (
+                    <>
+                      {" · "}
+                      <T>
+                        Last run: <Var>{task.lastRunStatus}</Var>
+                      </T>
+                    </>
+                  ) : null}
+                </small>
               </div>
 
               <div data-dw-habit-actions="">
+                {task.threadId ? (
+                  <button
+                    type="button"
+                    data-dw-btn-ghost=""
+                    onClick={() => workspace.openThread(scopeThreadRef(envId, task.threadId!))}
+                  >
+                    <MessageSquareIcon className="size-3" />
+                    <T>Open in chat</T>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   data-dw-btn-ghost=""

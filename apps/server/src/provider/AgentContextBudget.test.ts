@@ -13,6 +13,7 @@ import { ServerConfig } from "../config.ts";
 import { DeviceService } from "../device/DeviceService.ts";
 import { DropwaveDocsService } from "../dropwave/DropwaveDocsService.ts";
 import { DropwaveStore } from "../dropwave/DropwaveStore.ts";
+import { DropwaveSupervisor } from "../dropwave/DropwaveSupervisor.ts";
 import { ServerEnvironment } from "../environment/ServerEnvironment.ts";
 import { GitManager } from "../git/GitManager.ts";
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
@@ -59,6 +60,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(DeviceService)({}),
   Layer.mock(DropwaveDocsService)({}),
   Layer.mock(DropwaveStore)({}),
+  Layer.mock(DropwaveSupervisor)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(EnvironmentThemeService)({}),
   Layer.mock(GitVcsDriver)({}),

@@ -20,7 +20,7 @@ import {
   SearchIcon,
   Trash2Icon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "../confirmDialog";
 import { serverEnvironment } from "../state/server";
@@ -29,6 +29,8 @@ import { DropwaveMarkdown } from "./DropwaveMarkdown";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { formatShortAge } from "./model";
 import { useDropwaveWorkspace } from "./workspaceContext";
+
+const DropwaveBlockNoteEditor = lazy(() => import("./DropwaveBlockNoteEditor"));
 
 type DocsTab = "docs" | "memory";
 
@@ -78,6 +80,7 @@ export function DropwaveDocsView({
 
   const [reloadNonce, setReloadNonce] = useState(0);
   const triggerReload = () => setReloadNonce((n) => n + 1);
+  const autosavedRef = useRef({ key: "", title: "", kind: "", content: "" });
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live server docs or memories
   useEffect(() => {
@@ -145,13 +148,89 @@ export function DropwaveDocsView({
         setDraftTitle(res.value.doc.title);
         setDraftKind(res.value.doc.kind);
         setDraftContent(res.value.doc.content);
+        autosavedRef.current = {
+          key: res.value.doc.path,
+          title: res.value.doc.title,
+          kind: res.value.doc.kind,
+          content: res.value.doc.content,
+        };
         setEditing(false);
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [creatingNew, project, readDocCmd, selectedPath]);
+  }, [autosavedRef, creatingNew, project, readDocCmd, selectedPath]);
+
+  const saveDoc = async (quiet = false) => {
+    if (!project || busy || !draftTitle.trim()) return;
+    setBusy(true);
+    setError(null);
+    const res = await writeDocCmd({
+      environmentId: project.environmentId,
+      input: {
+        projectId: project.id,
+        ...(creatingNew ? {} : openDoc ? { path: openDoc.path } : {}),
+        title: draftTitle.trim(),
+        kind: draftKind,
+        content: draftContent,
+      },
+    });
+    setBusy(false);
+    if (res._tag === "Success") {
+      if (!quiet) {
+        setCreatingNew(false);
+        setEditing(false);
+      }
+      setOpenDoc(res.value.doc);
+      setSelectedPath(res.value.doc.path);
+      triggerReload();
+      workspace?.refreshOpenAsksCount();
+    } else if (!isAtomCommandInterrupted(res)) {
+      const cause = squashAtomCommandFailure(res);
+      setError(cause instanceof Error ? cause.message : gt("Could not save document."));
+    }
+  };
+
+  const saveDocRef = useRef(saveDoc);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the latest saveDoc reachable from the autosave timer
+  useEffect(() => {
+    saveDocRef.current = saveDoc;
+  });
+
+  // Debounced autosave while editing an existing doc; Save remains the explicit path for new docs.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the on-disk doc in step with draft edits after a 900ms idle timer
+  useEffect(() => {
+    if (!editing || creatingNew || !openDoc) return;
+    const timer = window.setTimeout(() => {
+      const saved = autosavedRef.current;
+      if (
+        saved.key === openDoc.path &&
+        saved.title === draftTitle &&
+        saved.kind === draftKind &&
+        saved.content === draftContent
+      ) {
+        return;
+      }
+      autosavedRef.current = {
+        key: openDoc.path,
+        title: draftTitle,
+        kind: draftKind,
+        content: draftContent,
+      };
+      void saveDocRef.current(true);
+    }, 900);
+    return () => window.clearTimeout(timer);
+  }, [
+    autosavedRef,
+    creatingNew,
+    draftContent,
+    draftKind,
+    draftTitle,
+    editing,
+    openDoc,
+    saveDocRef,
+  ]);
 
   if (!workspace || !project) {
     return (
@@ -205,34 +284,6 @@ export function DropwaveDocsView({
     setDraftKind(activeDocView.kind);
     setDraftContent(activeDocView.content);
     setEditing(true);
-  };
-
-  const saveDoc = async () => {
-    if (busy || !draftTitle.trim()) return;
-    setBusy(true);
-    setError(null);
-    const res = await writeDocCmd({
-      environmentId: project.environmentId,
-      input: {
-        projectId: project.id,
-        ...(creatingNew ? {} : openDoc ? { path: openDoc.path } : {}),
-        title: draftTitle.trim(),
-        kind: draftKind,
-        content: draftContent,
-      },
-    });
-    setBusy(false);
-    if (res._tag === "Success") {
-      setCreatingNew(false);
-      setEditing(false);
-      setOpenDoc(res.value.doc);
-      setSelectedPath(res.value.doc.path);
-      triggerReload();
-      workspace.refreshOpenAsksCount();
-    } else if (!isAtomCommandInterrupted(res)) {
-      const cause = squashAtomCommandFailure(res);
-      setError(cause instanceof Error ? cause.message : gt("Could not save document."));
-    }
   };
 
   const deleteCurrentDoc = async () => {
@@ -455,12 +506,19 @@ export function DropwaveDocsView({
                 placeholder={gt("Untitled document")}
                 aria-label={gt("Document title")}
               />
-              <textarea
-                data-dropwave-editorial-body=""
-                value={draftContent}
-                onChange={(event) => setDraftContent(event.currentTarget.value)}
-                placeholder={gt("Write briefs, specs, decisions, or notes…")}
-              />
+              <Suspense
+                fallback={
+                  <div data-dropwave-editorial-body="" data-dw-blocknote-loading="">
+                    <T>Loading editor…</T>
+                  </div>
+                }
+              >
+                <DropwaveBlockNoteEditor
+                  key={creatingNew ? "new" : (openDoc?.path ?? "draft")}
+                  markdown={draftContent}
+                  onChange={setDraftContent}
+                />
+              </Suspense>
             </div>
           ) : activeDocView ? (
             <article data-dropwave-doc-reader="">

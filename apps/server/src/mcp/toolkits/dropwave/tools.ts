@@ -17,6 +17,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 
 import * as DropwaveDocsService from "../../../dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "../../../dropwave/DropwaveStore.ts";
+import * as DropwaveSupervisor from "../../../dropwave/DropwaveSupervisor.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -147,10 +148,27 @@ const DropwaveAskUpTool = Tool.make("dropwave_ask_up", {
   .annotate(Tool.Destructive, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
 
+const DropwaveLandTool = Tool.make("dropwave_land", {
+  description:
+    "Land a completed delegate_task job's worker branch into the project's main checkout (Lead bot only). Merges with git merge --no-ff; refuses when the job is unfinished, either checkout is dirty, or there is nothing to merge, and aborts cleanly on conflict. Outside yolo risk level, pass ownerApprovalQuote quoting the owner's approval message.",
+  parameters: Schema.Struct({
+    jobId: TrimmedNonEmptyString,
+    ownerApprovalQuote: Schema.optional(Schema.String),
+  }),
+  success: Schema.Record(Schema.String, Schema.Unknown),
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies: [...baseDeps, DropwaveSupervisor.DropwaveSupervisor],
+})
+  .annotate(Tool.Title, "Land worker work into the main checkout")
+  .annotate(Tool.Destructive, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
+
 export const DropwaveToolkit = Toolkit.make(
   DropwaveAsksTool,
   DropwaveMemoryTool,
   DropwaveDocsTool,
   DropwaveTeamTool,
   DropwaveAskUpTool,
+  DropwaveLandTool,
 );

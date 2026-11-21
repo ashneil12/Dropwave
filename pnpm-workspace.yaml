@@ -138,6 +138,9 @@ overrides:
   # Move this with @react-navigation/native: an older core than it requires crashes
   # every native stack at launch.
   "@react-navigation/core": 7.24.0
+  # BlockNote + tiptap must share one prosemirror-view or the editor crashes
+  # (Cannot read properties of undefined 'localsInner').
+  prosemirror-view: 1.42.3
   # @cloudflare/unenv-preset peers on this exact version, but alchemy's runtime
   # takes a caret range, so lockfile-free installs drift to a newer prerelease.
   unenv: 2.0.0-rc.24

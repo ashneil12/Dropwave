@@ -379,9 +379,7 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
   ).items;
   const personas = ((await call(rpc["dropwave.persona.list"]({}))) as { items: DropwavePersona[] })
     .items;
-  const docs = (await call(rpc["dropwave.docs.list"]({ projectId }))) as {
-    docs: Array<{ kind: string; path?: string; title?: string }>;
-  };
+  const docs = await call(rpc["dropwave.docs.list"]({ projectId }));
   const docBodies: Array<{ kind: string; text: string }> = [];
   for (const doc of docs.docs ?? []) {
     try {
@@ -506,6 +504,7 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
       const bot = p.thread.dropwaveBot;
       return bot?.kind === "teammate" ? [{ title: p.thread.title, role: bot.role ?? "" }] : [];
     }),
+    workspaceRoot: ctx.workspaceRoot,
   };
 }
 
@@ -682,6 +681,9 @@ async function runCase(
 
     const settled = async (): Promise<boolean> => {
       // after_idle: no run in flight for any bot in the project and no delegated job running.
+      // The thread map fills from the shell subscription; until the lead thread has
+      // arrived, zero threads is vacuously "settled" while the first run is queued.
+      if (ctx.leadId !== undefined && !ctx.threads.has(ctx.leadId)) return false;
       for (const [id, shell] of ctx.threads) {
         if (shell.projectId !== ctx.projectId) continue;
         // Shell `activeRunId` can lag a finished run if its update raced the

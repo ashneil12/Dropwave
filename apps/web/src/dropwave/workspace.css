@@ -45,7 +45,7 @@
   --dw-bg: #0b0c13;
   --dw-glass-panel: rgb(16 18 27 / calc(76% * var(--dw-glass, 1)));
   --dw-glass-bar: rgb(10 12 20 / 56%);
-  --dw-card-surface: rgb(20 22 34 / 90%);
+  --dw-card-surface: rgb(20 22 34 / 58%);
   --dw-edge: rgb(255 255 255 / 9%);
   --dw-edge-strong: rgb(255 255 255 / 15%);
   --dw-hairline: rgb(255 255 255 / 6.5%);
@@ -61,7 +61,7 @@
   --dw-violet: #a78bfa;
   --dw-control: rgb(255 255 255 / 5%);
   --dw-hover: rgb(255 255 255 / 10%);
-  --dw-surface: rgb(20 22 34 / 94%);
+  --dw-surface: rgb(20 22 34 / 58%);
   --dw-accent: #c8c6ff;
   --dw-needs: #f05d5e;
   --dw-working: #46a758;
@@ -71,7 +71,9 @@
 
 :root[data-dropwave-active] [data-slot="dialog-popup"],
 :root[data-dropwave-active] [data-slot="sheet-popup"] {
-  background: rgb(18 19 30 / 96%);
+  background: rgb(16 18 27 / 74%);
+  backdrop-filter: blur(calc(34px * var(--dw-glass, 1))) saturate(160%);
+  -webkit-backdrop-filter: blur(calc(34px * var(--dw-glass, 1))) saturate(160%);
   color: #f2f2f7;
   border-color: rgb(255 255 255 / 10%);
 }
@@ -1103,7 +1105,7 @@
   max-width: 78%;
   padding: 11px 15px;
   border-radius: 16px 4px 16px 16px;
-  background: #1e2132;
+  background: rgb(30 33 50 / 55%);
   border: 1px solid rgb(255 255 255 / 10%);
   color: var(--dw-text);
   font-size: 13px;
@@ -1125,7 +1127,7 @@
 [data-dw-bubble="bot"] {
   padding: 13px 16px;
   border-radius: 4px 16px 16px 16px;
-  background: rgb(23 25 38 / 92%);
+  background: rgb(23 25 38 / 58%);
   border: 1px solid rgb(255 255 255 / 9%);
   color: #e6e5f2;
   font-size: 13px;
@@ -1163,7 +1165,7 @@
 [data-dw-fold-body] {
   padding: 10px 13px;
   border-radius: 10px;
-  background: rgb(14 16 26 / 84%);
+  background: rgb(14 16 26 / 55%);
   border-left: 2px solid rgb(70 167 88 / 45%);
   display: grid;
   gap: 8px;
@@ -1186,7 +1188,7 @@
   text-align: start;
   padding: 13px 15px;
   border-radius: 13px;
-  background: #131520;
+  background: rgb(255 255 255 / 4.5%);
   border: 1px solid rgb(255 255 255 / 10%);
   display: grid;
   gap: 7px;
@@ -1228,7 +1230,7 @@
 [data-dw-needs-card] {
   padding: 15px 16px;
   border-radius: 16px;
-  background: linear-gradient(180deg, #1c1721, #141522);
+  background: linear-gradient(180deg, rgb(28 23 33 / 58%), rgb(20 21 34 / 58%));
   border: 1.5px solid rgb(240 93 94 / 52%);
   box-shadow: 0 14px 36px rgb(0 0 0 / 42%);
   display: grid;
@@ -1411,7 +1413,7 @@
 [data-dw-setup-card] {
   padding: 14px 15px;
   border-radius: 14px;
-  background: #131522;
+  background: rgb(255 255 255 / 4.5%);
   border: 1px solid rgb(255 255 255 / 10%);
   display: grid;
   gap: 10px;
@@ -1559,7 +1561,9 @@
   gap: 8px;
   padding: 7px 10px 7px 14px;
   border-radius: 999px;
-  background: rgb(24 27 43 / 95%);
+  background: rgb(24 27 43 / 68%);
+  backdrop-filter: blur(calc(24px * var(--dw-glass, 1))) saturate(160%);
+  -webkit-backdrop-filter: blur(calc(24px * var(--dw-glass, 1))) saturate(160%);
   border: 1px solid rgb(255 255 255 / 17%);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 9%),
@@ -1702,7 +1706,7 @@
    ================================================================ */
 [data-dropwave-popover] {
   color: #f2f2f7;
-  background: rgb(16 18 28 / 92%);
+  background: rgb(16 18 28 / 72%);
   border: 1px solid var(--dw-edge-strong);
   backdrop-filter: blur(28px) saturate(150%);
   border-radius: 14px;
@@ -2644,7 +2648,9 @@
   gap: 6px;
   padding: 11px 12px 8px 16px;
   border-radius: 20px;
-  background: rgb(24 27 43 / 95%);
+  background: rgb(24 27 43 / 68%);
+  backdrop-filter: blur(calc(24px * var(--dw-glass, 1))) saturate(160%);
+  -webkit-backdrop-filter: blur(calc(24px * var(--dw-glass, 1))) saturate(160%);
   border: 1px solid rgb(255 255 255 / 15%);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 9%),
@@ -2752,7 +2758,9 @@
   max-width: 600px !important;
   padding: 0 !important;
   border-radius: 20px !important;
-  background: linear-gradient(180deg, #1b1724, #12131f) !important;
+  background: linear-gradient(180deg, rgb(27 23 36 / 78%), rgb(18 19 31 / 78%)) !important;
+  backdrop-filter: blur(calc(30px * var(--dw-glass, 1))) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(calc(30px * var(--dw-glass, 1))) saturate(160%) !important;
   border: 1.5px solid rgb(240 93 94 / 42%) !important;
   box-shadow: 0 32px 80px rgb(0 0 0 / 72%) !important;
   overflow: hidden;
@@ -2868,7 +2876,9 @@
   height: min(84dvh, 580px);
   padding: 0 !important;
   border-radius: 20px !important;
-  background: rgb(18 19 30 / 97%) !important;
+  background: rgb(16 18 27 / 74%) !important;
+  backdrop-filter: blur(calc(34px * var(--dw-glass, 1))) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(calc(34px * var(--dw-glass, 1))) saturate(160%) !important;
   border: 1px solid rgb(255 255 255 / 12%) !important;
   box-shadow: 0 32px 80px rgb(0 0 0 / 72%) !important;
   overflow: hidden;
@@ -3913,7 +3923,7 @@
 /* AffectUI Calm Inline Decision Inbox (Image 2 style — zero loud neon borders!) */
 [data-dw-affect-inbox] {
   border-radius: 16px;
-  background: rgb(20 21 30 / 88%);
+  background: rgb(20 21 30 / 66%);
   backdrop-filter: blur(24px);
   box-shadow:
     0 0 0 0.5px rgb(255 255 255 / 13%),
@@ -4324,6 +4334,11 @@
   gap: 6px;
   padding-inline-start: 14px;
   border-inline-start: 1px solid rgb(255 255 255 / 10%);
+}
+[data-dw-working-drawer="open"] [data-dw-working-drawer-inner] {
+  max-height: 40vh;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 [data-dw-step-row] {
   display: grid;
@@ -4973,4 +4988,55 @@
 }
 [data-dw-path-row] [data-dw-custom-answer] {
   flex: 1;
+}
+
+/* BlockNote docs editor — Dropwave glass theme (transparent editor, hairlines, app font) */
+[data-dw-blocknote] {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: inherit;
+}
+[data-dw-blocknote] .bn-container,
+[data-dw-blocknote] .bn-editor {
+  --bn-colors-editor-text: #f2f2f7;
+  --bn-colors-editor-background: transparent;
+  --bn-colors-menu-background: rgb(16 18 28 / 72%);
+  --bn-colors-menu-text: #f2f2f7;
+  --bn-colors-tooltip-background: rgb(16 18 28 / 72%);
+  --bn-colors-tooltip-text: #f2f2f7;
+  --bn-colors-hovered-background: rgb(255 255 255 / 7%);
+  --bn-colors-selected-background: rgb(139 141 248 / 20%);
+  --bn-colors-disabled-background: transparent;
+  --bn-colors-disabled-text: #686d84;
+  --bn-colors-border: var(--dw-hairline);
+  --bn-colors-side-menu: var(--dw-text-dim);
+  --bn-colors-highlights-gray-text: var(--dw-text-dim);
+  --bn-font-family: inherit;
+  background: transparent;
+  color: #f2f2f7;
+  font-family: inherit;
+  height: 100%;
+}
+[data-dw-blocknote] .bn-container .bn-menu,
+[data-dw-blocknote] .bn-container [data-slot="popover-popup"] {
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+}
+[data-dw-blocknote] .bn-editor {
+  padding-inline-start: 8px;
+}
+[data-dw-blocknote] .bn-block-content[data-content-type="checkListItem"] input {
+  accent-color: #8b8df8;
+}
+[data-dw-blocknote-loading] {
+  display: grid;
+  place-items: center;
+  color: var(--dw-text-dim);
+  font-size: 12.5px;
+}
+[data-dw-blocknote-lossy-note] {
+  margin: 0 0 10px;
+  color: var(--dw-text-dim);
+  font-size: 12px;
 }

@@ -740,7 +740,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
         const service = yield* DropwaveSupervisor.DropwaveSupervisor;
         yield* service.start();
       }),
-    ).pipe(Layer.provide(DropwaveSupervisor.layer), Layer.provide(ProjectionStoreV2.layer)),
+    ).pipe(Layer.provideMerge(DropwaveSupervisor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ),
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,

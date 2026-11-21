@@ -74,6 +74,7 @@ const state = (over: Partial<CaseState>): CaseState => ({
   teammateMessages: new Map(),
   leadProfile: undefined,
   teammateProfiles: [],
+  workspaceRoot: "/w/main",
   ...over,
 });
 
@@ -254,16 +255,10 @@ describe("evaluateCheck", () => {
     ).toBe(false);
   });
 
-  it("worker_checks_pass runs the command in each completed job worktree", () => {
-    const s = state({
-      jobs: [
-        { id: "j1", status: "completed", worktreePath: "/w/1" },
-        { id: "j2", status: "running", worktreePath: "/w/2" },
-        { id: "j3", status: "completed" },
-      ],
-    });
+  it("landed_checks_pass runs the command once in the main checkout", () => {
+    const s = state({ workspaceRoot: "/w/main" });
     const seen: string[] = [];
-    const check: Check = { kind: "worker_checks_pass", command: "npm test" };
+    const check: Check = { kind: "landed_checks_pass", command: "npm test" };
     const pass = evaluateCheck(
       check,
       s,
@@ -273,7 +268,7 @@ describe("evaluateCheck", () => {
       }),
     );
     expect(pass.pass).toBe(true);
-    expect(seen).toEqual(["/w/1"]); // only completed jobs with worktrees run
+    expect(seen).toEqual(["/w/main"]);
     expect(
       evaluateCheck(
         check,

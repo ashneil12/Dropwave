@@ -815,7 +815,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
         try: () => {
           const rows = getAll<AskRow>(
             `SELECT * FROM dropwave_asks
-             WHERE source_message_id = ? AND status = 'heard' AND kind != 'idea'
+             WHERE source_message_id = ? AND status IN ('heard', 'maybe') AND kind != 'idea'
              ORDER BY n ASC`,
             messageId,
           );
@@ -866,16 +866,22 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           const timestamp = nowIso();
           const scope: DropwaveMemoryScope = input.scope ?? "project";
           const personaId = scope === "global" ? (input.personaId ?? null) : null;
+          // The heuristic and model ask passes phrase a rule differently but carry the same
+          // owner quote, so a quote match counts as the same memory.
+          const quoteNorm = input.quote ? clipQuote(input.quote) : null;
           const duplicate = getOne<MemoryRow>(
             scope === "global"
               ? `SELECT * FROM dropwave_memories
-                 WHERE scope = 'global' AND active = 1 AND LOWER(text) = LOWER(?)
-                   AND persona_id IS ?
+                 WHERE scope = 'global' AND active = 1 AND persona_id IS ?
+                   AND (LOWER(text) = LOWER(?) OR (? IS NOT NULL AND LOWER(quote) = LOWER(?)))
                  LIMIT 1`
               : `SELECT * FROM dropwave_memories
-                 WHERE scope = 'project' AND project_id = ? AND active = 1 AND LOWER(text) = LOWER(?)
+                 WHERE scope = 'project' AND project_id = ? AND active = 1
+                   AND (LOWER(text) = LOWER(?) OR (? IS NOT NULL AND LOWER(quote) = LOWER(?)))
                  LIMIT 1`,
-            ...(scope === "global" ? [text, personaId] : [input.projectId, text]),
+            ...(scope === "global"
+              ? [personaId, text, quoteNorm, quoteNorm]
+              : [input.projectId, text, quoteNorm, quoteNorm]),
           );
           if (duplicate) {
             const confidence = input.confidence ?? duplicate.confidence;

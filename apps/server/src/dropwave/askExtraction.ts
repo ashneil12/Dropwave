@@ -137,7 +137,7 @@ function wordSet(value: string): Set<string> {
   );
 }
 
-function coversSentence(quote: string, sentence: string): boolean {
+export function coversSentence(quote: string, sentence: string): boolean {
   const sentenceWords = wordSet(sentence);
   if (sentenceWords.size === 0) return false;
   const quoteWords = wordSet(quote);

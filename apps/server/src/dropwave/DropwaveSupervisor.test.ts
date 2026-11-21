@@ -1,3 +1,10 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EventId,
@@ -13,11 +20,19 @@ import {
   type OrchestrationV2ServerCommand,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
+import * as ServerConfig from "../config.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
 import * as DropwaveSupervisor from "./DropwaveSupervisor.ts";
 
@@ -149,6 +164,10 @@ it.effect(
         Layer.provideMerge(DropwaveStore.layerMemory),
         Layer.provide(mockOrchestrator),
         Layer.provide(mockProjections),
+        Layer.provide(mockProjectStore("/tmp/hivra")),
+        Layer.provide(mockServerSettings()),
+        Layer.provide(mockTextGeneration(Effect.succeed({ transcription: "[]" }))),
+        Layer.provideMerge(layerRealGit),
       );
 
       yield* Effect.gen(function* () {
@@ -202,7 +221,9 @@ it.effect(
         ).toBe(true);
 
         // 3. Delegated worker linked to ask #1 fails -> ask bounces back to heard & Lead wakes for recovery round 1/2.
-        const ask1 = openAsks[0]!;
+        // The model pass ("[]") reconciled untouched asks to safety-net copies, so re-read.
+        const reconciled = yield* store.listAsks({ projectId, botThreadId: leadId });
+        const ask1 = reconciled[0]!;
         const taskNodeId = NodeId.make("node:worker-1");
         yield* store.linkJobToAsks({ askIds: [ask1.id], jobId: taskNodeId, title: "Fix billing" });
         yield* supervisor.handle({
@@ -220,7 +241,8 @@ it.effect(
           } as never,
         });
         const afterFail = yield* store.listAsks({ projectId, botThreadId: leadId });
-        expect(afterFail.find((a) => a.id === ask1.id)?.status).toBe("heard");
+        // The safety-net ask was `maybe`; a failed job must not leave it stuck in `started`.
+        expect(["heard", "maybe"]).toContain(afterFail.find((a) => a.id === ask1.id)?.status);
         expect(
           dispatched.some(
             (cmd) =>
@@ -325,4 +347,494 @@ it.effect(
         expect(ProviderDriverKind.make("claudeAgent")).toBe("claudeAgent");
       }).pipe(Effect.provide(testLayer));
     }),
+);
+
+const mockProjectStore = (workspaceRoot: string) =>
+  Layer.mock(ProjectStore.ProjectStoreV2)({
+    get: () => Effect.succeed(Option.some({ workspaceRoot }) as never),
+  });
+
+const mockServerSettings = () =>
+  Layer.mock(ServerSettings.ServerSettingsService)({
+    getSettings: Effect.succeed({
+      textGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("claude"),
+        model: "claude-haiku-4-5",
+      },
+      projectSettingsOverrides: {},
+      projectSettingsFolded: false,
+    } as never),
+  });
+
+const mockTextGeneration = (effect: Effect.Effect<{ transcription: string }, never>) =>
+  Layer.mock(TextGeneration.TextGeneration)({
+    generateTranscriptionPostProcessing: () => effect,
+  });
+
+const layerRealGit = GitVcsDriver.layer.pipe(
+  Layer.provideMerge(VcsProcess.layer),
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-dw-supervisor-git-" })),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+);
+
+it.effect(
+  "reconciles verified model asks over the heuristic ledger without touching progressed asks",
+  () =>
+    Effect.gen(function* () {
+      const dispatched: Array<OrchestrationV2ServerCommand> = [];
+      const leadThread = makeThread(leadId, "Chief of Staff", {
+        kind: "lead",
+        brief: "Own PulseBilling.",
+        workflow: ["Build", "QA", "Ship"],
+        rules: [],
+        riskLevel: "yolo",
+        fixRoundCap: 2,
+      });
+      const dump =
+        "ok so a few things, sorry this is all over the place. the annual price is wrong, it's charging 12 months but the comment says two months free, fix that. oh and while you're in there the invoice formatting shows $9 instead of $9.00 which looks cheap. also quick q, why is the canary plan at 0, is that intentional or did I mess up? and from now on always run npm test before you tell me anything is done. random idea for later, maybe a usage dashboard, don't do it now";
+      const ownerMsgId = MessageId.make("msg:messy-dump");
+      const runId = RunId.make("run:messy");
+      const gate = yield* Deferred.make<void>();
+      const modelReply = JSON.stringify([
+        {
+          quote:
+            "the annual price is wrong, it's charging 12 months but the comment says two months free, fix that",
+          summary: "Fix annual price to charge ten months",
+          kind: "do",
+        },
+        {
+          quote: "the invoice formatting shows $9 instead of $9.00 which looks cheap",
+          summary: "Format invoice amounts with two decimals",
+          kind: "do",
+        },
+        {
+          quote: "why is the canary plan at 0, is that intentional or did I mess up",
+          summary: "Explain why the canary plan is priced at 0",
+          kind: "answer",
+        },
+        {
+          quote: "from now on always run npm test before you tell me anything is done",
+          summary: "Always run npm test before reporting done",
+          kind: "rule",
+        },
+        {
+          quote: "maybe a usage dashboard, don't do it now",
+          summary: "Consider a usage dashboard for later",
+          kind: "idea",
+        },
+      ]);
+
+      const testLayer = DropwaveSupervisor.layer.pipe(
+        Layer.provideMerge(DropwaveStore.layerMemory),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            dispatch: (cmd) =>
+              Effect.sync(() => {
+                dispatched.push(cmd);
+                return { sequence: dispatched.length } as never;
+              }),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () => Effect.succeed(leadThread),
+            getThreadRecords: () =>
+              Effect.succeed({
+                thread: leadThread,
+                runs: [],
+                messages: [
+                  {
+                    id: ownerMsgId,
+                    threadId: leadId,
+                    role: "user",
+                    text: dump,
+                    createdBy: "user",
+                    createdAt: now,
+                    updatedAt: now,
+                    attachments: [],
+                  },
+                ],
+                turnItems: [],
+              } as never),
+          }),
+        ),
+        Layer.provide(mockProjectStore("/tmp/pulse")),
+        Layer.provide(mockServerSettings()),
+        Layer.provideMerge(layerRealGit),
+        Layer.provide(
+          mockTextGeneration(Deferred.await(gate).pipe(Effect.as({ transcription: modelReply }))),
+        ),
+      );
+
+      yield* Effect.gen(function* () {
+        const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+        const store = yield* DropwaveStore.DropwaveStore;
+
+        const msgEvent: OrchestrationV2DomainEvent = {
+          id: EventId.make("ev-msg"),
+          threadId: leadId,
+          occurredAt: now,
+          type: "message.updated",
+          payload: {
+            id: ownerMsgId,
+            role: "user",
+            text: dump,
+            createdBy: "user",
+            createdAt: now,
+            updatedAt: now,
+            attachments: [],
+          } as never,
+        };
+        yield* supervisor.handle(msgEvent);
+
+        // Heuristic asks landed instantly; the model call is still gated.
+        const heuristic = yield* store.listAsks({
+          projectId,
+          botThreadId: leadId,
+          includeClosed: true,
+        });
+        expect(heuristic.length).toBeGreaterThanOrEqual(1);
+
+        // One ask the lead already progressed must survive reconciliation.
+        const progressed = heuristic[0]!;
+        yield* store.linkJobToAsks({ askIds: [progressed.id], jobId: "job-1", title: "wip" });
+        yield* store.updateAsk({
+          askId: progressed.id,
+          actor: "bot",
+          status: "started",
+        });
+
+        // Release the model call; the run.completed nudge awaits reconciliation first.
+        yield* Deferred.succeed(gate, undefined);
+        yield* supervisor.handle({
+          id: EventId.make("ev-run"),
+          threadId: leadId,
+          occurredAt: now,
+          type: "run.updated",
+          payload: {
+            id: runId,
+            threadId: leadId,
+            status: "completed",
+            userMessageId: ownerMsgId,
+            startedAt: now,
+          } as never,
+        });
+
+        const ledger = yield* store.listAsks({
+          projectId,
+          botThreadId: leadId,
+          includeClosed: true,
+        });
+        expect(ledger.some((a) => a.id === progressed.id && a.status === "started")).toBe(true);
+        for (const summary of [
+          "Fix annual price to charge ten months",
+          "Format invoice amounts with two decimals",
+          "Explain why the canary plan is priced at 0",
+          "Always run npm test before reporting done",
+          "Consider a usage dashboard for later",
+        ]) {
+          expect(ledger.some((a) => a.summary === summary)).toBe(true);
+        }
+        // Model-extracted rule ask persisted its memory too.
+        const memories = yield* store.listMemories({ projectId });
+        expect(memories.some((m) => m.kind === "rule" && m.text.includes("npm test"))).toBe(true);
+
+        // Replay of the same message is a no-op: no new asks, no second extraction.
+        const before = ledger.length;
+        yield* supervisor.handle(msgEvent);
+        const replayed = yield* store.listAsks({
+          projectId,
+          botThreadId: leadId,
+          includeClosed: true,
+        });
+        expect(replayed.length).toBe(before);
+      }).pipe(Effect.provide(testLayer));
+    }),
+);
+
+const workerId = ThreadId.make("thread:worker-1");
+const landJobId = "node:job-land-1";
+
+// A real git fixture: main checkout at <tmp>/main, worker worktree at <tmp>/wt on
+// branch worker-1 with one committed change ahead of main.
+const setupLandRepo = Effect.fnUntraced(function* (opts?: { conflict?: boolean }) {
+  const driver = yield* GitVcsDriver.GitVcsDriver;
+  const run = (cwd: string, args: ReadonlyArray<string>) =>
+    driver.execute({ operation: "test.land.setup", cwd, args, timeoutMs: 10_000 });
+  const tmp = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "dw-land-"));
+  const main = NodePath.join(tmp, "main");
+  const worktree = NodePath.join(tmp, "wt");
+  NodeFS.mkdirSync(main);
+  yield* run(main, ["init", "-b", "main"]);
+  yield* run(main, ["config", "user.email", "dropwave@test"]);
+  yield* run(main, ["config", "user.name", "dropwave"]);
+  NodeFS.writeFileSync(NodePath.join(main, "file.txt"), "base\n");
+  yield* run(main, ["add", "."]);
+  yield* run(main, ["commit", "-m", "base"]);
+  yield* run(main, ["worktree", "add", "-b", "worker-1", worktree]);
+  NodeFS.writeFileSync(NodePath.join(worktree, "file.txt"), "worker change\n");
+  NodeFS.writeFileSync(NodePath.join(worktree, "worker-new.txt"), "new file\n");
+  yield* run(worktree, ["add", "."]);
+  yield* run(worktree, ["commit", "-m", "worker change"]);
+  if (opts?.conflict) {
+    NodeFS.writeFileSync(NodePath.join(main, "file.txt"), "main change\n");
+    yield* run(main, ["add", "."]);
+    yield* run(main, ["commit", "-m", "main change"]);
+  }
+  return { main, worktree };
+});
+
+const landTestLayer = (input: {
+  readonly threads: Record<string, OrchestrationV2AppThread>;
+  readonly subagents?: ReadonlyArray<unknown> | undefined;
+  readonly messages?: ReadonlyArray<unknown> | undefined;
+  readonly workspaceRoot: string;
+  readonly dispatched: Array<OrchestrationV2ServerCommand>;
+}) =>
+  DropwaveSupervisor.layer.pipe(
+    Layer.provideMerge(DropwaveStore.layerMemory),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        dispatch: (cmd) =>
+          Effect.sync(() => {
+            input.dispatched.push(cmd);
+            return { sequence: input.dispatched.length } as never;
+          }),
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getThread: (id) => Effect.succeed(input.threads[id] as never),
+        getThreadRecords: (id, fields) =>
+          Effect.succeed({
+            thread: input.threads[id],
+            runs: [],
+            messages: (fields as ReadonlyArray<string>).includes("messages")
+              ? (input.messages ?? [])
+              : [],
+            subagents: (fields as ReadonlyArray<string>).includes("subagents")
+              ? (input.subagents ?? [])
+              : [],
+            turnItems: [],
+          } as never),
+      }),
+    ),
+    Layer.provide(mockProjectStore(input.workspaceRoot)),
+    Layer.provide(mockServerSettings()),
+    Layer.provide(mockTextGeneration(Effect.succeed({ transcription: "[]" }))),
+    Layer.provideMerge(layerRealGit),
+  );
+
+it.effect(
+  "dropwave_land merges a completed worker job into the main checkout and enforces authority gates",
+  () =>
+    Effect.gen(function* () {
+      const completedAt = DateTime.makeUnsafe(now.epochMilliseconds - 3_600_000);
+      const job = (_overrides?: Record<string, unknown>) =>
+        ({
+          id: NodeId.make(landJobId),
+          threadId: leadId,
+          status: "completed",
+          title: "Fix pricing",
+          childThreadId: workerId,
+          completedAt,
+        }) as never;
+      const lead = (riskLevel: "yolo" | "normal") =>
+        makeThread(leadId, "Chief of Staff", {
+          kind: "lead",
+          brief: "Own it.",
+          workflow: [],
+          rules: [],
+          riskLevel,
+        });
+      const worker = (worktree: string) => ({
+        ...makeThread(workerId, "worker", undefined),
+        worktreePath: worktree,
+        branch: "worker-1",
+      });
+      const ownerMessage = (text: string) =>
+        ({
+          id: MessageId.make("msg:approval"),
+          threadId: leadId,
+          role: "user",
+          text,
+          createdBy: "user",
+          createdAt: now,
+          updatedAt: now,
+          attachments: [],
+        }) as never;
+
+      // 1. YOLO lands: main checkout gains the worker's commit, the linked ask gets a
+      // landed note, and the lead hears about it.
+      {
+        const repo = yield* setupLandRepo();
+        const dispatched: Array<OrchestrationV2ServerCommand> = [];
+        yield* Effect.gen(function* () {
+          const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+          const store = yield* DropwaveStore.DropwaveStore;
+          const ask = yield* store.addAsk({
+            projectId,
+            botThreadId: leadId,
+            text: "Fix pricing",
+          });
+          yield* store.linkJobToAsks({ askIds: [ask.id], jobId: landJobId });
+          const result = yield* supervisor.land({ leadThreadId: leadId, jobId: landJobId });
+          expect(result.landed).toBe(true);
+          expect(result.conflict).toBe(false);
+          expect(result.branch).toBe("worker-1");
+          expect(result.mergeCommit).toBeTruthy();
+          expect(NodeFS.readFileSync(NodePath.join(repo.main, "file.txt"), "utf8")).toBe(
+            "worker change\n",
+          );
+          expect(NodeFS.existsSync(NodePath.join(repo.main, "worker-new.txt"))).toBe(true);
+          const updated = yield* store.listAsks({ projectId, includeClosed: true });
+          const linkedAsk = updated.find((a) => a.id === ask.id)!;
+          expect(
+            linkedAsk.history.some(
+              (step) => step.note !== undefined && step.note.includes("Landed"),
+            ),
+          ).toBe(true);
+        }).pipe(
+          Effect.provide(
+            landTestLayer({
+              threads: { [leadId]: lead("yolo"), [workerId]: worker(repo.worktree) },
+              subagents: [job()],
+              workspaceRoot: repo.main,
+              dispatched,
+            }),
+          ),
+        );
+        expect(
+          dispatched.some((cmd) => cmd.type === "message.dispatch" && cmd.threadId === leadId),
+        ).toBe(true);
+      }
+
+      // 2-4. Normal risk: no quote refuses, a wrong quote refuses, a real owner
+      // approval quote after the job completed lands.
+      {
+        const repo = yield* setupLandRepo();
+        const dispatched: Array<OrchestrationV2ServerCommand> = [];
+        yield* Effect.gen(function* () {
+          const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+          const noQuote = yield* Effect.result(
+            supervisor.land({ leadThreadId: leadId, jobId: landJobId }),
+          );
+          expect(noQuote._tag).toBe("Failure");
+          const wrongQuote = yield* Effect.result(
+            supervisor.land({
+              leadThreadId: leadId,
+              jobId: landJobId,
+              ownerApprovalQuote: "something the owner never said at all",
+            }),
+          );
+          expect(wrongQuote._tag).toBe("Failure");
+          const landed = yield* supervisor.land({
+            leadThreadId: leadId,
+            jobId: landJobId,
+            ownerApprovalQuote: "land the pricing fix",
+          });
+          expect(landed.landed).toBe(true);
+          expect(NodeFS.readFileSync(NodePath.join(repo.main, "file.txt"), "utf8")).toBe(
+            "worker change\n",
+          );
+        }).pipe(
+          Effect.provide(
+            landTestLayer({
+              threads: { [leadId]: lead("normal"), [workerId]: worker(repo.worktree) },
+              subagents: [job()],
+              messages: [ownerMessage("yes please land the pricing fix when it is ready")],
+              workspaceRoot: repo.main,
+              dispatched,
+            }),
+          ),
+        );
+      }
+
+      // 5. Dirty main checkout refuses and stays untouched.
+      {
+        const repo = yield* setupLandRepo();
+        NodeFS.writeFileSync(NodePath.join(repo.main, "file.txt"), "owner wip\n");
+        const dispatched: Array<OrchestrationV2ServerCommand> = [];
+        yield* Effect.gen(function* () {
+          const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+          const result = yield* Effect.result(
+            supervisor.land({ leadThreadId: leadId, jobId: landJobId }),
+          );
+          expect(result._tag).toBe("Failure");
+          expect(NodeFS.readFileSync(NodePath.join(repo.main, "file.txt"), "utf8")).toBe(
+            "owner wip\n",
+          );
+          expect(NodeFS.existsSync(NodePath.join(repo.main, "worker-new.txt"))).toBe(false);
+        }).pipe(
+          Effect.provide(
+            landTestLayer({
+              threads: { [leadId]: lead("yolo"), [workerId]: worker(repo.worktree) },
+              subagents: [job()],
+              workspaceRoot: repo.main,
+              dispatched,
+            }),
+          ),
+        );
+      }
+
+      // 6. Conflict aborts: landed:false with the conflicted file, main unchanged.
+      {
+        const repo = yield* setupLandRepo({ conflict: true });
+        const dispatched: Array<OrchestrationV2ServerCommand> = [];
+        yield* Effect.gen(function* () {
+          const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+          const result = yield* supervisor.land({ leadThreadId: leadId, jobId: landJobId });
+          expect(result.landed).toBe(false);
+          expect(result.conflict).toBe(true);
+          expect(result.files).toContain("file.txt");
+          expect(NodeFS.readFileSync(NodePath.join(repo.main, "file.txt"), "utf8")).toBe(
+            "main change\n",
+          );
+          const status = yield* (yield* GitVcsDriver.GitVcsDriver).execute({
+            operation: "test.land.status",
+            cwd: repo.main,
+            args: ["status", "--porcelain"],
+          });
+          expect(status.stdout.trim()).toBe("");
+        }).pipe(
+          Effect.provide(
+            landTestLayer({
+              threads: { [leadId]: lead("yolo"), [workerId]: worker(repo.worktree) },
+              subagents: [job()],
+              workspaceRoot: repo.main,
+              dispatched,
+            }),
+          ),
+        );
+      }
+
+      // 7. A teammate cannot land.
+      {
+        const repo = yield* setupLandRepo();
+        const dispatched: Array<OrchestrationV2ServerCommand> = [];
+        yield* Effect.gen(function* () {
+          const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+          const result = yield* Effect.result(
+            supervisor.land({ leadThreadId: qaId, jobId: landJobId }),
+          );
+          expect(result._tag).toBe("Failure");
+        }).pipe(
+          Effect.provide(
+            landTestLayer({
+              threads: {
+                [qaId]: makeThread(qaId, "QA", {
+                  kind: "teammate",
+                  leadThreadId: leadId,
+                  brief: "Verify.",
+                }),
+                [workerId]: worker(repo.worktree),
+              },
+              subagents: [job()],
+              workspaceRoot: repo.main,
+              dispatched,
+            }),
+          ),
+        );
+      }
+    }).pipe(Effect.provide(layerRealGit)),
 );

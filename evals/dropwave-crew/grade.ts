@@ -32,6 +32,8 @@ export interface CaseState {
   /** Sum of supervisor lead-direct-edit counters; -1 when the store could not be read. */
   readonly supervisorEditCount: number;
   readonly jobs: ReadonlyArray<JobInfo>;
+  /** The project's main checkout; landed_checks_pass runs here to see only work that landed. */
+  readonly workspaceRoot: string;
   /** teammate role/title -> messages on that thread with optional senderThreadId. */
   readonly teammateMessages: ReadonlyMap<
     string,
@@ -102,8 +104,8 @@ function checkId(check: Check, index: number): string {
       return `parallel>=${check.minConcurrent}`;
     case "jobs_used_worker_model":
       return "jobs_used_worker_model";
-    case "worker_checks_pass":
-      return "worker_checks_pass";
+    case "landed_checks_pass":
+      return "landed_checks_pass";
     case "teammate_received":
       return `teammate_received:${check.teammate}`;
     case "teammate_not_contacted":
@@ -278,16 +280,11 @@ export function evaluateCheck(check: Check, state: CaseState, ctx: CheckContext)
       }
       return ok(id, `max concurrent=${max}`);
     }
-    case "worker_checks_pass": {
-      const done = state.jobs.filter((j) => j.status === "completed" && j.worktreePath);
-      if (done.length === 0) return fail(id, "no completed jobs in worktrees to check");
-      const failures: string[] = [];
-      for (const job of done) {
-        const code = exec(check.command, job.worktreePath!);
-        if (code !== 0) failures.push(`${job.worktreePath} exit ${code}`);
-      }
-      if (failures.length > 0) return fail(id, failures.join(" | "));
-      return ok(id, `"${check.command}" passed in ${done.length} worktree(s)`);
+    case "landed_checks_pass": {
+      const code = exec(check.command, state.workspaceRoot);
+      if (code !== 0)
+        return fail(id, `"${check.command}" exit ${code} in main checkout ${state.workspaceRoot}`);
+      return ok(id, `"${check.command}" passed in ${state.workspaceRoot}`);
     }
     case "jobs_used_worker_model": {
       const expected =

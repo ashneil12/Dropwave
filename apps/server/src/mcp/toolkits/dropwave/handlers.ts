@@ -8,6 +8,7 @@ import * as Effect from "effect/Effect";
 
 import * as DropwaveDocsService from "../../../dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "../../../dropwave/DropwaveStore.ts";
+import * as DropwaveSupervisor from "../../../dropwave/DropwaveSupervisor.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { dispatchFailure, newCommandId, readCaller, readThread } from "../../threadAccess.ts";
 import { DropwaveToolkit } from "./tools.ts";
@@ -513,6 +514,33 @@ const handlers = {
         })
         .pipe(Effect.mapError(dispatchFailure));
       return { escalatedTo: targetLeadId };
+    }),
+  ),
+
+  dropwave_land: McpToolAccess.actsAsCaller((input) =>
+    Effect.gen(function* () {
+      const { thread } = yield* resolveCallerThread();
+      if (thread.dropwaveBot?.kind !== "lead") {
+        return yield* fail("invalid_request", "Only the project's Lead bot can land worker work.");
+      }
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const result = yield* supervisor
+        .land({
+          leadThreadId: thread.id,
+          jobId: input.jobId,
+          ...(input.ownerApprovalQuote !== undefined
+            ? { ownerApprovalQuote: input.ownerApprovalQuote }
+            : {}),
+        })
+        .pipe(Effect.mapError(mapDropwaveError));
+      return {
+        landed: result.landed,
+        conflict: result.conflict,
+        files: result.files,
+        mergeCommit: result.mergeCommit,
+        branch: result.branch,
+        filesChanged: result.filesChanged,
+      };
     }),
   ),
 } satisfies McpToolAccess.Handlers<typeof DropwaveToolkit.tools>;

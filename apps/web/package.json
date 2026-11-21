@@ -20,6 +20,8 @@
     "@betteroffice/fonts-cjk": "0.4.0",
     "@betteroffice/pptx": "0.5.1",
     "@betteroffice/xlsx": "0.5.1",
+    "@blocknote/react": "0.57.0",
+    "@blocknote/shadcn": "0.57.0",
     "@clerk/clerk-js": "catalog:",
     "@clerk/electron": "catalog:",
     "@clerk/react": "catalog:",

@@ -2794,6 +2794,7 @@
   "fb4516dffeebe159": "Terminado",
   "c9279c7c59fe6067": "Drop",
   "182049c015041be2": "Reopen",
+  "3a413681dbca1f52": "Este documento tiene un formato que el editor visual no puede conservar, por lo que se abre como Markdown sin formato.",
   "1e3fbb40753884e2": "Plan and split work",
   "bc046da396a560c7": "Build in isolated worktrees",
   "5cd9fbab104b58ec": "Verify and QA end-to-end",
@@ -2973,12 +2974,10 @@
   "262222af78ffa9a1": "Verify & QA end-to-end",
   "fcb5a63c39db3ea3": "Fix issues & re-check",
   "8dcb20c958fd9a6a": "Ship & report proof",
-  "df1411ce84584980": "No connected environment available yet.",
-  "787a9ffc31fa5f1c": "No se pudo crear a tu Chief of Staff.",
   "d8e1fec19c904f8d": "Connect a provider in Settings -> Providers & Models first, then launch again.",
-  "673f7021a89658a8": "No se pudo preparar a tu Chief of Staff.",
-  "bd7b28ef958b3588": "Could not create Chief of Staff.",
   "5d28036f58d872ad": "Proyecto nuevo: {title} ({root}).",
+  "bd7b28ef958b3588": "Could not create Chief of Staff.",
+  "df1411ce84584980": "No connected environment available yet.",
   "b319565363bb760d": "No se pudo crear la carpeta del proyecto.",
   "7b493bf2d6a51c2f": "e.g. Hivra, Nibbii, Pocket CRM",
   "e25f991e3a076851": "/Users/you/Projects/my-app",
@@ -3015,6 +3014,7 @@
   "7e30491ab2a1b7d0": "Aún no está integrado en ningún proyecto.",
   "9f37cf969b4d4056": "Could not load docs.",
   "7e7a269ef1d6b70b": "Could not load memory.",
+  "6af6b9ccc9049351": "Could not save document.",
   "cdab7266307ee937": "Brief",
   "bdc0df4d6fe087a2": "Spec",
   "612f4df00053dc7b": "Core loop",
@@ -3024,7 +3024,6 @@
   "7b5e60bcd0879fc2": "Decision",
   "55e3ebc383a09b57": "Fact",
   "41786168b795eeb3": "Lesson",
-  "6af6b9ccc9049351": "Could not save document.",
   "8eb46c720850f692": "Delete this document?",
   "783ee5e07b92d689": "Could not delete document.",
   "6bc9190cc97e656f": "Could not save memory.",
@@ -3034,11 +3033,9 @@
   "c6932c41a8596a35": "Document kind",
   "247ef5ff9969c270": "Untitled document",
   "30a57d5fb6191eb6": "Document title",
-  "241cea11cc1e5e9f": "Write briefs, specs, decisions, or notes…",
   "9b932b76e5ec2f7f": "Delete document",
   "1dc72f89fcf18ae5": "Memory kind",
   "67b56b2559be5d5b": "Add a fact, rule, or preference for this project…",
-  "fa2869bde81ea00f": "Cambiar el alcance de la memoria",
   "d1af67bd002529b7": "En todas partes",
   "773fa4dba970b387": "Este proyecto",
   "ba7bcbb7e1492783": "Sobre ti",
@@ -3070,6 +3067,7 @@
     },
     ")"
   ],
+  "cedf468bdcb6e231": "Cargando editor…",
   "f5b66c481aa3e4df": "Editar",
   "8e1ea8b09a0df794": "Keep briefs, specs, and project notes here, readable by you and every bot.",
   "f626d5c31ae950c3": "New doc",
@@ -3080,6 +3078,7 @@
   "13712e48df350cc3": "Every 6 hours",
   "077ca0a8bb1aea28": "Daily",
   "e9f3a9337aab62c6": "Weekly",
+  "38bfda7e1a564435": "Crea primero tu bot Lead para que las ejecuciones de hábitos lleguen a su chat.",
   "cb05ace3ff3ca794": "Connect a provider in Settings -> Providers & Models first.",
   "8285c2db079e8f67": "Could not save habit.",
   "c0582cb6daae2fc0": "Habits",
@@ -3092,6 +3091,7 @@
   "9dad6db998848e83": "Scheduled",
   "b64f29d957781a8a": "Webhook trigger",
   "459d02f28d952112": "One-time",
+  "91876b8b9618d1b0": "No programada",
   "679f00d8c8731056": "Pause habit",
   "2257934d3c0bba64": "Resume habit",
   "7caf563daddb3cec": "Delete habit",
@@ -3101,6 +3101,23 @@
   "1a5a52eb4279aa0c": "This project",
   "9eda62107551fc6d": "All projects",
   "7ff9b448cada6127": "Create habit",
+  "028d6d0b70b80610": [
+    "Siguiente:",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "f73ebbb67abc9f7b": [
+    "Siguiente: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
   "5298bbd2d64b83a6": [
     "Last run: ",
     {
@@ -3109,6 +3126,7 @@
       "v": "v"
     }
   ],
+  "328a95b9cc19a1c4": "Abrir en el chat",
   "3fe420ed9b5bdb75": "Ejecutar ahora",
   "8dec135894eae84b": "No habits scheduled yet. Add one above so your bots proactively sweep tests, docs, or metrics on a cadence.",
   "2538c2d97c9b5e23": "In Progress",
@@ -3151,7 +3169,6 @@
   "ded43a280aed9f20": "Abrir hilo",
   "db6954390c983b20": "Just this once",
   "0b4544d83081bfaf": "Loading pending request details from this thread…",
-  "328a95b9cc19a1c4": "Open in chat",
   "0a605ff68e737dcb": "Decision Queue",
   "4e2e6bd16091fbc8": [
     {
@@ -3287,6 +3304,15 @@
       "v": "v"
     },
     " steps"
+  ],
+  "5d1a25d69b5382ff": [
+    "Mostrar pasos anteriores (",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ")"
   ],
   "a4579e548b768663": "Show sidebar",
   "d25661576338fcf0": "Needs you",
@@ -9969,7 +9995,6 @@
   "8792ce1caba45445": "Cargando tareas programadas en {environments}",
   "6c8d4ee4bbbf40bc": "No se pudieron cargar las tareas programadas: {environments}",
   "aa37be1124aaa509": "No hay tareas en {environments}",
-  "91876b8b9618d1b0": "No programada",
   "53de4bfd253ccd17": "en menos de un minuto",
   "888035725b30714f": "en {minutes} min",
   "79388cd4070508fa": "en {hours} h",
@@ -12681,14 +12706,6 @@
   ],
   "8a79c29136eccfc5": "Preguntas a considerar",
   "ece7c08d198323df": "Preguntar sobre esta parada",
-  "f73ebbb67abc9f7b": [
-    "Siguiente: ",
-    {
-      "i": 1,
-      "k": "_gt_value_1",
-      "v": "v"
-    }
-  ],
   "dc51df37e4ab575c": "Terminar revisión",
   "15672ff2f044d23a": [
     "No se pudo cargar el diff, así que faltan fragmentos: ",
