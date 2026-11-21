@@ -1282,7 +1282,7 @@ it.effect(
             }),
             Layer.mock(ProjectStore.ProjectStoreV2)({
               list: () => Effect.succeed([projectRow]),
-              get: () => Effect.succeed(Option.some(projectRow)),
+              get: () => Effect.succeedSome(projectRow),
             }),
           ),
         ),

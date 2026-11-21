@@ -1,6 +1,7 @@
 import {
   CommandId,
   type MessageId,
+  NodeId,
   type OrchestrationV2ThreadProjection,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -13,6 +14,7 @@ import * as Stream from "effect/Stream";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import { claimDelegatedWake } from "./delegatedWakeClaims.ts";
 import type * as Orchestrator from "./Orchestrator.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { isUndeliveredMailboxSteer } from "./NotificationMailbox.ts";
@@ -170,6 +172,47 @@ export const layer = Layer.effectDiscard(
             yield* clearRetryAttempt(retryKey);
             return;
           }
+          // An external owner (Dropwave worker review) can claim results and wake the
+          // thread itself; dispose those deliveries so the generic wake skips them.
+          const claimed = yield* claimDelegatedWake({
+            threadId: request.threadId,
+            taskIds: delivery.taskIds,
+          }).pipe(Effect.catchCause(() => Effect.succeed([] as ReadonlyArray<string>)));
+          const claimedSet = new Set(claimed);
+          const remainingTaskIds = delivery.taskIds.filter((taskId) => !claimedSet.has(taskId));
+          if (claimed.length > 0) {
+            yield* Effect.forEach(
+              claimed,
+              (taskId) =>
+                ids.allocate
+                  .command({
+                    fixtureName: "delegated-completion",
+                    commandName: "dispose-claimed",
+                  })
+                  .pipe(
+                    Effect.flatMap((disposeCommandId) =>
+                      threads.dispatch({
+                        type: "delegated_task.completion-delivery.dispose",
+                        commandId: disposeCommandId,
+                        parentThreadId: request.threadId,
+                        taskId: NodeId.make(taskId),
+                      }),
+                    ),
+                  ),
+              { discard: true },
+            ).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("orchestration-v2.provider-continuation.claim-dispose-failed", {
+                  threadId: request.threadId,
+                  cause,
+                }),
+              ),
+            );
+          }
+          if (remainingTaskIds.length === 0) {
+            yield* clearRetryAttempt(retryKey);
+            return;
+          }
           const commandId = yield* ids.allocate.command({
             fixtureName: "delegated-completion",
             commandName: "dispatch",
@@ -180,7 +223,7 @@ export const layer = Layer.effectDiscard(
               commandId,
               threadId: request.threadId,
               messageId: delivery.messageId,
-              text: delegatedCompletionText(delivery.taskIds),
+              text: delegatedCompletionText(remainingTaskIds),
               attachments: [],
               dispatchMode: { type: "queue_after_active" },
               createdBy: "agent",
@@ -188,7 +231,7 @@ export const layer = Layer.effectDiscard(
               delegatedCompletion: {
                 parentRunId: request.delegatedCompletion.parentRunId,
                 generation: delivery.generation,
-                taskIds: delivery.taskIds,
+                taskIds: remainingTaskIds,
               },
             })
             .pipe(

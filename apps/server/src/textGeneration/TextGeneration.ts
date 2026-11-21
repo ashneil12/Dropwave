@@ -35,6 +35,8 @@ export type {
   ThreadTitleGenerationResult,
   TranscriptionPostProcessingInput,
   TranscriptionPostProcessingResult,
+  WorkerReviewGenerationInput,
+  WorkerReviewGenerationResult,
 } from "@t3tools/provider-core/server/textGeneration";
 
 export class TextGeneration extends Context.Service<TextGeneration, ProviderTextGeneration>()(
@@ -47,6 +49,7 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
+  | "generateWorkerReview"
   | "generateTranscriptionPostProcessing";
 
 const resolveInstance = (
@@ -85,12 +88,13 @@ export const make = Effect.gen(function* () {
       service: ProviderTextGeneration,
       modelSelection: ModelSelection,
     ) => Effect.Effect<A, TextGenerationError>,
+    options?: { readonly requiresInvestigation?: boolean },
   ) {
     const textGenerator = yield* textGenerators.runner(selection.instanceId);
-    // A review guide reaches a text generator only through a fallback; it needs an agent instead.
+    // A review guide or worker review reaches a text generator only through a fallback; it needs an agent instead.
     const textGeneratorId = selection.instanceId;
-    const textGeneratorCannotRun =
-      textGenerator !== undefined && operation === "generateReviewGuide";
+    const needsAgent = operation === "generateReviewGuide" || operation === "generateWorkerReview";
+    const textGeneratorCannotRun = textGenerator !== undefined && needsAgent;
     if (textGenerator !== undefined && !textGeneratorCannotRun) {
       return yield* invoke(
         TextGenerationOperations.fromRunner("TextGenerator", textGenerator),
@@ -138,7 +142,10 @@ export const make = Effect.gen(function* () {
               provider.status !== "error" &&
               isProviderAvailable(provider) &&
               isProviderTextGenerationCapable(provider) &&
-              (operation !== "generateReviewGuide" || INVESTIGATING_DRIVERS.has(driver)) &&
+              (operation !== "generateReviewGuide" &&
+              !(operation === "generateWorkerReview" && options?.requiresInvestigation === true)
+                ? true
+                : INVESTIGATING_DRIVERS.has(driver)) &&
               !exhaustedUsageWindow(provider, now, model)
             );
           },
@@ -149,7 +156,9 @@ export const make = Effect.gen(function* () {
       return yield* new TextGenerationError({
         operation,
         detail:
-          "Review guides need a coding agent that can read the checkout. None is ready. Pick Codex or Claude as the review guide model in Settings → Source control & issues.",
+          operation === "generateWorkerReview"
+            ? "Worker reviews need a coding agent that can read the checkout. None is ready. Pick a provider with a text-generation-capable model for the worker reviewer."
+            : "Review guides need a coding agent that can read the checkout. None is ready. Pick Codex or Claude as the review guide model in Settings → Source control & issues.",
       });
     }
     return yield* installationGate.execute(
@@ -190,6 +199,15 @@ export const make = Effect.gen(function* () {
         input.modelSelection,
         input.projectId,
         (service, modelSelection) => service.generateReviewGuide({ ...input, modelSelection }),
+      );
+    }),
+    generateWorkerReview: Effect.fn("TextGeneration.generateWorkerReview")(function (input) {
+      return generate(
+        "generateWorkerReview",
+        input.modelSelection,
+        input.projectId,
+        (service, modelSelection) => service.generateWorkerReview({ ...input, modelSelection }),
+        { requiresInvestigation: input.investigate !== false },
       );
     }),
     generateTranscriptionPostProcessing: Effect.fn(

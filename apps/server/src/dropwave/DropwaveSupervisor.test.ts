@@ -14,7 +14,9 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   RunId,
+  TextGenerationError,
   ThreadId,
+  type IsoDateTime,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ServerCommand,
@@ -26,11 +28,17 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as ServerConfig from "../config.ts";
+import { claimDelegatedWake } from "../orchestration-v2/delegatedWakeClaims.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import type {
+  WorkerReviewGenerationInput,
+  WorkerReviewGenerationResult,
+} from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
@@ -167,6 +175,7 @@ it.effect(
         Layer.provide(mockProjectStore("/tmp/hivra")),
         Layer.provide(mockServerSettings()),
         Layer.provide(mockTextGeneration(Effect.succeed({ transcription: "[]" }))),
+        Layer.provide(mockProviderInstances()),
         Layer.provideMerge(layerRealGit),
       );
 
@@ -371,6 +380,11 @@ const mockTextGeneration = (effect: Effect.Effect<{ transcription: string }, nev
     generateTranscriptionPostProcessing: () => effect,
   });
 
+const mockProviderInstances = () =>
+  Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+    listInstances: Effect.succeed([]),
+  });
+
 const layerRealGit = GitVcsDriver.layer.pipe(
   Layer.provideMerge(VcsProcess.layer),
   Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-dw-supervisor-git-" })),
@@ -461,6 +475,7 @@ it.effect(
         Layer.provide(mockProjectStore("/tmp/pulse")),
         Layer.provide(mockServerSettings()),
         Layer.provideMerge(layerRealGit),
+        Layer.provide(mockProviderInstances()),
         Layer.provide(
           mockTextGeneration(Deferred.await(gate).pipe(Effect.as({ transcription: modelReply }))),
         ),
@@ -622,6 +637,7 @@ const landTestLayer = (input: {
     Layer.provide(mockProjectStore(input.workspaceRoot)),
     Layer.provide(mockServerSettings()),
     Layer.provide(mockTextGeneration(Effect.succeed({ transcription: "[]" }))),
+    Layer.provide(mockProviderInstances()),
     Layer.provideMerge(layerRealGit),
   );
 
@@ -942,6 +958,7 @@ it.effect("habit deliveries, agent relays and worker threads never write memory"
       Layer.provide(mockProjectStore("/tmp/hivra")),
       Layer.provide(mockServerSettings()),
       Layer.provide(generation),
+      Layer.provide(mockProviderInstances()),
       Layer.provideMerge(layerRealGit),
     );
 
@@ -973,4 +990,528 @@ it.effect("habit deliveries, agent relays and worker threads never write memory"
       expect(memories.some((m) => m.text.includes("hunter2"))).toBe(false);
     }).pipe(Effect.provide(testLayer));
   }),
+);
+
+const reviewJobId = "node:job-review-1";
+const reviewWorkerId = ThreadId.make("thread:review-worker");
+
+const reviewLead = (rounds?: number) =>
+  makeThread(leadId, "Chief of Staff", {
+    kind: "lead",
+    brief: "Own it.",
+    workflow: [],
+    rules: [],
+    riskLevel: "yolo",
+    workerReviewModelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4-codex",
+    },
+    ...(rounds === undefined ? {} : { workerReviewRounds: rounds }),
+  });
+
+const reviewWorker = (worktree: string) => ({
+  ...makeThread(reviewWorkerId, "Fix pricing", undefined),
+  worktreePath: worktree,
+  branch: "worker-1",
+});
+
+const reviewTask = (overrides?: Record<string, unknown>) =>
+  ({
+    id: NodeId.make(reviewJobId),
+    threadId: leadId,
+    runId: null,
+    parentNodeId: NodeId.make("node:parent-run"),
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: ProviderDriverKind.make("claudeAgent"),
+    providerInstanceId: ProviderInstanceId.make("claude"),
+    providerThreadId: null,
+    childThreadId: reviewWorkerId,
+    nativeTaskRef: null,
+    prompt:
+      "Fix the annual pricing bug.\n\nDefinition of done:\n- run npm test\n\n<dropwave_worker>\nboilerplate\n</dropwave_worker>",
+    title: "Fix pricing",
+    model: null,
+    status: "completed",
+    result: "Fixed the pricing math; npm test passes.",
+    completedAt: now,
+    completionDelivery: { state: "pending", observedByRunId: null },
+    ...overrides,
+  }) as never;
+
+const reviewerInstance = {
+  instanceId: ProviderInstanceId.make("codex"),
+  snapshot: {
+    getSnapshot: Effect.succeed({
+      models: [{ slug: "gpt-5.4-codex", name: "Codex 5.4" }],
+    }),
+  },
+} as never;
+
+const approveVerdict = {
+  verdict: "approve" as const,
+  summary: "The diff does what the brief asked and the checks pass.",
+  issues: [],
+};
+
+const changesVerdict = {
+  verdict: "changes" as const,
+  summary: "Negative amounts still crash the pricing path.",
+  issues: [
+    {
+      severity: "blocker" as const,
+      file: "src/pricing.ts",
+      line: 42,
+      problem: "Negative amounts are not handled.",
+      fix: "Reject or clamp negative amounts before computing the total.",
+    },
+  ],
+};
+
+const reviewTestLayer = (input: {
+  readonly threads: Record<string, OrchestrationV2AppThread>;
+  readonly subagents?: ReadonlyArray<unknown> | undefined;
+  readonly messagesByThread?: Record<string, ReadonlyArray<unknown>> | undefined;
+  readonly workspaceRoot: string;
+  readonly dispatched: Array<OrchestrationV2ServerCommand>;
+  readonly reviewHandler?:
+    | ((
+        call: number,
+        reviewInput: WorkerReviewGenerationInput,
+      ) => Effect.Effect<WorkerReviewGenerationResult, TextGenerationError>)
+    | undefined;
+  readonly reviewInputs?: Array<WorkerReviewGenerationInput> | undefined;
+}) => {
+  let calls = 0;
+  return DropwaveSupervisor.layer.pipe(
+    Layer.provideMerge(DropwaveStore.layerMemory),
+    Layer.provide(
+      Layer.mock(Orchestrator.OrchestratorV2)({
+        dispatch: (cmd) =>
+          Effect.sync(() => {
+            input.dispatched.push(cmd);
+            return { sequence: input.dispatched.length } as never;
+          }),
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(ProjectionStore.ProjectionStoreV2)({
+        getThread: (id) => Effect.succeed(input.threads[id] as never),
+        getThreadRecords: (id, fields) =>
+          Effect.succeed({
+            thread: input.threads[id],
+            runs: [],
+            messages: (fields as ReadonlyArray<string>).includes("messages")
+              ? (input.messagesByThread?.[id] ?? [])
+              : [],
+            subagents: (fields as ReadonlyArray<string>).includes("subagents")
+              ? (input.subagents ?? [])
+              : [],
+            turnItems: [],
+          } as never),
+      }),
+    ),
+    Layer.provide(mockProjectStore(input.workspaceRoot)),
+    Layer.provide(mockServerSettings()),
+    Layer.provide(
+      Layer.mock(TextGeneration.TextGeneration)({
+        generateTranscriptionPostProcessing: () => Effect.succeed({ transcription: "[]" }),
+        generateWorkerReview: (reviewInput: WorkerReviewGenerationInput) => {
+          calls += 1;
+          input.reviewInputs?.push(reviewInput);
+          return (input.reviewHandler ?? (() => Effect.succeed(approveVerdict)))(
+            calls,
+            reviewInput,
+          );
+        },
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        listInstances: Effect.succeed([reviewerInstance]),
+      }),
+    ),
+    Layer.provideMerge(layerRealGit),
+  );
+};
+
+const completedSubagentEvent = (task: unknown, key: string): OrchestrationV2DomainEvent =>
+  ({
+    id: EventId.make(`ev:${key}`),
+    threadId: leadId,
+    occurredAt: now,
+    type: "subagent.updated",
+    payload: task,
+  }) as never;
+
+it.effect(
+  "fusion review approves a clean worker diff, wakes the lead once with the verdict, and stays idempotent",
+  () =>
+    Effect.gen(function* () {
+      const repo = yield* setupLandRepo();
+      const dispatched: Array<OrchestrationV2ServerCommand> = [];
+      const reviewInputs: Array<WorkerReviewGenerationInput> = [];
+      yield* Effect.gen(function* () {
+        const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+        const store = yield* DropwaveStore.DropwaveStore;
+
+        yield* supervisor.handle(completedSubagentEvent(reviewTask(), "sub-1"));
+        yield* supervisor.awaitWorkerReview(reviewJobId);
+
+        const review = yield* store.getWorkerReview(reviewJobId);
+        expect(review?.status).toBe("approved");
+        expect(review?.verdicts).toHaveLength(1);
+        expect(review?.verdicts[0]?.verdict).toBe("approve");
+        expect(review?.verdicts[0]?.reviewerModel).toBe("Codex 5.4");
+
+        // The reviewer saw the stripped brief, the worker report, and the real diff.
+        expect(reviewInputs).toHaveLength(1);
+        expect(reviewInputs[0]?.brief).toBe(
+          "Fix the annual pricing bug.\n\nDefinition of done:\n- run npm test",
+        );
+        expect(reviewInputs[0]?.doneChecks).toContain("npm test");
+        expect(reviewInputs[0]?.workerReport).toContain("npm test passes");
+        expect(String(reviewInputs[0]?.diff)).toContain("worker change");
+        expect(reviewInputs[0]?.cwd).toBe(repo.worktree);
+        expect(reviewInputs[0]?.investigate).toBe(true);
+
+        // Exactly one wake, carrying the review block.
+        const wakes = dispatched.filter(
+          (cmd) => cmd.type === "message.dispatch" && cmd.threadId === leadId,
+        );
+        expect(wakes).toHaveLength(1);
+        const wakeText = (wakes[0] as { text: string }).text;
+        expect(wakeText).toContain("Review (Codex 5.4): approved");
+        expect(wakeText).toContain("does what the brief asked");
+
+        // The delegated wake is claimed so the generic continuation stays silent.
+        const claimed = yield* claimDelegatedWake({
+          threadId: leadId,
+          taskIds: [reviewJobId],
+        });
+        expect(claimed).toEqual([reviewJobId]);
+
+        // Duplicate completion events do not start a second review or wake.
+        yield* supervisor.handle(completedSubagentEvent(reviewTask(), "sub-2"));
+        yield* supervisor.awaitWorkerReview(reviewJobId);
+        const after = yield* store.getWorkerReview(reviewJobId);
+        expect(after?.verdicts).toHaveLength(1);
+        expect(
+          dispatched.filter((cmd) => cmd.type === "message.dispatch" && cmd.threadId === leadId),
+        ).toHaveLength(1);
+      }).pipe(
+        Effect.provide(
+          reviewTestLayer({
+            threads: { [leadId]: reviewLead(), [reviewWorkerId]: reviewWorker(repo.worktree) },
+            subagents: [reviewTask()],
+            messagesByThread: {
+              [reviewWorkerId]: [
+                {
+                  id: MessageId.make("msg:worker-report"),
+                  threadId: reviewWorkerId,
+                  role: "assistant",
+                  text: "Fixed the pricing math; npm test passes.",
+                  createdBy: "agent",
+                  createdAt: now,
+                  updatedAt: now,
+                  attachments: [],
+                },
+              ],
+            },
+            workspaceRoot: repo.main,
+            dispatched,
+            reviewInputs,
+          }),
+        ),
+      );
+    }).pipe(Effect.provide(layerRealGit)),
+);
+
+it.effect("fusion review sends blocker issues back to the worker, re-reviews, and approves", () =>
+  Effect.gen(function* () {
+    const repo = yield* setupLandRepo();
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    yield* Effect.gen(function* () {
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      yield* supervisor.handle(completedSubagentEvent(reviewTask(), "sub-fix"));
+      // Parked on the worker's fix round before we release it.
+      yield* supervisor.awaitWorkerFixRound(reviewWorkerId);
+      const fixing = yield* store.getWorkerReview(reviewJobId);
+      expect(fixing?.status).toBe("fixing");
+      expect(fixing?.rounds).toBe(1);
+      expect(
+        dispatched.some(
+          (cmd) =>
+            cmd.type === "message.dispatch" &&
+            cmd.threadId === reviewWorkerId &&
+            (cmd as { text: string }).text.includes("A reviewer checked your work"),
+        ),
+      ).toBe(true);
+
+      // The worker's fix run reaches a terminal state; the loop re-reviews.
+      yield* supervisor.handle({
+        id: EventId.make("ev:fix-done"),
+        threadId: reviewWorkerId,
+        occurredAt: now,
+        type: "run.updated",
+        payload: {
+          id: RunId.make("run:fix-1"),
+          threadId: reviewWorkerId,
+          status: "completed",
+          startedAt: now,
+        } as never,
+      });
+      yield* supervisor.awaitWorkerReview(reviewJobId);
+
+      const review = yield* store.getWorkerReview(reviewJobId);
+      expect(review?.status).toBe("approved");
+      expect(review?.verdicts.map((v) => v.verdict)).toEqual(["changes", "approve"]);
+      expect(review?.verdicts[0]?.round).toBe(0);
+      expect(review?.verdicts[1]?.round).toBe(1);
+      const wakes = dispatched.filter(
+        (cmd) => cmd.type === "message.dispatch" && cmd.threadId === leadId,
+      );
+      expect(wakes).toHaveLength(1);
+      expect((wakes[0] as { text: string }).text).toContain("Review (Codex 5.4): approved");
+    }).pipe(
+      Effect.provide(
+        reviewTestLayer({
+          threads: { [leadId]: reviewLead(1), [reviewWorkerId]: reviewWorker(repo.worktree) },
+          subagents: [reviewTask()],
+          workspaceRoot: repo.main,
+          dispatched,
+          reviewHandler: (call) => Effect.succeed(call === 1 ? changesVerdict : approveVerdict),
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(layerRealGit)),
+);
+
+it.effect("fusion review reports changes still requested after the fix-round cap", () =>
+  Effect.gen(function* () {
+    const repo = yield* setupLandRepo();
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    yield* Effect.gen(function* () {
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      yield* supervisor.handle(completedSubagentEvent(reviewTask(), "sub-cap"));
+      yield* supervisor.awaitWorkerFixRound(reviewWorkerId);
+      yield* supervisor.handle({
+        id: EventId.make("ev:fix-done-2"),
+        threadId: reviewWorkerId,
+        occurredAt: now,
+        type: "run.updated",
+        payload: {
+          id: RunId.make("run:fix-2"),
+          threadId: reviewWorkerId,
+          status: "completed",
+          startedAt: now,
+        } as never,
+      });
+      yield* supervisor.awaitWorkerReview(reviewJobId);
+
+      const review = yield* store.getWorkerReview(reviewJobId);
+      expect(review?.status).toBe("changes");
+      expect(review?.verdicts).toHaveLength(2);
+      const wakes = dispatched.filter(
+        (cmd) => cmd.type === "message.dispatch" && cmd.threadId === leadId,
+      );
+      expect(wakes).toHaveLength(1);
+      const wakeText = (wakes[0] as { text: string }).text;
+      expect(wakeText).toContain("changes still requested after 1 round");
+      expect(wakeText).toContain("Negative amounts");
+    }).pipe(
+      Effect.provide(
+        reviewTestLayer({
+          threads: { [leadId]: reviewLead(1), [reviewWorkerId]: reviewWorker(repo.worktree) },
+          subagents: [reviewTask()],
+          workspaceRoot: repo.main,
+          dispatched,
+          reviewHandler: () => Effect.succeed(changesVerdict),
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(layerRealGit)),
+);
+
+it.effect("fusion review marks reviewer failures unreviewed instead of blocking", () =>
+  Effect.gen(function* () {
+    const repo = yield* setupLandRepo();
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    yield* Effect.gen(function* () {
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      yield* supervisor.handle(completedSubagentEvent(reviewTask(), "sub-fail"));
+      yield* supervisor.awaitWorkerReview(reviewJobId);
+
+      const review = yield* store.getWorkerReview(reviewJobId);
+      expect(review?.status).toBe("unreviewed");
+      expect(review?.verdicts[0]?.verdict).toBe("unreviewed");
+      expect(review?.verdicts[0]?.reason).toContain("boom");
+      const wakes = dispatched.filter(
+        (cmd) => cmd.type === "message.dispatch" && cmd.threadId === leadId,
+      );
+      expect(wakes).toHaveLength(1);
+      expect((wakes[0] as { text: string }).text).toContain("unreviewed");
+    }).pipe(
+      Effect.provide(
+        reviewTestLayer({
+          threads: { [leadId]: reviewLead(), [reviewWorkerId]: reviewWorker(repo.worktree) },
+          subagents: [reviewTask()],
+          workspaceRoot: repo.main,
+          dispatched,
+          reviewHandler: () =>
+            Effect.fail(
+              new TextGenerationError({ operation: "generateWorkerReview", detail: "boom" }),
+            ),
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(layerRealGit)),
+);
+
+it.effect("without a reviewer model the completed worker path is untouched", () =>
+  Effect.gen(function* () {
+    const repo = yield* setupLandRepo();
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    const plainLead = makeThread(leadId, "Chief of Staff", {
+      kind: "lead",
+      brief: "Own it.",
+      workflow: [],
+      rules: [],
+      riskLevel: "yolo",
+    });
+    yield* Effect.gen(function* () {
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      yield* supervisor.handle(completedSubagentEvent(reviewTask(), "sub-plain"));
+      // No review record, and the wake claim leaves the job for the generic path.
+      expect(yield* store.getWorkerReview(reviewJobId)).toBeNull();
+      const claimed = yield* claimDelegatedWake({
+        threadId: leadId,
+        taskIds: [reviewJobId],
+      });
+      expect(claimed).toEqual([]);
+      expect(dispatched).toHaveLength(0);
+    }).pipe(
+      Effect.provide(
+        reviewTestLayer({
+          threads: { [leadId]: plainLead, [reviewWorkerId]: reviewWorker(repo.worktree) },
+          subagents: [reviewTask()],
+          workspaceRoot: repo.main,
+          dispatched,
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(layerRealGit)),
+);
+
+it.effect("dropwave_land refuses while reviewing or on changes, and an owner quote overrides", () =>
+  Effect.gen(function* () {
+    const repo = yield* setupLandRepo();
+    const dispatched: Array<OrchestrationV2ServerCommand> = [];
+    const ownerMessage = {
+      id: MessageId.make("msg:land-approval"),
+      threadId: leadId,
+      role: "user",
+      text: "yes, land it anyway",
+      createdBy: "user",
+      createdAt: now,
+      updatedAt: now,
+      attachments: [],
+    } as never;
+    yield* Effect.gen(function* () {
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      yield* store.startWorkerReview({
+        jobId: landJobId,
+        leadThreadId: leadId,
+        projectId,
+        workerThreadId: workerId,
+        workerBranch: "worker-1",
+        maxRounds: 1,
+      });
+
+      // Still reviewing: refused outright.
+      const reviewing = yield* Effect.result(
+        supervisor.land({ leadThreadId: leadId, jobId: landJobId }),
+      );
+      expect(reviewing._tag).toBe("Failure");
+
+      yield* store.appendWorkerReviewVerdict({
+        jobId: landJobId,
+        verdict: {
+          round: 0,
+          verdict: "changes",
+          summary: "Issues found.",
+          issues: [
+            {
+              severity: "blocker",
+              file: "a.ts",
+              line: null,
+              problem: "Broken",
+              fix: "Fix it",
+            },
+          ],
+          reviewerModel: "Codex 5.4",
+          at: DateTime.formatIso(DateTime.nowUnsafe()) as IsoDateTime,
+        },
+      });
+      yield* store.updateWorkerReview({ jobId: landJobId, status: "changes" });
+
+      // Changes requested, no quote: refused even on yolo.
+      const refused = yield* Effect.result(
+        supervisor.land({ leadThreadId: leadId, jobId: landJobId }),
+      );
+      expect(refused._tag).toBe("Failure");
+      if (refused._tag === "Failure") {
+        expect(refused.failure.message).toContain("reviewer requested changes");
+      }
+
+      // Owner approval quote overrides; the override is recorded.
+      const landed = yield* supervisor.land({
+        leadThreadId: leadId,
+        jobId: landJobId,
+        ownerApprovalQuote: "land it anyway",
+      });
+      expect(landed.landed).toBe(true);
+      const review = yield* store.getWorkerReview(landJobId);
+      expect(review?.landOverride?.quote).toBe("land it anyway");
+      expect(NodeFS.readFileSync(NodePath.join(repo.main, "file.txt"), "utf8")).toBe(
+        "worker change\n",
+      );
+    }).pipe(
+      Effect.provide(
+        landTestLayer({
+          threads: {
+            [leadId]: reviewLead(),
+            [workerId]: {
+              ...makeThread(workerId, "worker", undefined),
+              worktreePath: repo.worktree,
+              branch: "worker-1",
+            },
+          },
+          subagents: [
+            {
+              id: NodeId.make(landJobId),
+              threadId: leadId,
+              status: "completed",
+              title: "Fix pricing",
+              childThreadId: workerId,
+              completedAt: DateTime.makeUnsafe(now.epochMilliseconds - 3_600_000),
+            },
+          ],
+          messages: [ownerMessage],
+          workspaceRoot: repo.main,
+          dispatched,
+        }),
+      ),
+    );
+  }).pipe(Effect.provide(layerRealGit)),
 );
