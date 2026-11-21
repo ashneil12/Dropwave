@@ -102,6 +102,16 @@ export type Check =
   | {
       readonly kind: "lead_replies_never";
       readonly mustNotContain: ReadonlyArray<string>;
+    }
+  | {
+      /**
+       * The latest recall trace on the lead thread (the <dropwave_recall> block the
+       * turn actually saw). shownKeywords must match a shown memory's text or quote;
+       * absentKeywords must match no shown memory.
+       */
+      readonly kind: "recall_trace";
+      readonly shownKeywords: ReadonlyArray<string>;
+      readonly absentKeywords?: ReadonlyArray<string>;
     };
 
 export interface LiveEvalCase {
@@ -474,6 +484,82 @@ export const LIVE_EVAL_CASES: ReadonlyArray<LiveEvalCase> = [
         requiresJob: true,
       },
       { kind: "no_lead_project_edits" },
+    ],
+  },
+  {
+    id: "memory-facts-project-a",
+    kind: "guard",
+    experience:
+      "Memory v2: facts the owner states in project A must land at the right scope - owner-level preference and personal fact, project-level rule - so a second project can recall only what is actually shared.",
+    source: "Memory v2 design section 7 live eval",
+    home: "shared:memrecall",
+    project: {
+      title: "PulseBilling",
+      files: pulseBilling,
+      setup: {
+        mode: "configured",
+        riskLevel: "normal",
+        helpers: ["QA"],
+        ownerMemories: ["The owner's name is Ash."],
+      },
+    },
+    turns: [
+      {
+        when: "first",
+        text: "before we dive in, please save three things to memory. one: I prefer short answers with bullet points, no long essays - that's about me, keep it owner-level. two: in THIS project, always run npm test before you say anything is done - that's a project rule only. three: I mostly work late nights, so async updates are fine - also about me, owner-level.",
+      },
+    ],
+    timeoutMinutes: 15,
+    checks: [
+      {
+        kind: "memory_saved",
+        keywords: ["short answers"],
+        scope: "owner",
+        memoryKind: "preference",
+      },
+      {
+        kind: "memory_saved",
+        keywords: ["npm test"],
+        scope: "project",
+        memoryKind: "rule",
+      },
+      {
+        kind: "memory_saved",
+        keywords: ["late nights"],
+        scope: "owner",
+      },
+    ],
+  },
+  {
+    id: "memory-recall-project-b",
+    kind: "guard",
+    experience:
+      "Memory v2: in a second project the owner's general preference must surface in the turn's recall block while the project-A rule stays behind - recall is scoped, not a global dump.",
+    source: "Memory v2 design section 7 live eval",
+    home: "shared:memrecall",
+    project: {
+      title: "Acme landing",
+      files: landingSite,
+      setup: {
+        mode: "configured",
+        riskLevel: "normal",
+        helpers: ["QA"],
+        ownerMemories: ["The owner's name is Ash."],
+      },
+    },
+    turns: [
+      {
+        when: "first",
+        text: "you remember I prefer short answers, right? anyway quick one: how do I run the tests in this project?",
+      },
+    ],
+    timeoutMinutes: 10,
+    checks: [
+      {
+        kind: "recall_trace",
+        shownKeywords: ["short answers"],
+        absentKeywords: ["npm test"],
+      },
     ],
   },
 ];

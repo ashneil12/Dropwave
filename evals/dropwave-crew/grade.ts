@@ -41,6 +41,17 @@ export interface CaseState {
   >;
   readonly leadProfile?: DropwaveBotProfile | undefined;
   readonly teammateProfiles: ReadonlyArray<{ title: string; role: string }>;
+  /**
+   * Recall traces recorded on the lead thread, newest first. Each trace is the
+   * <dropwave_recall> payload a turn actually saw: shown item ids plus drops.
+   */
+  readonly recallTraces: ReadonlyArray<{
+    readonly turnKey: string;
+    readonly createdAt: string;
+    readonly gate?: string | undefined;
+    readonly shown: ReadonlyArray<{ readonly id: string }>;
+    readonly drops: ReadonlyArray<{ readonly id: string; readonly reason?: string | undefined }>;
+  }>;
 }
 
 export interface CheckResult {
@@ -124,6 +135,8 @@ function checkId(check: Check, index: number): string {
       return `lead_reply:${check.index}`;
     case "lead_replies_never":
       return "lead_replies_never";
+    case "recall_trace":
+      return `recall_trace:${check.shownKeywords[0] ?? "*"}`;
     default:
       return `check_${index}`;
   }
@@ -448,6 +461,36 @@ export function evaluateCheck(check: Check, state: CaseState, ctx: CheckContext)
       if (hits.length > 0)
         return fail(id, `reply contains banned text: "${hits[0]!.slice(0, 160)}"`);
       return ok(id, "no banned text in replies");
+    }
+    case "recall_trace": {
+      const trace = state.recallTraces[0];
+      if (!trace) return fail(id, "no recall traces on the lead thread");
+      const memoryById = new Map(state.memories.map((m) => [m.id, m]));
+      const shownItems = trace.shown
+        .map((s) => memoryById.get(s.id))
+        .filter((m) => m !== undefined);
+      const shownText = shownItems
+        .map((m) => `${m.text} ${m.quote ?? ""}`.toLowerCase())
+        .join(" | ");
+      const missing = check.shownKeywords.filter((k) => !shownText.includes(k.toLowerCase()));
+      if (missing.length > 0) {
+        return fail(
+          id,
+          `latest trace (gate=${trace.gate ?? "?"}) shown [${shownItems
+            .map((m) => m.text.slice(0, 60))
+            .join(" | ")}]; missing [${missing.join(", ")}]; drops=${trace.drops.length}`,
+        );
+      }
+      const leaked = (check.absentKeywords ?? []).filter((k) =>
+        shownText.includes(k.toLowerCase()),
+      );
+      if (leaked.length > 0) {
+        return fail(id, `trace showed memory matching banned [${leaked.join(", ")}]`);
+      }
+      return ok(
+        id,
+        `trace gate=${trace.gate ?? "?"} shown=${shownItems.length} drops=${trace.drops.length}`,
+      );
     }
     default:
       return fail(id, "unknown check kind");

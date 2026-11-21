@@ -74,6 +74,7 @@ const state = (over: Partial<CaseState>): CaseState => ({
   teammateMessages: new Map(),
   leadProfile: undefined,
   teammateProfiles: [],
+  recallTraces: [],
   workspaceRoot: "/w/main",
   ...over,
 });
@@ -383,5 +384,43 @@ describe("evaluateCheck", () => {
         ctx([]),
       ).pass,
     ).toBe(false);
+  });
+
+  it("recall_trace matches shown memory text and rejects absent keywords", () => {
+    const pref = memory({ id: "mem-pref", text: "Prefers short answers" });
+    const rule = memory({ id: "mem-rule", text: "Always run npm test before done" });
+    const s = state({
+      memories: [pref, rule],
+      recallTraces: [
+        {
+          turnKey: "t1",
+          createdAt: "2026-01-01T00:00:00Z",
+          gate: "hit",
+          shown: [{ id: "mem-pref" }],
+          drops: [{ id: "mem-rule", reason: "score" }],
+        },
+      ],
+    });
+    const check: Check = {
+      kind: "recall_trace",
+      shownKeywords: ["short answers"],
+      absentKeywords: ["npm test"],
+    };
+    expect(evaluateCheck(check, s, ctx([check])).pass).toBe(true);
+    const leaked = state({
+      memories: [pref, rule],
+      recallTraces: [
+        {
+          turnKey: "t1",
+          createdAt: "2026-01-01T00:00:00Z",
+          gate: "hit",
+          shown: [{ id: "mem-pref" }, { id: "mem-rule" }],
+          drops: [],
+        },
+      ],
+    });
+    expect(evaluateCheck(check, leaked, ctx([check])).pass).toBe(false);
+    const empty = state({ memories: [pref], recallTraces: [] });
+    expect(evaluateCheck(check, empty, ctx([check])).pass).toBe(false);
   });
 });
