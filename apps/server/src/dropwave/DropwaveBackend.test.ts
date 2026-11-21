@@ -143,6 +143,32 @@ it("splits the eval messy dump into five verified asks, rejects invented quotes,
   }
 });
 
+it("keeps a hub-build instruction, its specs, and the report-back as one ask", () => {
+  const message =
+    'Build a custom interactive Dropwave Hub mod for this project: "kn". Write a single self-contained HTML file to .dropwave/hubs/ using dropwave_docs (kind: "hub") with a clean <title> and Dropwave dark glass styling (transparent body, crisp typography, interactive controls). Tell me when it is ready so I can pin it.';
+  const ruleAsks = extractRuleAsks(message);
+  expect(ruleAsks).toHaveLength(1);
+  expect(ruleAsks[0]!.quote).toContain("Hub mod");
+
+  const rawModel = JSON.stringify([
+    {
+      quote: 'Build a custom interactive Dropwave Hub mod for this project: "kn"',
+      summary: "Build the kn hub mod",
+      kind: "do",
+    },
+    {
+      quote: "Tell me when it is ready so I can pin it",
+      summary: "Notify when the hub is ready",
+      kind: "do",
+    },
+  ]);
+  const verified = parseVerifiedModelAsks(rawModel, message);
+  expect(verified).toBeDefined();
+  expect(verified).toHaveLength(1);
+  expect(verified![0]!.summary).toBe("Build the kn hub mod");
+  expect(verified![0]!.maybe).not.toBe(true);
+});
+
 it.effect(
   "enforces ask ledger invariants, job failure bounce-back, memory isolation, and summary tree zoom",
   () =>
