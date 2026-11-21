@@ -14,9 +14,10 @@ import { useAtomValue } from "@effect/atom-react";
 import { Atom } from "effect/reactivity";
 import { T, Var, useGT } from "gt-react";
 import { CheckIcon, ListChecksIcon, PlusIcon, RotateCcwIcon, XIcon } from "lucide-react";
-import { useEffect, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent } from "react";
 
 import { Dialog, DialogPopup } from "../components/ui/dialog";
+import { observeResize } from "../lib/observeResize";
 import { serverEnvironment } from "../state/server";
 import { environmentThreadDetails } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -236,6 +237,8 @@ export function DropwaveAsksPanel() {
   const [dragAskId, setDragAskId] = useState<string | null>(null);
   const [dropLane, setDropLane] = useState<AskBoardLaneId | null>(null);
   const [showAllClosed, setShowAllClosed] = useState(false);
+  const [boardScrollable, setBoardScrollable] = useState(false);
+  const boardRef = useRef<HTMLDivElement | null>(null);
 
   const listAsksCmd = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
   const addAskCmd = useAtomCommand(serverEnvironment.dropwaveAskAdd, { reportFailure: false });
@@ -277,6 +280,16 @@ export function DropwaveAsksPanel() {
       )
     : "[]";
   const subagentsByThread = useAtomValue(askBoardSubagentsAtom(subagentsKey));
+
+  // Fade the right edge only while the five lanes actually overflow the canvas.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures board overflow for the scroll fade
+  useEffect(() => {
+    const el = boardRef.current;
+    if (!el) return;
+    const update = () => setBoardScrollable(asks.length > 0 && el.scrollWidth > el.clientWidth + 4);
+    update();
+    return observeResize(el, update);
+  }, [asks]);
 
   if (!workspace || !project) return null;
 
@@ -444,11 +457,11 @@ export function DropwaveAsksPanel() {
         </p>
       ) : null}
 
-      {boardAsks.length === 0 && maybeAsks.length === 0 ? (
+      {boardAsks.length === 0 ? (
         <div data-dropwave-panel-empty="">
           <ListChecksIcon />
           <p>
-            <T>No tracked asks here yet.</T>
+            <T>Nothing on the board yet. Every request you send lands here.</T>
           </p>
           {targetBot ? (
             <AddAskForm
@@ -460,15 +473,26 @@ export function DropwaveAsksPanel() {
           ) : null}
         </div>
       ) : (
-        <div data-dw-askboard="" aria-label={gt("Asks board")}>
+        <div
+          ref={boardRef}
+          data-dw-askboard=""
+          data-fade={boardScrollable ? "true" : undefined}
+          aria-label={gt("Asks board")}
+        >
           {ASK_BOARD_LANE_ORDER.map((laneId) => {
             const laneAsks = laneId === "done" ? visibleClosed : lanes[laneId];
             const isDropTarget = dropLane === laneId;
+            const laneHasContent =
+              laneAsks.length > 0 ||
+              (laneId === "heard" && targetBot !== null) ||
+              (laneId === "done" &&
+                (hiddenClosedCount > 0 || (showAllClosed && closedSorted.length > 10)));
             return (
               <section
                 key={laneId}
                 data-dw-asklane=""
                 data-lane={laneId}
+                data-empty={laneHasContent ? undefined : "true"}
                 data-drop={isDropTarget ? "true" : undefined}
                 aria-label={laneAriaLabel(laneId, gt)}
                 onDragOver={(event) => onLaneDragOver(event, laneId)}
@@ -495,11 +519,6 @@ export function DropwaveAsksPanel() {
                     />
                   ) : null}
                   {laneAsks.map(renderCard)}
-                  {laneAsks.length === 0 ? (
-                    <p data-dw-rail-empty="">
-                      <T>Empty</T>
-                    </p>
-                  ) : null}
                   {laneId === "done" && hiddenClosedCount > 0 ? (
                     <button
                       type="button"

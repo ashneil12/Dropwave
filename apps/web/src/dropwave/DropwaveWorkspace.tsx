@@ -110,6 +110,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
   const [mainView, setMainView] = useState<DropwaveMainView>("chat");
   const [setupNewProject, setSetupNewProject] = useState(false);
   const [openDocPath, setOpenDocPath] = useState<string | null>(null);
+  const [docsTab, setDocsTab] = useState<"docs" | "memory">("docs");
   const [activeHubId, setActiveHubId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decisionModalOpen, setDecisionModalOpen] = useState(false);
@@ -242,7 +243,9 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         mainView,
         setMainView: (next, options) => {
           setSetupNewProject(Boolean(options?.newProject));
+          if (options?.docsTab !== undefined) setDocsTab(options.docsTab);
           setMainView(next);
+          if (next === "hubs") setActiveHubId(null);
           if (next === "setup") {
             void navigate({ to: "/" });
           }
@@ -383,7 +386,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                     onCancel={() => setMainView("chat")}
                   />
                 ) : mainView === "docs" ? (
-                  <DropwaveDocsView initialDocPath={openDocPath} />
+                  <DropwaveDocsView initialDocPath={openDocPath} initialTab={docsTab} />
                 ) : mainView === "asks" ? (
                   <div data-dw-asks-canvas="">
                     <DropwaveAsksPanel />

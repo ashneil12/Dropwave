@@ -288,7 +288,7 @@ export function DropwaveBotEditor({
     setPending(true);
     const message = isLead
       ? gt("Archive this lead bot? You can set up a new lead for this project afterwards.")
-      : gt("Archive this helper bot?");
+      : gt("Archive this bot?");
     if (!(await requestConfirmDialog(message))) {
       setPending(false);
       return;
@@ -357,7 +357,7 @@ export function DropwaveBotEditor({
               ) : isLead ? (
                 <T>Set up Chief of Staff</T>
               ) : (
-                <T>Add helper bot</T>
+                <T>Add a bot</T>
               )}
             </DialogTitle>
             <DialogDescription>
@@ -669,7 +669,7 @@ export function DropwaveBotEditor({
               ) : isLead ? (
                 <T>Create Chief of Staff</T>
               ) : (
-                <T>Add helper</T>
+                <T>Add bot</T>
               )}
             </Button>
           </DialogFooter>

@@ -23,6 +23,7 @@ import {
 import { Suspense, lazy, useEffect, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "../confirmDialog";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
@@ -36,13 +37,15 @@ type DocsTab = "docs" | "memory";
 
 export function DropwaveDocsView({
   initialDocPath,
+  initialTab,
 }: {
   initialDocPath?: string | null;
+  initialTab?: DocsTab;
 } = {}) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
   const project = workspace?.project ?? null;
-  const [tab, setTab] = useState<DocsTab>("docs");
+  const [tab, setTab] = useState<DocsTab>(initialTab ?? "docs");
   const [query, setQuery] = useState("");
   const [docs, setDocs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
   const [selectedPath, setSelectedPath] = useState<string | null>(initialDocPath ?? null);
@@ -81,6 +84,13 @@ export function DropwaveDocsView({
   const [reloadNonce, setReloadNonce] = useState(0);
   const triggerReload = () => setReloadNonce((n) => n + 1);
   const autosavedRef = useRef({ key: "", title: "", kind: "", content: "" });
+  // Touch-narrow screens read first; everything else edits in place.
+  const narrowViewport = useMediaQuery("(max-width: 640px), (pointer: coarse)");
+  const narrowRef = useRef(narrowViewport);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the latest viewport flag for async doc callbacks that outlive the render closure
+  useEffect(() => {
+    narrowRef.current = narrowViewport;
+  }, [narrowViewport]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live server docs or memories
   useEffect(() => {
@@ -154,7 +164,7 @@ export function DropwaveDocsView({
           kind: res.value.doc.kind,
           content: res.value.doc.content,
         };
-        setEditing(false);
+        setEditing(!narrowRef.current);
       }
     });
     return () => {
@@ -180,7 +190,7 @@ export function DropwaveDocsView({
     if (res._tag === "Success") {
       if (!quiet) {
         setCreatingNew(false);
-        setEditing(false);
+        setEditing(!narrowRef.current);
       }
       setOpenDoc(res.value.doc);
       setSelectedPath(res.value.doc.path);
@@ -244,6 +254,10 @@ export function DropwaveDocsView({
   }
 
   const activeDocView = creatingNew || !selectedPath ? null : openDoc;
+  // Wide pointers edit in place: a selected doc always shows the editor, so a
+  // stale `editing=false` (e.g. re-clicking the open doc) can never strand the
+  // reader on desktop. Narrow/coarse keeps read-first with an Edit button.
+  const showEditor = editing || creatingNew || (activeDocView !== null && !narrowViewport);
   const filteredDocs = query.trim()
     ? docs.filter(
         (doc) =>
@@ -273,7 +287,7 @@ export function DropwaveDocsView({
     setEditing(true);
     setSelectedPath(null);
     setOpenDoc(null);
-    setDraftTitle("");
+    setDraftTitle(gt("Untitled"));
     setDraftKind("note");
     setDraftContent("");
   };
@@ -436,7 +450,8 @@ export function DropwaveDocsView({
                   >
                     <strong>{doc.title}</strong>
                     <small>
-                      {doc.kind} · {formatShortAge(doc.updatedAt)}
+                      <span data-dropwave-doc-pill="">{doc.kind}</span>{" "}
+                      {formatShortAge(doc.updatedAt)}
                     </small>
                   </button>
                 </li>
@@ -467,7 +482,7 @@ export function DropwaveDocsView({
         ) : null}
 
         {tab === "docs" ? (
-          editing || creatingNew ? (
+          showEditor ? (
             <div data-dropwave-doc-editor="editorial">
               <div data-dropwave-doc-bar="">
                 <DropwaveSelect
@@ -478,33 +493,47 @@ export function DropwaveDocsView({
                   onChange={setDraftKind}
                 />
                 <div data-dropwave-doc-actions="">
-                  <button
-                    type="button"
-                    data-dropwave-header-button=""
-                    onClick={() => {
-                      setCreatingNew(false);
-                      setEditing(false);
-                    }}
-                  >
-                    <T>Cancel</T>
-                  </button>
-                  <button
-                    type="button"
-                    data-dropwave-primary-button=""
-                    disabled={busy || !draftTitle.trim()}
-                    onClick={() => void saveDoc()}
-                  >
-                    <SaveIcon />
-                    <T>Save</T>
-                  </button>
+                  {creatingNew ? (
+                    <>
+                      <button
+                        type="button"
+                        data-dropwave-header-button=""
+                        onClick={() => {
+                          setCreatingNew(false);
+                          setEditing(false);
+                        }}
+                      >
+                        <T>Cancel</T>
+                      </button>
+                      <button
+                        type="button"
+                        data-dropwave-primary-button=""
+                        disabled={busy || !draftTitle.trim()}
+                        onClick={() => void saveDoc()}
+                      >
+                        <SaveIcon />
+                        <T>Save</T>
+                      </button>
+                    </>
+                  ) : narrowViewport ? (
+                    <button
+                      type="button"
+                      data-dropwave-header-button=""
+                      onClick={() => setEditing(false)}
+                    >
+                      <T>Done</T>
+                    </button>
+                  ) : null}
                 </div>
               </div>
               <input
                 data-dropwave-editorial-title=""
                 value={draftTitle}
                 onChange={(event) => setDraftTitle(event.currentTarget.value)}
-                placeholder={gt("Untitled document")}
+                onFocus={(event) => event.currentTarget.select()}
+                placeholder={gt("Untitled")}
                 aria-label={gt("Document title")}
+                autoFocus={creatingNew}
               />
               <Suspense
                 fallback={

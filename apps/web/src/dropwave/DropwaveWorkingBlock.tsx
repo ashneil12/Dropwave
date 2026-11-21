@@ -188,9 +188,9 @@ export function DropwaveWorkingBlock({
               <T>Working…</T>
             )
           ) : (
-            <T>
-              Worked · <Var>{allSteps.length}</Var> steps
-            </T>
+            gt("{count, plural, one {Worked · {count} step} other {Worked · {count} steps}}", {
+              count: allSteps.length,
+            })
           )}
         </span>
       </button>
