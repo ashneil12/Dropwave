@@ -755,6 +755,19 @@ export interface DropwaveStoreShape {
     readonly limit?: number | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveMemoryItem>, DropwaveOperationError>;
 
+  readonly listDreamMemoryItems: () => Effect.Effect<
+    ReadonlyArray<DropwaveMemoryItem>,
+    DropwaveOperationError
+  >;
+
+  readonly decayDreamRelations: (input: {
+    readonly scale: number;
+    readonly pruneBelow: number;
+  }) => Effect.Effect<
+    { readonly decayed: number; readonly pruned: number },
+    DropwaveOperationError
+  >;
+
   readonly searchMemoryFts: (input: {
     readonly query: string;
     readonly projectId: ProjectId;
@@ -1463,6 +1476,39 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             ...params,
           );
           return rows.map(rowToMemory);
+        },
+        catch: storageError,
+      }),
+
+    listDreamMemoryItems: () =>
+      Effect.try({
+        try: () =>
+          getAll<MemoryRow>(
+            `SELECT * FROM dropwave_memories
+             WHERE status = 'active' AND authority != 'owner'
+             ORDER BY updated_at DESC
+             LIMIT 2000`,
+          ).map(rowToMemory),
+        catch: storageError,
+      }),
+
+    decayDreamRelations: (input) =>
+      Effect.try({
+        try: () => {
+          const decayed = db
+            .prepare(
+              `UPDATE memory_relations
+               SET confidence = confidence * ?
+               WHERE origin = 'dream'`,
+            )
+            .run(input.scale).changes;
+          const pruned = db
+            .prepare(
+              `DELETE FROM memory_relations
+               WHERE origin = 'dream' AND confidence < ?`,
+            )
+            .run(input.pruneBelow).changes;
+          return { decayed, pruned };
         },
         catch: storageError,
       }),
