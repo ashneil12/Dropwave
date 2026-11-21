@@ -7,6 +7,25 @@ interface VisibleTurnEntry {
   readonly item: OrchestrationV2TurnItem;
 }
 
+/** Whether any entry in a work run would render as a step row. */
+export function workSegmentHasSteps(entries: ReadonlyArray<VisibleTurnEntry>): boolean {
+  return entries.some((entry) => {
+    const item = entry.item;
+    switch (item.type) {
+      case "reasoning":
+        return item.text.trim().length > 0;
+      case "command_execution":
+      case "file_change":
+      case "file_search":
+      case "web_search":
+      case "dynamic_tool":
+        return true;
+      default:
+        return false;
+    }
+  });
+}
+
 function summarizeStep(
   item: OrchestrationV2TurnItem,
   gt: ReturnType<typeof useGT>,

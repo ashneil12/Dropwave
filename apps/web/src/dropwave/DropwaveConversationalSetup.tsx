@@ -7,10 +7,13 @@ import {
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { DEFAULT_SERVER_SETTINGS, type DropwaveRiskLevel } from "@t3tools/contracts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import * as Schema from "effect/Schema";
 import { T, msg, useGT, useMessages } from "gt-react";
 import { ArrowLeftIcon, CheckIcon, FolderOpenIcon, LoaderIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
+import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../components/ui/tooltip";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { newProjectId, newMessageId, newThreadId } from "../lib/utils";
 import { readLocalApi } from "../localApi";
 import {
@@ -19,7 +22,9 @@ import {
 } from "../providerInstances";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { readEnvironmentProviders, usePrimaryEnvironmentId } from "../state/environments";
+import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesystem";
 import { projectEnvironment } from "../state/projects";
+import { useEnvironmentQuery } from "../state/query";
 import { environmentServerConfigsAtom, serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -44,9 +49,30 @@ function slugify(name: string): string {
 
 function dirnameOf(path: string): string {
   const trimmed = path.replace(/[\\/]+$/, "");
-  const idx = trimmed.lastIndexOf("/");
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   return idx > 0 ? trimmed.slice(0, idx) : trimmed;
 }
+
+function basenameOf(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return idx >= 0 ? trimmed.slice(idx + 1) : trimmed;
+}
+
+/** Listing path one level up from a browsed directory path (always "/"-separated). */
+function parentBrowsePath(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  if (trimmed === "~") return "~/";
+  if (trimmed === "") return path.startsWith("/") ? "/" : "~/";
+  if (/^[a-zA-Z]:$/.test(trimmed)) return `${trimmed}/`;
+  const idx = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (idx <= 0) return "/";
+  const parent = trimmed.slice(0, idx);
+  return parent === "~" ? "~/" : `${parent}/`;
+}
+
+const LAST_PARENT_FOLDER_KEY = "dropwave:new-project-parent";
+const ParentFolderSchema = Schema.String;
 
 export function DropwaveConversationalSetup({
   startAtNewProject = false,
@@ -70,7 +96,13 @@ export function DropwaveConversationalSetup({
   const [projectTitle, setProjectTitle] = useState("");
   const [folderMode, setFolderMode] = useState<"new" | "existing">("new");
   const [folderPath, setFolderPath] = useState("");
-  const [pathTouched, setPathTouched] = useState(false);
+  const [rememberedParent, setRememberedParent] = useLocalStorage(
+    LAST_PARENT_FOLDER_KEY,
+    "",
+    ParentFolderSchema,
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [browsePath, setBrowsePath] = useState("~/");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wiringRef = useRef(false);
@@ -87,13 +119,80 @@ export function DropwaveConversationalSetup({
     reportFailure: false,
   });
 
-  const parentDir = (() => {
-    const recent =
-      workspace?.project?.workspaceRoot ?? workspace?.projects.at(-1)?.workspaceRoot ?? "";
-    return recent ? dirnameOf(recent) : "";
-  })();
+  // Only an explicitly chosen parent is remembered; otherwise new projects
+  // default under ~/Projects (resolved through the server's folder browser).
+  const derivedParent = rememberedParent;
+
+  // With no remembered parent, resolve ~/Projects through the server's
+  // folder browser (or <home>/Projects when it does not exist yet).
+  const browseEnvId = workspace?.project?.environmentId ?? primaryEnvId ?? null;
+  const fsAccess = useFilesystemReadAccess(browseEnvId);
+  const canBrowse = browseEnvId !== null && fsAccess.canReadFiles;
+  const needsParentFallback = derivedParent === "";
+  const projectsDirQuery = useEnvironmentQuery(
+    canBrowse && needsParentFallback && browseEnvId !== null
+      ? filesystemEnvironment.browse({
+          environmentId: browseEnvId,
+          input: { partialPath: "~/Projects/" },
+        })
+      : null,
+  );
+  const homeDirQuery = useEnvironmentQuery(
+    canBrowse && needsParentFallback && projectsDirQuery.error !== null && browseEnvId !== null
+      ? filesystemEnvironment.browse({
+          environmentId: browseEnvId,
+          input: { partialPath: "~/" },
+        })
+      : null,
+  );
+  const parentDir =
+    derivedParent ||
+    projectsDirQuery.data?.parentPath ||
+    (projectsDirQuery.error !== null && homeDirQuery.data?.parentPath
+      ? `${homeDirQuery.data.parentPath}/Projects`
+      : "");
 
   const autoPath = parentDir && projectTitle.trim() ? `${parentDir}/${slugify(projectTitle)}` : "";
+
+  const pickerQuery = useEnvironmentQuery(
+    canBrowse && pickerOpen && browseEnvId !== null
+      ? filesystemEnvironment.browse({
+          environmentId: browseEnvId,
+          input: { partialPath: browsePath },
+        })
+      : null,
+  );
+
+  const isDesktopPicker = typeof window !== "undefined" && Boolean(window.desktopBridge);
+
+  const openPicker = (mode: "new" | "existing" = folderMode) => {
+    const start =
+      mode === "existing" && folderPath
+        ? `${dirnameOf(folderPath)}/`
+        : parentDir
+          ? `${parentDir}/`
+          : "~/";
+    setBrowsePath(start);
+    setPickerOpen(true);
+  };
+
+  const pickWithNativeDialog = async (mode: "new" | "existing" = folderMode) => {
+    const initial = mode === "existing" ? folderPath || parentDir : parentDir;
+    const picked = await readLocalApi()
+      ?.dialogs.pickFolder(initial ? { initialPath: initial } : undefined)
+      .catch(() => null);
+    if (!picked) return;
+    if (mode === "new") setRememberedParent(picked);
+    else setFolderPath(picked);
+  };
+
+  const chooseFolder = (mode: "new" | "existing" = folderMode) => {
+    const selected = pickerQuery.data?.parentPath;
+    if (!selected) return;
+    if (mode === "new") setRememberedParent(selected);
+    else setFolderPath(selected);
+    setPickerOpen(false);
+  };
 
   // An existing project without a lead skips the sheet entirely and wires the
   // Chief of Staff directly, the same path "Create" takes after project creation.
@@ -206,9 +305,7 @@ export function DropwaveConversationalSetup({
   const handleCreate = async (event: FormEvent) => {
     event.preventDefault();
     const title = projectTitle.trim();
-    const workspaceRoot = (
-      folderMode === "new" ? (pathTouched ? folderPath : autoPath) : folderPath
-    ).trim();
+    const workspaceRoot = (folderMode === "new" ? autoPath : folderPath).trim();
     if (!title || !workspaceRoot || busy) return;
     const envId = workspace.project?.environmentId ?? primaryEnvId;
     if (!envId) {
@@ -249,15 +346,17 @@ export function DropwaveConversationalSetup({
     await wireChiefOfStaff(project);
   };
 
-  const browseFolder = async () => {
-    const picked = await readLocalApi()
-      ?.dialogs.pickFolder(parentDir ? { initialPath: parentDir } : undefined)
-      .catch(() => null);
-    if (picked) {
-      setFolderPath(picked);
-      setPathTouched(true);
+  const locationLabel = (() => {
+    if (folderMode === "existing" && folderPath.trim()) {
+      const parent = basenameOf(dirnameOf(folderPath));
+      const leaf = basenameOf(folderPath);
+      return parent && parent !== leaf ? `${parent} › ${leaf}` : leaf;
     }
-  };
+    const leaf = slugify(projectTitle) || "untitled";
+    const parent = basenameOf(parentDir) || "~";
+    return `${parent} › ${leaf}`;
+  })();
+  const locationPath = folderMode === "new" ? autoPath : folderPath.trim();
 
   return (
     <div data-dw-pillar-body="">
@@ -318,68 +417,114 @@ export function DropwaveConversationalSetup({
 
               <div data-dw-field-label="">
                 <span>
-                  <T>Folder</T>
+                  <T>Location</T>
                 </span>
-                <div data-dw-risk-pills="">
-                  <button
-                    type="button"
-                    data-dw-risk-btn=""
-                    aria-pressed={folderMode === "new"}
-                    onClick={() => setFolderMode("new")}
-                  >
-                    <T>New folder</T>
-                  </button>
-                  <button
-                    type="button"
-                    data-dw-risk-btn=""
-                    aria-pressed={folderMode === "existing"}
-                    onClick={() => setFolderMode("existing")}
-                  >
-                    <T>Existing folder</T>
-                  </button>
-                </div>
-              </div>
-
-              {folderMode === "new" ? (
-                <label data-dw-field-label="">
-                  <span>
-                    <T>Path</T>
-                  </span>
-                  <input
-                    data-dw-custom-answer=""
-                    value={pathTouched ? folderPath : autoPath}
-                    onChange={(e) => {
-                      setPathTouched(true);
-                      setFolderPath(e.currentTarget.value);
-                    }}
-                    placeholder={gt("/Users/you/Projects/my-app")}
-                    required
-                  />
-                </label>
-              ) : (
-                <label data-dw-field-label="">
-                  <span>
-                    <T>Path</T>
-                  </span>
-                  <div data-dw-path-row="">
-                    <input
-                      data-dw-custom-answer=""
-                      value={folderPath}
-                      onChange={(e) => setFolderPath(e.currentTarget.value)}
-                      placeholder={gt("/Users/you/Projects/my-app")}
-                      required
-                    />
+                <div data-dw-location-row="">
+                  <TooltipProvider delay={150}>
+                    <Tooltip>
+                      <TooltipTrigger render={<span data-dw-location-text="" />}>
+                        <FolderOpenIcon className="size-3.5" />
+                        {locationLabel}
+                      </TooltipTrigger>
+                      {locationPath ? <TooltipPopup>{locationPath}</TooltipPopup> : null}
+                    </Tooltip>
+                  </TooltipProvider>
+                  <span data-dw-location-actions="">
                     <button
                       type="button"
                       data-dw-header-pill=""
-                      onClick={() => void browseFolder()}
+                      onClick={() => {
+                        if (isDesktopPicker) void pickWithNativeDialog();
+                        else openPicker();
+                      }}
                     >
-                      <FolderOpenIcon className="size-3.5" />
-                      <T>Browse</T>
+                      <T>Change</T>
                     </button>
+                    {folderMode === "new" ? (
+                      <button
+                        type="button"
+                        data-dw-header-pill=""
+                        onClick={() => {
+                          setFolderMode("existing");
+                          if (!isDesktopPicker) openPicker("existing");
+                          else void pickWithNativeDialog("existing");
+                        }}
+                      >
+                        <T>Use an existing folder</T>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        data-dw-header-pill=""
+                        onClick={() => setFolderMode("new")}
+                      >
+                        <T>New folder instead</T>
+                      </button>
+                    )}
+                  </span>
+                </div>
+                {pickerOpen ? (
+                  <div data-dw-folder-picker="">
+                    <div data-dw-folder-picker-bar="">
+                      <button
+                        type="button"
+                        data-dw-mini-icon=""
+                        aria-label={gt("Up one folder")}
+                        disabled={parentBrowsePath(browsePath) === browsePath}
+                        onClick={() => setBrowsePath(parentBrowsePath(browsePath))}
+                      >
+                        <ArrowLeftIcon className="size-3.5" />
+                      </button>
+                      <span data-dw-folder-picker-path="">
+                        {browsePath.replace(/[\\/]+$/, "") || browsePath}
+                      </span>
+                    </div>
+                    <div data-dw-folder-picker-list="">
+                      {(pickerQuery.data?.entries ?? []).map((entry) => (
+                        <button
+                          key={entry.fullPath}
+                          type="button"
+                          data-dw-folder-entry=""
+                          onClick={() => setBrowsePath(`${entry.fullPath}/`)}
+                        >
+                          <FolderOpenIcon className="size-3.5" />
+                          <span>{entry.name}</span>
+                        </button>
+                      ))}
+                      {pickerQuery.isPending ? (
+                        <p data-dw-rail-empty="">
+                          <LoaderIcon className="size-3.5 animate-spin" />
+                        </p>
+                      ) : pickerQuery.error ? (
+                        <p data-dw-rail-empty="">
+                          <T>Could not read this folder.</T>
+                        </p>
+                      ) : (pickerQuery.data?.entries.length ?? 0) === 0 ? (
+                        <p data-dw-rail-empty="">
+                          <T>No folders here.</T>
+                        </p>
+                      ) : null}
+                    </div>
+                    <div data-dw-folder-picker-foot="">
+                      <button
+                        type="button"
+                        data-dw-btn-ghost=""
+                        onClick={() => setPickerOpen(false)}
+                      >
+                        <T>Cancel</T>
+                      </button>
+                      <button
+                        type="button"
+                        data-dw-btn-solid=""
+                        disabled={!pickerQuery.data?.parentPath}
+                        onClick={() => chooseFolder()}
+                      >
+                        {folderMode === "new" ? <T>Use this folder</T> : <T>Select folder</T>}
+                      </button>
+                    </div>
                   </div>
-                </label>
-              )}
+                ) : null}
+              </div>
 
               {error ? (
                 <p data-dropwave-form-error="" role="alert">

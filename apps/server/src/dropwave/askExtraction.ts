@@ -80,10 +80,58 @@ function isQuestion(text: string): boolean {
   return trimmed.includes("?") || QUESTION_OPEN.test(trimmed) || QUESTION_AUX.test(trimmed);
 }
 
+const REPORT_BACK =
+  /\b(?:tell|let|notify|ping|message|text|email|call|update|show|remind)\s+(?:me|us)\s+(?:when|once|after|that|if|whether)\b|\blet me know\b|\breport back\b|\bget back to me\b|\bkeep me (?:posted|updated|in the loop|informed)\b|\bcircle back\b/i;
+
+/** "Tell me when it's done" style sentences ask for a notification, not for work. */
+function isReportBackSentence(sentence: string): boolean {
+  return REPORT_BACK.test(sentence);
+}
+
+const DETAIL_HARD_PATTERNS: ReadonlyArray<RegExp> = [
+  /\b(?:using|via|through)\s+[a-zA-Z][\w.@-]*/i,
+  /[\w~-][\w./~-]*\.[a-zA-Z]{1,6}(?:\/[\w./~-]*)?/,
+  /\.[a-zA-Z][\w-]*\/[\w./~-]+/,
+  /\b[a-zA-Z][\w-]*\s*:\s*["'“”]?\w/,
+  /<[a-zA-Z][^<>\s]{0,30}>/,
+];
+
+const DETAIL_SOFT_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bwith\s+(?:a|an|the|its|our|your)\b/i,
+  /\([^)]{8,}\)/,
+  /\b(?:styl\w*|themed?|formatted?|palette|typography|layout|designed?|glass|crisp|polished|minimal|sleek)\b/i,
+];
+
+function specSignalCount(sentence: string): { hard: number; soft: number } {
+  let hard = 0;
+  let soft = 0;
+  for (const pattern of DETAIL_HARD_PATTERNS) {
+    if (pattern.test(sentence)) hard += 1;
+  }
+  for (const pattern of DETAIL_SOFT_PATTERNS) {
+    if (pattern.test(sentence)) soft += 1;
+  }
+  return { hard, soft };
+}
+
+/**
+ * A sentence that only specifies how, where, or with what the previous
+ * imperative is done (paths, tools, params, styling) is part of that ask,
+ * not a new one.
+ */
+function isDetailOfPreviousAsk(sentence: string, previous: ReadonlyArray<ExtractedAsk>): boolean {
+  if (isQuestion(sentence)) return false;
+  const last = previous.at(-1);
+  if (!last || last.kind === "answer") return false;
+  const { hard, soft } = specSignalCount(sentence);
+  return hard >= 2 || (hard >= 1 && soft >= 1) || soft >= 3;
+}
+
 function looksLikeAsk(sentence: string): boolean {
   const trimmed = sentence.trim();
   if (trimmed.length < 12 || trimmed.split(/\s+/).length < 3) return false;
   if (ACK_ONLY.test(trimmed)) return false;
+  if (isReportBackSentence(trimmed)) return false;
   return isQuestion(trimmed) || ASK_SIGNAL.test(trimmed);
 }
 
@@ -116,6 +164,7 @@ export function extractRuleAsks(message: string): Array<ExtractedAsk> {
   const seen = new Set<string>();
   const results: Array<ExtractedAsk> = [];
   for (const part of matching) {
+    if (isDetailOfPreviousAsk(part, results)) continue;
     const key = normalizedForQuoteCheck(part);
     if (seen.has(key)) continue;
     seen.add(key);
@@ -176,6 +225,7 @@ export function parseVerifiedModelAsks(
     const record = entry as Record<string, unknown>;
     const rawQuote = typeof record.quote === "string" ? record.quote : "";
     if (!quoteInMessage(rawQuote, originalMessage)) continue;
+    if (isReportBackSentence(rawQuote)) continue;
     const rawKind = typeof record.kind === "string" ? record.kind : "do";
     let kind: DropwaveAskKind = VALID_ASK_KINDS.has(rawKind) ? (rawKind as DropwaveAskKind) : "do";
     if (kind === "answer" && !isQuestion(rawQuote)) kind = "do";
@@ -191,6 +241,7 @@ export function parseVerifiedModelAsks(
   let safetyAdded = 0;
   for (const candidate of ruleCandidates) {
     if (safetyAdded >= 6 || kept.length >= ASKS_PER_MESSAGE) break;
+    if (isReportBackSentence(candidate.quote)) continue;
     if (kept.some((existing) => coversSentence(existing.quote, candidate.quote))) continue;
     kept.push({ ...candidate, maybe: true });
     safetyAdded += 1;

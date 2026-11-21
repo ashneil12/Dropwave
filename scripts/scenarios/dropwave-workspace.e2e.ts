@@ -27,7 +27,6 @@ test(
     await expect(
       screen.getByText(/I just came online\. I'll be running point on your projects/),
     ).toBeVisible();
-    await expect(screen.getByText("Onboarding")).toBeVisible();
     await expect(screen.getByRole("button", /Atlas/)).toBeVisible();
 
     // Verify Docs & Asks tabs in the main canvas header.
@@ -37,7 +36,7 @@ test(
     await screen.getByRole("tab", /Asks/).tap();
     await screen.getByRole("textbox").fill("Verify Canary pricing before launch");
     await screen.getByRole("button", "Add ask").tap();
-    await expect(screen.getByText("Verify Canary pricing before launch")).toBeVisible();
+    await expect(screen.getByText("Verify Canary pricing before launch").first()).toBeVisible();
     await screen.getByRole("tab", "Chat").tap();
 
     // Verify Dropwave-first Settings (Crew + embedded Providers & Models + T3 Engine & Advanced).

@@ -9,7 +9,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   ImageIcon,
-  KanbanIcon,
   LayoutGridIcon,
   PanelLeftCloseIcon,
   PinIcon,
@@ -25,12 +24,7 @@ import { useState } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "../components/ui/popover";
 import { useLocalStorage } from "../hooks/useLocalStorage";
 import { DropwaveBotAvatar, type BotAvatarStatus } from "./DropwaveBotAvatar";
-import {
-  BUILTIN_KANBAN_HUB_ID,
-  BUILTIN_SHIP_GATE_HUB_ID,
-  PINNED_HUBS_KEY,
-  PinnedHubsSchema,
-} from "./DropwaveHubsView";
+import { BUILTIN_SHIP_GATE_HUB_ID, PINNED_HUBS_KEY, PinnedHubsSchema } from "./DropwaveHubsView";
 import type { useDropwaveAppearance } from "./DropwaveToolbar";
 import {
   formatShortAge,
@@ -90,7 +84,11 @@ export function DropwaveSidebar({
     [],
     PinnedProjectsSchema,
   );
-  const [pinnedHubs] = useLocalStorage(PINNED_HUBS_KEY, [BUILTIN_KANBAN_HUB_ID], PinnedHubsSchema);
+  const [pinnedHubs] = useLocalStorage(
+    PINNED_HUBS_KEY,
+    [BUILTIN_SHIP_GATE_HUB_ID],
+    PinnedHubsSchema,
+  );
   const [projectsExpanded, setProjectsExpanded] = useState(false);
   const [projectSearch, setProjectSearch] = useState("");
 
@@ -522,33 +520,30 @@ export function DropwaveSidebar({
             </button>
           </div>
           <div data-dw-pinned-hubs="">
-            {pinnedHubs.slice(0, 4).map((hubId) => {
-              const label =
-                hubId === BUILTIN_KANBAN_HUB_ID
-                  ? gt("Asks Kanban")
-                  : hubId === BUILTIN_SHIP_GATE_HUB_ID
+            {pinnedHubs
+              .filter((hubId) => hubId !== "builtin:kanban")
+              .slice(0, 4)
+              .map((hubId) => {
+                const label =
+                  hubId === BUILTIN_SHIP_GATE_HUB_ID
                     ? gt("Ship Gate")
                     : (hubId
                         .split("/")
                         .pop()
                         ?.replace(/\.html$/i, "")
                         .replace(/[-_]+/g, " ") ?? hubId);
-              return (
-                <button
-                  key={hubId}
-                  type="button"
-                  data-dw-pinned-hub-btn=""
-                  onClick={() => workspace.openHub(hubId)}
-                >
-                  {hubId === BUILTIN_KANBAN_HUB_ID ? (
-                    <KanbanIcon className="size-3.5 shrink-0 opacity-75" />
-                  ) : (
+                return (
+                  <button
+                    key={hubId}
+                    type="button"
+                    data-dw-pinned-hub-btn=""
+                    onClick={() => workspace.openHub(hubId)}
+                  >
                     <LayoutGridIcon className="size-3.5 shrink-0 opacity-75" />
-                  )}
-                  <span>{label}</span>
-                </button>
-              );
-            })}
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
           </div>
         </div>
       ) : null}
