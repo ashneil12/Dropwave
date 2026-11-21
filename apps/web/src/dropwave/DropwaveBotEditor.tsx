@@ -198,6 +198,12 @@ export function DropwaveBotEditor({
           ...(profile?.kind === "lead" && profile.workerModelSelection !== undefined
             ? { workerModelSelection: profile.workerModelSelection }
             : {}),
+          ...(profile?.kind === "lead" && profile.workerReviewModelSelection !== undefined
+            ? { workerReviewModelSelection: profile.workerReviewModelSelection }
+            : {}),
+          ...(profile?.kind === "lead" && profile.workerReviewRounds !== undefined
+            ? { workerReviewRounds: profile.workerReviewRounds }
+            : {}),
         }
       : leadThreadId
         ? {

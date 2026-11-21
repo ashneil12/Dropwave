@@ -2807,6 +2807,114 @@
   color: var(--dw-text-muted);
 }
 
+/* Fusion worker setup popover: presets + expandable rows */
+[data-dw-worker-setup] {
+  display: grid;
+  gap: 8px;
+}
+[data-dw-worker-presets] {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+[data-dw-worker-preset] {
+  display: grid;
+  gap: 1px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgb(255 255 255 / 9%);
+  background: rgb(255 255 255 / 5%);
+  text-align: start;
+}
+[data-dw-worker-preset]:hover {
+  background: rgb(255 255 255 / 9%);
+}
+[data-dw-worker-preset] strong {
+  font-size: 12px;
+  font-weight: 560;
+  color: #fff;
+}
+[data-dw-worker-preset] small {
+  font-size: 10.5px;
+  color: var(--dw-text-muted);
+}
+[data-dw-worker-row] {
+  border: 1px solid rgb(255 255 255 / 8%);
+  border-radius: 9px;
+  overflow: hidden;
+}
+[data-dw-worker-row-head] {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  text-align: start;
+}
+[data-dw-worker-row-head]:hover {
+  background: rgb(255 255 255 / 5%);
+}
+[data-dw-worker-row-title] {
+  font-size: 11px;
+  color: var(--dw-text-muted);
+}
+[data-dw-worker-row-value] {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 520;
+  color: #fff;
+  text-align: end;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-dw-worker-row-head] svg[data-expanded="true"] {
+  transform: rotate(180deg);
+}
+[data-dw-worker-row] [data-dw-select-list] {
+  max-height: 200px;
+  padding: 2px 6px 6px;
+}
+
+/* Fusion worker-review chip (chat run rows + ask cards) */
+[data-dw-review-chip] {
+  display: inline-flex;
+  align-items: center;
+  padding: 1.5px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 560;
+  line-height: 1.5;
+  white-space: nowrap;
+  border: 0.5px solid rgb(255 255 255 / 10%);
+}
+[data-dw-review-chip][data-tone="indigo"] {
+  color: var(--dw-indigo);
+  background: rgb(139 141 248 / 12%);
+}
+[data-dw-review-chip][data-tone="amber"] {
+  color: var(--dw-amber);
+  background: rgb(245 166 35 / 12%);
+}
+[data-dw-review-chip][data-tone="emerald"] {
+  color: var(--dw-emerald-bright);
+  background: rgb(92 224 141 / 10%);
+}
+[data-dw-review-chip][data-tone="coral"] {
+  color: var(--dw-coral);
+  background: rgb(240 93 94 / 12%);
+}
+[data-dw-review-chip][data-tone="dim"] {
+  color: var(--dw-text-muted);
+  background: rgb(255 255 255 / 6%);
+}
+[data-dw-runs-worker-line] {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: rgb(244 243 239 / 88%);
+}
+
 /* Core Loop compact strip inside Core Loop & Asks card */
 [data-dw-loop-strip] {
   display: flex;

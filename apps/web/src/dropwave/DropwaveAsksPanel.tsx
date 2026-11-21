@@ -6,6 +6,7 @@ import {
 import type {
   DropwaveAsk,
   DropwaveAskStatus,
+  DropwaveWorkerReview,
   EnvironmentId,
   OrchestrationV2Subagent,
   ThreadId,
@@ -22,6 +23,8 @@ import { serverEnvironment } from "../state/server";
 import { environmentThreadDetails } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
+import { DropwaveReviewChip } from "./DropwaveReviewChip";
+import { useModelSelectionLabel, useWorkerReviews } from "./useWorkerReviews";
 import {
   ASK_BOARD_LANE_ORDER,
   askWorkerPhase,
@@ -90,6 +93,8 @@ function laneAriaLabel(lane: AskBoardLaneId, gt: (message: string) => string): s
 function AskCard({
   ask,
   phase,
+  review,
+  reviewerName,
   busy,
   onRequestDone,
   onRequestDrop,
@@ -99,6 +104,8 @@ function AskCard({
 }: {
   ask: DropwaveAsk;
   phase: AskWorkerPhase;
+  review: DropwaveWorkerReview | null;
+  reviewerName: string | null;
   busy: boolean;
   onRequestDone: (ask: DropwaveAsk) => void;
   onRequestDrop: (ask: DropwaveAsk) => void;
@@ -137,6 +144,7 @@ function AskCard({
           />
         ) : null}
         <span data-dw-ask-age="">{formatShortAge(ask.updatedAt)}</span>
+        {review ? <DropwaveReviewChip review={review} reviewerName={reviewerName} /> : null}
       </header>
       <p data-dw-ask-summary="">{ask.summary}</p>
       {ask.quote ? <blockquote data-dw-ask-quote="">{ask.quote}</blockquote> : null}
@@ -281,6 +289,25 @@ export function DropwaveAsksPanel() {
     : "[]";
   const subagentsByThread = useAtomValue(askBoardSubagentsAtom(subagentsKey));
 
+  const reviewRefreshKey = `${reloadNonce}:${JSON.stringify(
+    Object.values(subagentsByThread)
+      .flatMap((subs) => subs ?? [])
+      .map((sub) => `${sub.id}:${sub.status}`),
+  )}`;
+  const workerReviews = useWorkerReviews({
+    environmentId: project?.environmentId ?? null,
+    projectId: project?.id ?? null,
+    refreshKey: reviewRefreshKey,
+  });
+  const leadReviewSelection =
+    workspace?.lead?.source.dropwaveBot?.kind === "lead"
+      ? workspace.lead.source.dropwaveBot.workerReviewModelSelection
+      : null;
+  const workerReviewerName = useModelSelectionLabel(
+    project?.environmentId ?? null,
+    leadReviewSelection ?? null,
+  );
+
   // Fade the right edge only while the five lanes actually overflow the canvas.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- measures board overflow for the scroll fade
   useEffect(() => {
@@ -295,6 +322,17 @@ export function DropwaveAsksPanel() {
 
   const phaseFor = (ask: DropwaveAsk): AskWorkerPhase =>
     askWorkerPhase(ask.jobs, subagentsByThread[ask.botThreadId] ?? null);
+
+  const reviewFor = (ask: DropwaveAsk): DropwaveWorkerReview | null => {
+    let best: DropwaveWorkerReview | null = null;
+    for (const jobId of ask.jobs) {
+      const review = workerReviews.get(jobId);
+      if (review !== undefined && (best === null || review.updatedAt > best.updatedAt)) {
+        best = review;
+      }
+    }
+    return best;
+  };
 
   const maybeAsks = asks.filter((ask) => ask.status === "maybe");
   const boardAsks = asks.filter((ask) => ask.status !== "maybe");
@@ -400,6 +438,8 @@ export function DropwaveAsksPanel() {
       key={ask.id}
       ask={ask}
       phase={phaseFor(ask)}
+      review={reviewFor(ask)}
+      reviewerName={workerReviewerName}
       busy={busy}
       onRequestDone={(a) => setConfirm({ ask: a, action: "done" })}
       onRequestDrop={(a) => setConfirm({ ask: a, action: "drop" })}
