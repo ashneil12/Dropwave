@@ -490,6 +490,8 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
   }
   // Recall traces live in the eval home's dropwave.sqlite; the newest trace on
   // the lead thread is the <dropwave_recall> block its last turn actually saw.
+  // Only run: turn keys count - mcp:memory-search calls persist traces too, but
+  // a tool search is not the turn's injected context.
   const recallTraces: Array<CaseState["recallTraces"][number]> = [];
   if (ctx.leadId !== undefined) {
     try {
@@ -500,7 +502,8 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
       const rows = db
         .prepare(
           `SELECT turn_key, created_at, trace_json FROM memory_recall_traces
-           WHERE thread_id = ? ORDER BY created_at DESC LIMIT 10`,
+           WHERE thread_id = ? AND turn_key LIKE 'run:%'
+           ORDER BY created_at DESC LIMIT 10`,
         )
         .all(ctx.leadId) as Array<{
         turn_key: string;
