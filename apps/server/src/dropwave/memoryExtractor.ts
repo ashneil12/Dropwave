@@ -18,11 +18,10 @@ import type * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { quoteInMessage } from "./askExtraction.ts";
+import { saveMemoryMerged } from "./memoryDedupe.ts";
+import type * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import type { DropwaveStoreShape } from "./DropwaveStore.ts";
-import {
-  DROPWAVE_MEMORY_CONFLICT_PROMPT,
-  DROPWAVE_MEMORY_EXTRACTION_PROMPT,
-} from "./memoryPrompts.ts";
+import { DROPWAVE_MEMORY_EXTRACTION_PROMPT } from "./memoryPrompts.ts";
 
 const VALID_SCOPES = new Set<DropwaveMemoryScope>(["owner", "bot", "project"]);
 const VALID_KINDS = new Set<DropwaveMemoryKind>([
@@ -36,7 +35,6 @@ const VALID_KINDS = new Set<DropwaveMemoryKind>([
   "tool",
 ]);
 const MAX_OPS_PER_WINDOW = 8;
-const MAX_CONFLICT_CHECKS = 2;
 const MIN_OP_CONFIDENCE = 0.8;
 const WINDOW_MESSAGE_LIMIT = 60;
 const WINDOW_CHAR_BUDGET = 8000;
@@ -207,6 +205,7 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
   readonly projections: ProjectionStore.ProjectionStoreV2Shape;
   readonly textGeneration: TextGeneration.TextGeneration["Service"];
   readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
+  readonly embeddings?: MemoryEmbeddings.MemoryEmbeddingsShape | undefined;
   readonly projectId: ProjectId;
   readonly botThreadId: ThreadId;
   readonly personaId?: string | undefined;
@@ -305,31 +304,26 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
       applied += 1;
       continue;
     }
-    const item = yield* input.store
-      .saveMemory({
-        projectId: input.projectId,
-        botThreadId: input.botThreadId,
-        scope,
-        personaId,
-        kind: op.kind,
-        subject: op.subject,
-        text: op.text,
-        quote: op.quote,
-        sourceMessageId,
-        threadId: input.botThreadId,
-        confidence: op.confidence,
-      })
-      .pipe(Effect.catch(() => Effect.succeed(undefined)));
-    if (item === undefined) continue;
-    applied += 1;
-    yield* checkMemoryConflict({
+    const item = yield* saveMemoryMerged({
       store: input.store,
+      embeddings: input.embeddings,
       textGeneration: input.textGeneration,
       serverSettings: input.serverSettings,
-      projectId: input.projectId,
       workspaceRoot: input.workspaceRoot,
-      item,
-    }).pipe(Effect.catch(() => Effect.void));
+      projectId: input.projectId,
+      botThreadId: input.botThreadId,
+      scope,
+      personaId,
+      kind: op.kind,
+      subject: op.subject,
+      text: op.text,
+      quote: op.quote,
+      sourceMessageId,
+      threadId: input.botThreadId,
+      confidence: op.confidence,
+    }).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    if (item === undefined) continue;
+    applied += 1;
   }
   yield* input.store.setMemoryMeta(watermarkKey, {
     ...(lastMessageId !== undefined ? { lastMessageId } : {}),
@@ -337,95 +331,6 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
   });
   return { applied };
 });
-
-// Conflict pass: same-scope items sharing a subject (or both subject-less with
-// the same kind) get one model verdict; contradictions park the NEW item in
-// needs_review linked to the old one. Owner-authority rows are never flagged.
-const checkMemoryConflict = Effect.fnUntraced(function* (input: {
-  readonly store: DropwaveStoreShape;
-  readonly textGeneration: TextGeneration.TextGeneration["Service"];
-  readonly serverSettings: ServerSettings.ServerSettingsService["Service"];
-  readonly projectId: ProjectId;
-  readonly workspaceRoot: string;
-  readonly item: DropwaveMemoryItem;
-}): Effect.fn.Return<void, DropwaveOperationErrorType, never> {
-  const candidates = yield* input.store.listMemories({
-    projectId: input.projectId,
-    statuses: ["active"],
-    limit: 100,
-  });
-  const rivals = candidates.filter((other) => {
-    if (other.id === input.item.id || other.status !== "active") return false;
-    if (other.scope !== input.item.scope) return false;
-    if (other.authority === "owner") return false;
-    if (other.personaId !== input.personaId) return false;
-    if (input.item.subject !== "" && other.subject === input.item.subject) return true;
-    return (
-      input.item.subject === "" &&
-      other.subject === "" &&
-      other.kind === input.item.kind &&
-      other.text !== input.item.text
-    );
-  });
-  if (rivals.length === 0) return;
-  const allSettings = yield* input.serverSettings.getSettings;
-  const { settings } = resolveProjectSettings(allSettings, input.projectId);
-  const modelSelection = settings.textGenerationModelSelection ?? settings.defaultModelSelection;
-  if (modelSelection === undefined) return;
-  for (const rival of rivals.slice(0, MAX_CONFLICT_CHECKS)) {
-    const prompt = DROPWAVE_MEMORY_CONFLICT_PROMPT.replace(
-      "{{EXISTING_DATE}}",
-      rival.updatedAt.slice(0, 10),
-    )
-      .replace("{{EXISTING}}", rival.text)
-      .replace("{{CANDIDATE_SOURCE}}", "a new message")
-      .replace("{{CANDIDATE_DATE}}", input.item.updatedAt.slice(0, 10))
-      .replace("{{CANDIDATE}}", input.item.text);
-    const reply = yield* input.textGeneration
-      .generateTranscriptionPostProcessing({
-        cwd: input.workspaceRoot,
-        prompt,
-        modelSelection,
-      })
-      .pipe(Effect.timeoutOption("30 seconds"));
-    if (Option.isNone(reply)) continue;
-    const verdict = parseConflictVerdict(reply.value.transcription);
-    if (verdict?.contradicts !== true) continue;
-    const fresh = yield* input.store.getMemory(input.item.id);
-    if (fresh === undefined || fresh.status !== "active") return;
-    yield* input.store
-      .updateMemory({
-        id: input.item.id,
-        revision: fresh.revision,
-        status: "needs_review",
-        conflict: {
-          candidate: input.item.text,
-          reason: verdict.reason || "This clashes with something already remembered.",
-          withId: rival.id,
-        },
-        by: "agent",
-      })
-      .pipe(Effect.catch(() => Effect.void));
-    return;
-  }
-});
-
-function parseConflictVerdict(
-  raw: string,
-): { readonly contradicts: boolean; readonly reason: string } | undefined {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end <= start) return undefined;
-  try {
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
-    return {
-      contradicts: parsed.contradicts === true,
-      reason: typeof parsed.reason === "string" ? parsed.reason : "",
-    };
-  } catch {
-    return undefined;
-  }
-}
 
 const OWNER_MESSAGES_PER_EXTRACTION = 6;
 export const EXTRACTION_IDLE_MS = 2 * 60 * 1000;

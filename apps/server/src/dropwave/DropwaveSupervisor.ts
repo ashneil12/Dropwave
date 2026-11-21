@@ -29,6 +29,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
 import { parseVerifiedModelAsks, quoteInMessage } from "./askExtraction.ts";
 import { DROPWAVE_ASK_EXTRACTION_PROMPT } from "./askExtractionPrompt.ts";
+import * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import * as MemoryExtractor from "./memoryExtractor.ts";
 
 const MODEL_EXTRACTION_TIMEOUT = "90 seconds";
@@ -247,11 +248,13 @@ const make = Effect.gen(function* () {
         const runExtraction = Effect.gen(function* () {
           const projectOption = yield* projects.get(thread.projectId);
           if (Option.isNone(projectOption)) return;
+          const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
           yield* MemoryExtractor.extractMemoriesForThread({
             store,
             projections,
             textGeneration,
             serverSettings,
+            embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
             projectId: thread.projectId,
             botThreadId: thread.id,
             personaId: botProfile?.personaId,

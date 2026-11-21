@@ -117,19 +117,32 @@ export const runMemoryDream = Effect.fnUntraced(function* (input: {
     return settings.textGenerationModelSelection ?? settings.defaultModelSelection;
   }).pipe(Effect.orElseSucceed(() => undefined));
 
+  // Phase 1 — merge duplicates: model verdicts happen outside the transaction;
+  // every write for the phase lands in one transaction.
+  interface MergePlan {
+    readonly survivorId: string;
+    readonly loserIds: ReadonlyArray<string>;
+    readonly mergedText: string;
+    readonly mergedSubject: string;
+    readonly loserCount: number;
+  }
+  const mergePlans: Array<MergePlan> = [];
+  let plannedCost = 0;
   for (const group of groups) {
-    if (changes >= changeCap) break;
     if (group.length < 2) continue;
-    // Deterministic near-duplicates merge without a model call.
+    // Each plan costs loserCount + 1 changes (survivor update + supersedes).
+    if (changes + plannedCost + group.length > changeCap) continue;
     const sorted = [...group].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const survivor = sorted[0]!;
     const losers = sorted.slice(1);
+    if (survivor.authority === "owner") continue;
     const identical = losers.every(
       (loser) => normalizeSubject(loser.text) === normalizeSubject(survivor.text),
     );
     let mergedText = survivor.text;
     let mergedSubject = survivor.subject;
-    if (!identical && modelSelection !== undefined && input.textGeneration !== undefined) {
+    if (!identical) {
+      if (modelSelection === undefined || input.textGeneration === undefined) continue;
       const rejectionKey = `dream-merge:${group
         .map((item) => item.id)
         .sort()
@@ -162,86 +175,114 @@ export const runMemoryDream = Effect.fnUntraced(function* (input: {
       }
       mergedText = verdict.text.slice(0, 600);
       mergedSubject = verdict.subject ?? survivor.subject;
-    } else if (!identical) {
-      continue;
     }
-    const fresh = yield* input.store
-      .getMemory(survivor.id)
-      .pipe(Effect.orElseSucceed(() => undefined));
-    if (fresh === undefined || fresh.authority === "owner" || fresh.status !== "active") continue;
-    const aliases = [...new Set([...fresh.aliases, ...losers.flatMap((loser) => loser.aliases)])];
-    yield* input.store
-      .updateMemory({
-        id: survivor.id,
-        revision: fresh.revision,
-        text: mergedText,
-        ...(mergedSubject !== fresh.subject ? { subject: mergedSubject } : {}),
-        ...(aliases.length !== fresh.aliases.length ? { aliases } : {}),
-        by: "dream",
-      })
-      .pipe(Effect.catch(() => Effect.void));
-    // Re-point relations from losers onto the survivor, then supersede losers.
-    for (const loser of losers) {
-      const relations = yield* input.store
-        .listMemoryRelations(loser.id)
-        .pipe(Effect.orElseSucceed(() => []));
-      for (const relation of relations) {
-        const neighborId = relation.targetId === loser.id ? relation.sourceId : relation.targetId;
-        if (neighborId === survivor.id) continue;
-        yield* input.store
-          .addMemoryRelation({
-            sourceId: survivor.id,
-            targetId: neighborId,
-            type: relation.type as never,
-            confidence: relation.confidence,
-            origin: "dream",
-          })
-          .pipe(Effect.catch(() => Effect.void));
-      }
-      const loserFresh = yield* input.store
-        .getMemory(loser.id)
-        .pipe(Effect.orElseSucceed(() => undefined));
-      if (loserFresh !== undefined && loserFresh.authority !== "owner") {
-        yield* input.store
-          .updateMemory({
-            id: loser.id,
-            revision: loserFresh.revision,
-            status: "superseded",
-            by: "dream",
-          })
-          .pipe(Effect.catch(() => Effect.void));
-      }
-    }
-    merged += losers.length;
-    changes += losers.length + 1;
+    mergePlans.push({
+      survivorId: survivor.id,
+      loserIds: losers.map((loser) => loser.id),
+      mergedText,
+      mergedSubject,
+      loserCount: losers.length,
+    });
+    plannedCost += group.length;
+  }
+  yield* input.store.withTransaction(
+    Effect.forEach(
+      mergePlans,
+      (plan) =>
+        Effect.gen(function* () {
+          const survivor = yield* input.store.getMemory(plan.survivorId);
+          if (
+            survivor === undefined ||
+            survivor.authority === "owner" ||
+            survivor.status !== "active"
+          )
+            return;
+          const losers = yield* Effect.forEach(plan.loserIds, (loserId) =>
+            input.store.getMemory(loserId).pipe(Effect.orElseSucceed(() => undefined)),
+          );
+          const liveLosers = losers.filter(
+            (loser): loser is DropwaveMemoryItem =>
+              loser !== undefined && loser.authority !== "owner",
+          );
+          const aliases = [
+            ...new Set([...survivor.aliases, ...liveLosers.flatMap((loser) => loser.aliases)]),
+          ].slice(0, 12);
+          yield* input.store
+            .updateMemory({
+              id: plan.survivorId,
+              revision: survivor.revision,
+              text: plan.mergedText,
+              ...(plan.mergedSubject !== survivor.subject ? { subject: plan.mergedSubject } : {}),
+              ...(aliases.length !== survivor.aliases.length ? { aliases } : {}),
+              by: "dream",
+            })
+            .pipe(Effect.catch(() => Effect.void));
+          for (const loser of liveLosers) {
+            const relations = yield* input.store
+              .listMemoryRelations(loser.id)
+              .pipe(Effect.orElseSucceed(() => []));
+            for (const relation of relations) {
+              const neighborId =
+                relation.targetId === loser.id ? relation.sourceId : relation.targetId;
+              if (neighborId === plan.survivorId) continue;
+              yield* input.store
+                .addMemoryRelation({
+                  sourceId: plan.survivorId,
+                  targetId: neighborId,
+                  type: relation.type as never,
+                  confidence: relation.confidence,
+                  origin: "dream",
+                })
+                .pipe(Effect.catch(() => Effect.void));
+            }
+            yield* input.store
+              .updateMemory({
+                id: loser.id,
+                revision: loser.revision,
+                status: "superseded",
+                by: "dream",
+              })
+              .pipe(Effect.catch(() => Effect.void));
+          }
+        }),
+      { discard: true },
+    ),
+  );
+  for (const plan of mergePlans) {
+    merged += plan.loserCount;
+    changes += plan.loserCount + 1;
   }
 
-  // Enrich thin items from their own evidence quotes only.
+  // Phase 2 — enrich thin items from their own evidence quotes only, one tx.
+  const enrichPlans: Array<{ id: string; text: string }> = [];
   for (const item of items) {
-    if (changes >= changeCap) break;
+    if (changes + enrichPlans.length >= changeCap) break;
     if (item.authority === "owner" || item.text.length >= THIN_ITEM_CHARS) continue;
     const quote = item.evidence.find(
       (entry) => entry.quote.trim().length > item.text.length,
     )?.quote;
     if (quote === undefined) continue;
-    const fresh = yield* input.store.getMemory(item.id).pipe(Effect.orElseSucceed(() => undefined));
-    if (fresh === undefined) continue;
-    const ok = yield* input.store
-      .updateMemory({
-        id: item.id,
-        revision: fresh.revision,
-        text: quote.trim().slice(0, 600),
-        by: "dream",
-      })
-      .pipe(
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      );
-    if (ok) {
-      enriched += 1;
-      changes += 1;
-    }
+    enrichPlans.push({ id: item.id, text: quote.trim().slice(0, 600) });
   }
+  yield* input.store.withTransaction(
+    Effect.forEach(
+      enrichPlans,
+      (plan) =>
+        Effect.gen(function* () {
+          const fresh = yield* input.store.getMemory(plan.id);
+          if (fresh === undefined) return;
+          const ok = yield* input.store
+            .updateMemory({ id: plan.id, revision: fresh.revision, text: plan.text, by: "dream" })
+            .pipe(
+              Effect.as(true),
+              Effect.catch(() => Effect.succeed(false)),
+            );
+          if (ok) enriched += 1;
+        }),
+      { discard: true },
+    ),
+  );
+  changes += enrichPlans.length;
 
   const decay = yield* input.store
     .decayDreamRelations({ scale: RELATION_DECAY, pruneBelow: RELATION_PRUNE_BELOW })

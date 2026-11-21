@@ -92,7 +92,8 @@ function evidenceScore(item: DropwaveMemoryItem): number {
   return item.evidence.length > 0 ? Math.min(1, 0.6 + item.evidence.length * 0.1) : 0.3;
 }
 
-function rerankScore(candidate: RecallCandidateScore, nowMs: number): number {
+/** @public exported for weight-coverage tests */
+export function rerankScore(candidate: RecallCandidateScore, nowMs: number): number {
   const item = candidate.item;
   const best = Math.max(candidate.semantic, candidate.lexical, candidate.graph);
   return (
@@ -105,7 +106,8 @@ function rerankScore(candidate: RecallCandidateScore, nowMs: number): number {
   );
 }
 
-function lexicalScore(item: DropwaveMemoryItem, ftsRank: number | undefined): number {
+/** @public exported for field-scoring tests */
+export function lexicalScore(item: DropwaveMemoryItem, ftsRank: number | undefined): number {
   if (ftsRank === undefined) return 0;
   const rank = Math.max(0, 1 - ftsRank);
   // Field-aware blend on top of the FTS position.

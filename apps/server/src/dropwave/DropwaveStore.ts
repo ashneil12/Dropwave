@@ -28,6 +28,7 @@ import {
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import { PERSONALITY_SOURCES } from "./personality/sources.ts";
@@ -62,6 +63,22 @@ function makeId(prefix: string): string {
 
 function isOpenAskStatus(status: DropwaveAskStatus): boolean {
   return status !== "done" && status !== "dropped";
+}
+
+function withSqliteTransaction<T>(db: NodeSqlite.DatabaseSync, fn: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const result = fn();
+    db.exec("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      db.exec("ROLLBACK");
+    } catch {
+      // ignore rollback errors
+    }
+    throw error;
+  }
 }
 
 export function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
@@ -193,8 +210,7 @@ function initializeMemoryV2Schema(db: NodeSqlite.DatabaseSync): void {
     // Pre-v2 table: rebuild with the full column set and migrate rows in one
     // transaction so no memory is lost. Scope 'global' + persona_id NULL becomes
     // 'owner', 'global' + persona_id becomes 'bot', 'project' is unchanged.
-    db.exec("BEGIN IMMEDIATE");
-    try {
+    withSqliteTransaction(db, () => {
       db.exec(`
         CREATE TABLE dropwave_memories_v2 (
           id TEXT PRIMARY KEY,
@@ -270,15 +286,7 @@ function initializeMemoryV2Schema(db: NodeSqlite.DatabaseSync): void {
         DROP TABLE dropwave_memories;
         ALTER TABLE dropwave_memories_v2 RENAME TO dropwave_memories;
       `);
-      db.exec("COMMIT");
-    } catch (cause) {
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        // ignore rollback failure; surface the original error
-      }
-      throw cause;
-    }
+    });
   } else {
     // v2 table exists; fill any column a partial migration may have missed.
     const v2Defaults: Record<string, string> = {
@@ -754,6 +762,21 @@ export interface DropwaveStoreShape {
     readonly scope?: DropwaveMemoryScope | undefined;
     readonly limit?: number | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveMemoryItem>, DropwaveOperationError>;
+
+  readonly withTransaction: <A, E>(
+    effect: Effect.Effect<A, E>,
+  ) => Effect.Effect<A, E | DropwaveOperationError>;
+
+  readonly appendMemoryEvidence: (input: {
+    readonly id: string;
+    readonly revision: number;
+    readonly evidence: {
+      readonly quote: string;
+      readonly sourceMessageId?: string | null;
+      readonly threadId?: string | null;
+      readonly at: string;
+    };
+  }) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
 
   readonly listDreamMemoryItems: () => Effect.Effect<
     ReadonlyArray<DropwaveMemoryItem>,
@@ -1476,6 +1499,47 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             ...params,
           );
           return rows.map(rowToMemory);
+        },
+        catch: storageError,
+      }),
+
+    withTransaction: (effect) =>
+      Effect.uninterruptible(
+        Effect.gen(function* () {
+          db.exec("BEGIN IMMEDIATE");
+          const exit = yield* Effect.exit(effect);
+          if (Exit.isSuccess(exit)) {
+            db.exec("COMMIT");
+            return exit.value;
+          }
+          db.exec("ROLLBACK");
+          return yield* Effect.failCause(exit.cause);
+        }),
+      ),
+
+    appendMemoryEvidence: (input) =>
+      Effect.try({
+        try: () => {
+          const existing = getOne<MemoryRow>(
+            "SELECT * FROM dropwave_memories WHERE id = ?",
+            input.id,
+          );
+          if (!existing) throw new Error(`Memory "${input.id}" not found.`);
+          if ((existing.revision ?? 1) !== input.revision) {
+            throw new Error(
+              `Memory "${input.id}" changed since it was read (revision ${existing.revision}).`,
+            );
+          }
+          const merged = mergeEvidenceJson(existing.evidence_json, [input.evidence]);
+          const timestamp = nowIso();
+          db.prepare(
+            `UPDATE dropwave_memories
+             SET evidence_json = ?, revision = revision + 1, updated_at = ?
+             WHERE id = ?`,
+          ).run(merged, timestamp, input.id);
+          const row = getOne<MemoryRow>("SELECT * FROM dropwave_memories WHERE id = ?", input.id)!;
+          syncMemoryFts(db, row);
+          return rowToMemory(row);
         },
         catch: storageError,
       }),
