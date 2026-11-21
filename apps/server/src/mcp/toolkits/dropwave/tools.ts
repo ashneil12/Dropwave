@@ -18,6 +18,9 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as DropwaveDocsService from "../../../dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "../../../dropwave/DropwaveStore.ts";
 import * as DropwaveSupervisor from "../../../dropwave/DropwaveSupervisor.ts";
+import * as MemoryEmbeddings from "../../../dropwave/memoryEmbeddings.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 
@@ -51,13 +54,40 @@ const DropwaveAsksTool = Tool.make("dropwave_asks", {
 
 const DropwaveMemoryTool = Tool.make("dropwave_memory", {
   description:
-    "Memory and chat summary tree. list/search: durable facts, rules, and preferences. save: record a durable fact (scope: project or global; about: owner or self, global only; include the owner's quote when known). zoom: expand a summary tree nodeId. search_tree: search older summarized chat history.",
+    "Memory and chat summary tree. save: record a durable fact (scope: owner = shared everywhere, bot = this bot only, project = this project; include subject, tags, and the owner's exact quote for owner-scope or rule items). update: revise an item by id. link: relate two items. forget: archive an item (undoable). set_scope: move an item between owner/bot/project. search: recall pipeline over memories, returns items plus the recall trace. list: browse stored items. zoom/search_tree: summary tree.",
   parameters: Schema.Struct({
-    action: Schema.Literals(["list", "search", "save", "zoom", "search_tree"]),
+    action: Schema.Literals([
+      "list",
+      "search",
+      "save",
+      "update",
+      "link",
+      "forget",
+      "set_scope",
+      "zoom",
+      "search_tree",
+    ]),
     query: Schema.optional(Schema.String),
     kind: Schema.optional(DropwaveMemoryKind),
     scope: Schema.optional(DropwaveMemoryScope),
     about: Schema.optional(Schema.Literals(["owner", "self"])),
+    id: Schema.optional(TrimmedNonEmptyString),
+    targetId: Schema.optional(TrimmedNonEmptyString),
+    relationType: Schema.optional(
+      Schema.Literals([
+        "about",
+        "part_of",
+        "depends_on",
+        "replaces",
+        "contradicts",
+        "owned_by",
+        "uses",
+        "decided_in",
+      ]),
+    ),
+    subject: Schema.optional(TrimmedNonEmptyString),
+    aliases: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+    tags: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
     text: Schema.optional(TrimmedNonEmptyString),
     quote: Schema.optional(Schema.String),
     confidence: Schema.optional(DropwaveMemoryConfidence),
@@ -66,7 +96,13 @@ const DropwaveMemoryTool = Tool.make("dropwave_memory", {
   success: Schema.Record(Schema.String, Schema.Unknown),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
-  dependencies: [...baseDeps, DropwaveStore.DropwaveStore],
+  dependencies: [
+    ...baseDeps,
+    DropwaveStore.DropwaveStore,
+    MemoryEmbeddings.MemoryEmbeddings,
+    TextGeneration.TextGeneration,
+    ServerSettings.ServerSettingsService,
+  ],
 })
   .annotate(Tool.Title, "Use Dropwave memory")
   .annotate(Tool.Destructive, false)

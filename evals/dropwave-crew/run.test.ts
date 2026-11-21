@@ -74,6 +74,7 @@ const state = (over: Partial<CaseState>): CaseState => ({
   teammateMessages: new Map(),
   leadProfile: undefined,
   teammateProfiles: [],
+  recallTraces: [],
   workspaceRoot: "/w/main",
   ...over,
 });
@@ -159,36 +160,24 @@ describe("evaluateCheck", () => {
   it("memory_saved: matches scope, about, kind and keywords", () => {
     const s = state({
       memories: [
-        memory({ scope: "global", personaId: null, text: "Owner's name is Ash" }),
+        memory({ scope: "owner", personaId: null, text: "Owner's name is Ash" }),
         memory({ scope: "project", text: "use pnpm here" }),
-        memory({ scope: "global", personaId: "per-1", text: "Atlas is dry-witted" }),
+        memory({ scope: "bot", personaId: "per-1", text: "Atlas is dry-witted" }),
       ],
     });
     expect(
-      evaluateCheck(
-        { kind: "memory_saved", keywords: ["ash"], scope: "global", about: "owner" },
-        s,
-        ctx([]),
-      ).pass,
+      evaluateCheck({ kind: "memory_saved", keywords: ["ash"], scope: "owner" }, s, ctx([])).pass,
     ).toBe(true);
     expect(
       evaluateCheck({ kind: "memory_saved", keywords: ["pnpm"], scope: "project" }, s, ctx([]))
         .pass,
     ).toBe(true);
-    // a self memory must not satisfy an owner check
+    // a bot memory must not satisfy an owner check
     expect(
-      evaluateCheck(
-        { kind: "memory_saved", keywords: ["atlas"], scope: "global", about: "owner" },
-        s,
-        ctx([]),
-      ).pass,
+      evaluateCheck({ kind: "memory_saved", keywords: ["atlas"], scope: "owner" }, s, ctx([])).pass,
     ).toBe(false);
     expect(
-      evaluateCheck(
-        { kind: "memory_saved", keywords: ["atlas"], scope: "global", about: "self" },
-        s,
-        ctx([]),
-      ).pass,
+      evaluateCheck({ kind: "memory_saved", keywords: ["atlas"], scope: "bot" }, s, ctx([])).pass,
     ).toBe(true);
     expect(
       evaluateCheck(
@@ -395,5 +384,43 @@ describe("evaluateCheck", () => {
         ctx([]),
       ).pass,
     ).toBe(false);
+  });
+
+  it("recall_trace matches shown memory text and rejects absent keywords", () => {
+    const pref = memory({ id: "mem-pref", text: "Prefers short answers" });
+    const rule = memory({ id: "mem-rule", text: "Always run npm test before done" });
+    const s = state({
+      memories: [pref, rule],
+      recallTraces: [
+        {
+          turnKey: "t1",
+          createdAt: "2026-01-01T00:00:00Z",
+          gate: "hit",
+          shown: [{ id: "mem-pref" }],
+          drops: [{ id: "mem-rule", reason: "score" }],
+        },
+      ],
+    });
+    const check: Check = {
+      kind: "recall_trace",
+      shownKeywords: ["short answers"],
+      absentKeywords: ["npm test"],
+    };
+    expect(evaluateCheck(check, s, ctx([check])).pass).toBe(true);
+    const leaked = state({
+      memories: [pref, rule],
+      recallTraces: [
+        {
+          turnKey: "t1",
+          createdAt: "2026-01-01T00:00:00Z",
+          gate: "hit",
+          shown: [{ id: "mem-pref" }, { id: "mem-rule" }],
+          drops: [],
+        },
+      ],
+    });
+    expect(evaluateCheck(check, leaked, ctx([check])).pass).toBe(false);
+    const empty = state({ memories: [pref], recallTraces: [] });
+    expect(evaluateCheck(check, empty, ctx([check])).pass).toBe(false);
   });
 });

@@ -2055,6 +2055,202 @@
   color: var(--dw-text-muted);
 }
 
+/* Memory v2 screen */
+[data-dropwave-memory-header] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+[data-dropwave-memory-header] h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+}
+[data-dropwave-memory-header] p {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dw-text-dim);
+  max-width: 52ch;
+}
+[data-dropwave-memory-header] [data-dropwave-header-button] svg:last-child[data-open] {
+  transform: rotate(180deg);
+}
+[data-dropwave-memory-filters] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+[data-dropwave-memory-filters] [data-dropwave-docs-search] {
+  flex: 1 1 220px;
+}
+[data-dropwave-memory-search-note],
+[data-dropwave-memory-error] {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--dw-text-dim);
+}
+[data-dropwave-memory-error] {
+  color: var(--dw-danger, #f87171);
+}
+[data-dropwave-memory-traces] {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgb(255 255 255 / 5%);
+  border: 1px solid var(--dw-hairline);
+}
+[data-dropwave-memory-traces] h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dw-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+[data-dropwave-memory-traces] ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+[data-dropwave-memory-trace-head] {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11.5px;
+  color: var(--dw-text-muted);
+}
+[data-dropwave-memory-trace-head] code {
+  font-size: 11px;
+}
+[data-dropwave-memory-trace-row] {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+[data-dropwave-memory-trace-drops] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+[data-dropwave-memory-trace-drops] span {
+  font-size: 11px;
+  color: var(--dw-text-muted);
+  background: rgb(255 255 255 / 6%);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+[data-dropwave-memory-review] {
+  margin: 0 0 14px;
+}
+[data-dropwave-memory-review] h3,
+[data-dropwave-memory-group] h3 {
+  margin: 14px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dw-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+[data-dropwave-memory-review] > h3:first-child {
+  margin-top: 0;
+}
+[data-dropwave-memory-review] ul,
+[data-dropwave-memory-group] ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+[data-dropwave-memory-review-card],
+[data-dropwave-memory-card] {
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: rgb(255 255 255 / 5%);
+  border: 1px solid var(--dw-hairline);
+}
+[data-dropwave-memory-card]:hover {
+  transform: translateY(-1px);
+}
+[data-dropwave-memory-card-head] {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+[data-dropwave-memory-card-head] [data-dropwave-doc-pill] {
+  pointer-events: none;
+}
+[data-dropwave-memory-card-head] > :last-child {
+  margin-left: auto;
+}
+[data-dropwave-memory-card] strong {
+  display: block;
+  font-size: 12.5px;
+  margin-bottom: 3px;
+}
+[data-dropwave-memory-card] p {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+[data-dropwave-memory-tags] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+[data-dropwave-memory-quote] {
+  font-size: 11.5px !important;
+  color: var(--dw-text-muted);
+  font-style: italic;
+}
+[data-dropwave-memory-open-chat] {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  border: none;
+  background: none;
+  color: var(--dw-accent, #8ab4ff);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 0;
+}
+[data-dropwave-memory-conflict] {
+  font-size: 11.5px;
+  color: var(--dw-warn, #fbbf24);
+}
+[data-dropwave-memory-review-card] {
+  border-color: rgb(251 191 36 / 35%);
+}
+[data-dropwave-memory-review-actions] {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+[data-dropwave-memory-journal] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dw-text-muted);
+}
+[data-dropwave-memory-view] [data-dropwave-panel-empty] {
+  margin-top: 20px;
+}
+
 /* Shared button helpers for panels & editor */
 [data-dropwave-header-button],
 [data-dropwave-primary-button] {
@@ -5344,21 +5540,31 @@
   font-weight: 600;
 }
 [data-dw-blocknote] .bn-block-content[data-content-type="heading"][data-level="1"] {
-  --level: 0.94em;
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.3;
 }
 [data-dw-blocknote] .bn-block-content[data-content-type="heading"][data-level="2"] {
-  --level: 0.84em;
-  font-weight: 580;
+  font-size: 18px;
+  font-weight: 620;
+  line-height: 1.35;
 }
 [data-dw-blocknote] .bn-block-content[data-content-type="heading"][data-level="3"] {
-  --level: 0.78em;
-  font-weight: 560;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
 }
 [data-dw-blocknote] .bn-block-content[data-content-type="heading"][data-level="4"],
 [data-dw-blocknote] .bn-block-content[data-content-type="heading"][data-level="5"],
 [data-dw-blocknote] .bn-block-content[data-content-type="heading"][data-level="6"] {
-  --level: 0.75em;
-  font-weight: 560;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+/* A leading "# Title" that duplicates the title field stays in the file but
+   is hidden in the editor so the title never shows twice. */
+[data-dw-blocknote][data-dw-hide-title-h1] .bn-block-outer:first-child {
+  display: none;
 }
 /* Formatting toolbar + slash menu: one glass pill, hairline, compact. */
 [data-dw-blocknote] .bn-formatting-toolbar,

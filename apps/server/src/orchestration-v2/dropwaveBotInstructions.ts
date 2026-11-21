@@ -120,14 +120,10 @@ export function dropwaveBotInstructions(
     }
   }
 
-  // Harness-compiled durable memory (OptMem) — three layers: owner-global, persona-global, project.
+  // Harness-compiled durable memory (OptMem) — three layers: owner, persona, project.
   const memories = compiled.memories ?? [];
-  const ownerMemories = memories.filter(
-    (item) => item.scope === "global" && item.personaId === null,
-  );
-  const selfMemories = memories.filter(
-    (item) => item.scope === "global" && item.personaId !== null,
-  );
+  const ownerMemories = memories.filter((item) => item.scope === "owner");
+  const selfMemories = memories.filter((item) => item.scope === "bot");
   const projectMemories = memories.filter((item) => item.scope === "project");
   if (ownerMemories.length > 0) {
     instructions.push(

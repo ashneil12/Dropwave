@@ -488,6 +488,51 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
       })),
     );
   }
+  // Recall traces live in the eval home's dropwave.sqlite; the newest trace on
+  // the lead thread is the <dropwave_recall> block its last turn actually saw.
+  // Only run: turn keys count - mcp:memory-search calls persist traces too, but
+  // a tool search is not the turn's injected context.
+  const recallTraces: Array<CaseState["recallTraces"][number]> = [];
+  if (ctx.leadId !== undefined) {
+    try {
+      const db = new NodeSqlite.DatabaseSync(
+        NodePath.join(server.home, "userdata", "dropwave.sqlite"),
+        { readOnly: true },
+      );
+      const rows = db
+        .prepare(
+          `SELECT turn_key, created_at, trace_json FROM memory_recall_traces
+           WHERE thread_id = ? AND turn_key LIKE 'run:%'
+           ORDER BY created_at DESC LIMIT 10`,
+        )
+        .all(ctx.leadId) as Array<{
+        turn_key: string;
+        created_at: string;
+        trace_json: string;
+      }>;
+      db.close();
+      for (const row of rows) {
+        try {
+          const trace = JSON.parse(row.trace_json) as {
+            gate?: string;
+            shown?: Array<{ id: string }>;
+            drops?: Array<{ id: string; reason?: string }>;
+          };
+          recallTraces.push({
+            turnKey: row.turn_key,
+            createdAt: row.created_at,
+            gate: trace.gate,
+            shown: trace.shown ?? [],
+            drops: trace.drops ?? [],
+          });
+        } catch {
+          /* malformed trace row */
+        }
+      }
+    } catch {
+      /* db missing or unreadable: report empty, don't fabricate */
+    }
+  }
   return {
     asks,
     memories,
@@ -504,6 +549,7 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
       const bot = p.thread.dropwaveBot;
       return bot?.kind === "teammate" ? [{ title: p.thread.title, role: bot.role ?? "" }] : [];
     }),
+    recallTraces,
     workspaceRoot: ctx.workspaceRoot,
   };
 }
@@ -655,8 +701,7 @@ async function runCase(
         await call(
           server.rpc["dropwave.memory.save"]({
             projectId,
-            scope: "global",
-            about: "owner",
+            scope: "owner",
             kind: "fact",
             text,
           } as never),

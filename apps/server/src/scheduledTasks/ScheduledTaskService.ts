@@ -58,6 +58,7 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { cleanHabitSummary, habitSummaryFallback, habitSummaryPrompt } from "./habitSummary.ts";
+import * as MemoryTidy from "./memoryTidy.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
@@ -1117,9 +1118,34 @@ export const layer = Layer.effect(
               }),
             );
 
-        // Capture defects and interrupts too so dispatch failures still reach markCompleted.
-        const result =
-          active.threadId === null
+        // The built-in Memory tidy habit runs the dream directly; it never
+        // dispatches a prompt to a thread.
+        const result = MemoryTidy.isMemoryTidyTaskId(active.id)
+          ? yield* Effect.exit(
+              Effect.gen(function* () {
+                const project = Option.isSome(projectStore)
+                  ? yield* projectStore.value
+                      .get(active.projectId)
+                      .pipe(Effect.orElseSucceed(() => Option.none()))
+                  : Option.none();
+                const tidy = yield* MemoryTidy.runMemoryTidy({
+                  sql,
+                  store: dropwaveStore,
+                  textGeneration,
+                  serverSettings,
+                  projectId: active.projectId,
+                  workspaceRoot: Option.isSome(project) ? project.value.workspaceRoot : "",
+                });
+                yield* Effect.logInfo("memory tidy run finished", {
+                  taskId: active.id,
+                  ran: tidy.ran,
+                  ...(tidy.ran ? {} : { reason: tidy.reason ?? "skipped" }),
+                  merged: tidy.merged,
+                  enriched: tidy.enriched,
+                });
+              }).pipe(Effect.as(null as ThreadId | null)),
+            )
+          : active.threadId === null
             ? yield* Effect.exit(
                 threadLaunch
                   .launch({
@@ -1415,7 +1441,11 @@ export const layer = Layer.effect(
     yield* scheduler.register("scheduled-tasks", runDueTasks());
 
     const list: ScheduledTaskService["Service"]["list"] = () =>
-      listRows().pipe(
+      ensureMemoryTidyTask().pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("memory tidy ensure failed", { cause }).pipe(Effect.asVoid),
+        ),
+        Effect.andThen(listRows()),
         Effect.map((tasks) => ({
           tasks,
           timeZone: DateTime.zoneToString(DateTime.zoneMakeLocal()),
@@ -1480,7 +1510,10 @@ export const layer = Layer.effect(
         const { settings } = resolveProjectSettings(allSettings, task.projectId);
         const modelSelection =
           settings.textGenerationModelSelection ?? settings.defaultModelSelection;
-        const promptHash = (yield* digest.digestHex(Digest.sha256, task.prompt)).slice(0, 24);
+        const promptHash = (yield* digest.digestHex(
+          Digest.sha256,
+          new TextEncoder().encode(task.prompt),
+        )).slice(0, 24);
         let summary = habitSummaryFallback(task.prompt);
         if (modelSelection !== undefined && Option.isSome(textGeneration)) {
           const reply = yield* textGeneration.value
@@ -1691,6 +1724,52 @@ export const layer = Layer.effect(
       return { task: (yield* findTask(id)) ?? task };
     });
 
+    // The built-in Memory tidy habit exists once per environment. Ensured at
+    // boot and whenever clients list tasks, so a first project created after
+    // startup still gets it; a deleted host project retargets to the first
+    // live one. It is never deletable; pausing goes through setEnabled.
+    const ensureMemoryTidyTask = Effect.fn("ScheduledTaskService.ensureMemoryTidyTask")(
+      function* () {
+        if (
+          Option.isNone(dropwaveStore) ||
+          Option.isNone(projectStore) ||
+          Option.isNone(serverSettings)
+        ) {
+          return;
+        }
+        const existing = yield* findTask(MemoryTidy.MEMORY_TIDY_TASK_ID).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        const projects = yield* projectStore.value
+          .list()
+          .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<ProjectStore.ProjectRow>));
+        const host = projects.find((project) => project.deletedAt === null) ?? projects[0];
+        if (host === undefined) return;
+        const hostAlive =
+          existing === null ||
+          (yield* projectStore.value.get(existing.projectId).pipe(
+            Effect.map((project) => Option.isSome(project)),
+            Effect.orElseSucceed(() => true),
+          ));
+        if (existing !== null && hostAlive) return;
+        const allSettings = yield* serverSettings.value.getSettings.pipe(
+          Effect.orElseSucceed(() => undefined),
+        );
+        if (allSettings === undefined) return;
+        const { settings } = resolveProjectSettings(allSettings, host.projectId);
+        const modelSelection =
+          settings.textGenerationModelSelection ?? settings.defaultModelSelection;
+        if (modelSelection == null) return;
+        yield* upsert(
+          MemoryTidy.memoryTidyUpsertInput({ projectId: host.projectId, modelSelection }),
+        ).pipe(
+          Effect.catch((cause) =>
+            Effect.logWarning("Could not register the memory tidy habit", { cause }),
+          ),
+        );
+      },
+    );
+
     const setEnabled: ScheduledTaskService["Service"]["setEnabled"] = Effect.fn(
       "ScheduledTaskService.setEnabled",
     )(function* (input) {
@@ -1773,11 +1852,17 @@ export const layer = Layer.effect(
       );
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
-      deleteRow(input.id).pipe(
-        Effect.andThen(forgetWebhookTask(input.id)),
-        Effect.andThen(notifyChanged),
-        Effect.as({ id: input.id }),
-      );
+      MemoryTidy.isMemoryTidyTaskId(input.id)
+        ? Effect.fail(
+            taskError("Memory tidy is a built-in habit and cannot be deleted.", {
+              taskId: input.id,
+            }),
+          )
+        : deleteRow(input.id).pipe(
+            Effect.andThen(forgetWebhookTask(input.id)),
+            Effect.andThen(notifyChanged),
+            Effect.as({ id: input.id }),
+          );
 
     const deleteForThread = Effect.fn("ScheduledTaskService.deleteForThread")(function* (
       threadId: ThreadId,
@@ -2746,6 +2831,11 @@ export const layer = Layer.effect(
       );
     });
     yield* scheduler.register("webhook-coalescing", dispatchPending());
+    yield* ensureMemoryTidyTask().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("memory tidy ensure failed", { cause }).pipe(Effect.asVoid),
+      ),
+    );
 
     return ScheduledTaskService.of({
       list,

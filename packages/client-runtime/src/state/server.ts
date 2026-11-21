@@ -1936,6 +1936,38 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:dropwave:memory:set-scope",
       tag: WS_METHODS.dropwaveMemorySetScope,
     }),
+    dropwaveMemoryUpdate: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:update",
+      tag: WS_METHODS.dropwaveMemoryUpdate,
+    }),
+    dropwaveMemoryUndo: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:undo",
+      tag: WS_METHODS.dropwaveMemoryUndo,
+    }),
+    dropwaveMemoryReview: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:review",
+      tag: WS_METHODS.dropwaveMemoryReview,
+    }),
+    dropwaveMemorySearch: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:search",
+      tag: WS_METHODS.dropwaveMemorySearch,
+    }),
+    dropwaveMemoryTraces: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:traces",
+      tag: WS_METHODS.dropwaveMemoryTraces,
+    }),
+    dropwaveMemoryEmbeddingStatus: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:embedding-status",
+      tag: WS_METHODS.dropwaveMemoryEmbeddingStatus,
+    }),
+    dropwaveMemorySetEmbeddingEnabled: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:set-embedding-enabled",
+      tag: WS_METHODS.dropwaveMemorySetEmbeddingEnabled,
+    }),
+    dropwaveMemoryUndoTidy: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:memory:undo-tidy",
+      tag: WS_METHODS.dropwaveMemoryUndoTidy,
+    }),
     dropwavePersonaList: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:dropwave:persona:list",
       tag: WS_METHODS.dropwavePersonaList,

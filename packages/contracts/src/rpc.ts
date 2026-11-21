@@ -11,14 +11,28 @@ import {
   DropwaveDocsListInput,
   DropwaveDocsListResult,
   DropwaveDocWriteInput,
+  DropwaveMemoryEmbeddingStatusResult,
   DropwaveMemoryListInput,
   DropwaveMemoryListResult,
   DropwaveMemoryRemoveInput,
   DropwaveMemoryRemoveResult,
+  DropwaveMemoryReviewInput,
+  DropwaveMemoryReviewResult,
   DropwaveMemorySaveInput,
   DropwaveMemorySaveResult,
+  DropwaveMemorySearchInput,
+  DropwaveMemorySearchResult,
+  DropwaveMemorySetEmbeddingEnabledInput,
+  DropwaveMemorySetEmbeddingEnabledResult,
   DropwaveMemorySetScopeInput,
   DropwaveMemorySetScopeResult,
+  DropwaveMemoryTracesInput,
+  DropwaveMemoryTracesResult,
+  DropwaveMemoryUndoInput,
+  DropwaveMemoryUndoResult,
+  DropwaveMemoryUndoTidyResult,
+  DropwaveMemoryUpdateInput,
+  DropwaveMemoryUpdateResult,
   DropwaveOperationError,
   DropwavePersonaListResult,
   DropwavePersonaUpsertInput,
@@ -632,6 +646,14 @@ export const WS_METHODS = {
   dropwaveMemorySave: "dropwave.memory.save",
   dropwaveMemoryRemove: "dropwave.memory.remove",
   dropwaveMemorySetScope: "dropwave.memory.setScope",
+  dropwaveMemoryUpdate: "dropwave.memory.update",
+  dropwaveMemoryUndo: "dropwave.memory.undo",
+  dropwaveMemoryReview: "dropwave.memory.review",
+  dropwaveMemorySearch: "dropwave.memory.search",
+  dropwaveMemoryTraces: "dropwave.memory.traces",
+  dropwaveMemoryEmbeddingStatus: "dropwave.memory.embeddingStatus",
+  dropwaveMemorySetEmbeddingEnabled: "dropwave.memory.setEmbeddingEnabled",
+  dropwaveMemoryUndoTidy: "dropwave.memory.undoTidy",
   dropwavePersonaList: "dropwave.persona.list",
   dropwavePersonaUpsert: "dropwave.persona.upsert",
   dropwavePersonaDelete: "dropwave.persona.delete",
@@ -2332,6 +2354,57 @@ const WsDropwaveMemorySetScopeRpc = Rpc.make(WS_METHODS.dropwaveMemorySetScope, 
   error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
 });
 
+const WsDropwaveMemoryUpdateRpc = Rpc.make(WS_METHODS.dropwaveMemoryUpdate, {
+  payload: DropwaveMemoryUpdateInput,
+  success: DropwaveMemoryUpdateResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemoryUndoRpc = Rpc.make(WS_METHODS.dropwaveMemoryUndo, {
+  payload: DropwaveMemoryUndoInput,
+  success: DropwaveMemoryUndoResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemoryReviewRpc = Rpc.make(WS_METHODS.dropwaveMemoryReview, {
+  payload: DropwaveMemoryReviewInput,
+  success: DropwaveMemoryReviewResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemorySearchRpc = Rpc.make(WS_METHODS.dropwaveMemorySearch, {
+  payload: DropwaveMemorySearchInput,
+  success: DropwaveMemorySearchResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemoryTracesRpc = Rpc.make(WS_METHODS.dropwaveMemoryTraces, {
+  payload: DropwaveMemoryTracesInput,
+  success: DropwaveMemoryTracesResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemoryEmbeddingStatusRpc = Rpc.make(WS_METHODS.dropwaveMemoryEmbeddingStatus, {
+  payload: Schema.Struct({}),
+  success: DropwaveMemoryEmbeddingStatusResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveMemorySetEmbeddingEnabledRpc = Rpc.make(
+  WS_METHODS.dropwaveMemorySetEmbeddingEnabled,
+  {
+    payload: DropwaveMemorySetEmbeddingEnabledInput,
+    success: DropwaveMemorySetEmbeddingEnabledResult,
+    error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsDropwaveMemoryUndoTidyRpc = Rpc.make(WS_METHODS.dropwaveMemoryUndoTidy, {
+  payload: Schema.Struct({}),
+  success: DropwaveMemoryUndoTidyResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
 const WsDropwavePersonaListRpc = Rpc.make(WS_METHODS.dropwavePersonaList, {
   payload: Schema.Struct({}),
   success: DropwavePersonaListResult,
@@ -2646,6 +2719,14 @@ export const WsRpcGroup = RpcGroup.make(
   WsDropwaveMemorySaveRpc,
   WsDropwaveMemoryRemoveRpc,
   WsDropwaveMemorySetScopeRpc,
+  WsDropwaveMemoryUpdateRpc,
+  WsDropwaveMemoryUndoRpc,
+  WsDropwaveMemoryReviewRpc,
+  WsDropwaveMemorySearchRpc,
+  WsDropwaveMemoryTracesRpc,
+  WsDropwaveMemoryEmbeddingStatusRpc,
+  WsDropwaveMemorySetEmbeddingEnabledRpc,
+  WsDropwaveMemoryUndoTidyRpc,
   WsDropwavePersonaListRpc,
   WsDropwavePersonaUpsertRpc,
   WsDropwavePersonaDeleteRpc,

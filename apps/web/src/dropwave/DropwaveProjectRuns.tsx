@@ -257,6 +257,27 @@ export function DropwaveProjectRuns({
                 </p>
               )}
             </section>
+
+            <section data-dw-runs-section="">
+              <header data-dw-runs-section-head="">
+                <span data-dw-section-micro="">
+                  <T>Memory</T>
+                </span>
+                <button
+                  type="button"
+                  data-dw-ask-change=""
+                  onClick={() => {
+                    onClose();
+                    workspace.setMainView("docs", { docsTab: "memory" });
+                  }}
+                >
+                  <T>Open memory</T>
+                </button>
+              </header>
+              <p data-dw-runs-empty="">
+                <T>Preferences, rules and facts the crew carries across projects.</T>
+              </p>
+            </section>
           </div>
         </DialogPanel>
       </DialogPopup>

@@ -12,7 +12,7 @@ export class DropwaveOperationError extends Schema.TaggedError<
   DropwaveOperationError,
   { readonly brand: unique symbol }
 >()("DropwaveOperationError", {
-  code: Schema.Literals(["invalid_input", "not_found", "forbidden", "storage_error"]),
+  code: Schema.Literals(["invalid_input", "not_found", "forbidden", "storage_error", "conflict"]),
   message: Schema.String,
 }) {}
 
@@ -171,25 +171,80 @@ export const DropwaveMemoryKind = Schema.Literals([
   "decision",
   "rule",
   "lesson",
+  "person",
+  "project",
+  "tool",
 ]);
 export type DropwaveMemoryKind = typeof DropwaveMemoryKind.Type;
 
 export const DropwaveMemoryConfidence = Schema.Literals(["mentioned", "learned", "confirmed"]);
 export type DropwaveMemoryConfidence = typeof DropwaveMemoryConfidence.Type;
 
-export const DropwaveMemoryScope = Schema.Literals(["project", "global"]);
+export const DropwaveMemoryScope = Schema.Literals(["owner", "bot", "project"]);
 export type DropwaveMemoryScope = typeof DropwaveMemoryScope.Type;
+
+export const DropwaveMemoryTier = Schema.Literals(["core", "semantic", "episodic"]);
+export type DropwaveMemoryTier = typeof DropwaveMemoryTier.Type;
+
+export const DropwaveMemoryStatus = Schema.Literals([
+  "active",
+  "needs_review",
+  "superseded",
+  "archived",
+]);
+export type DropwaveMemoryStatus = typeof DropwaveMemoryStatus.Type;
+
+export const DropwaveMemoryAuthority = Schema.Literals(["owner", "agent", "import"]);
+export type DropwaveMemoryAuthority = typeof DropwaveMemoryAuthority.Type;
+
+export const DropwaveMemoryEvidence = Schema.Struct({
+  quote: Schema.String,
+  sourceMessageId: Schema.optional(Schema.NullOr(Schema.String)),
+  threadId: Schema.optional(Schema.NullOr(Schema.String)),
+  at: IsoDateTime,
+});
+export type DropwaveMemoryEvidence = typeof DropwaveMemoryEvidence.Type;
+
+export const DropwaveMemoryConflict = Schema.Struct({
+  candidate: Schema.String,
+  reason: Schema.String,
+  at: IsoDateTime,
+  withId: Schema.optional(Schema.NullOr(Schema.String)),
+});
+export type DropwaveMemoryConflict = typeof DropwaveMemoryConflict.Type;
+
+export const DropwaveMemoryJournalEntry = Schema.Struct({
+  at: IsoDateTime,
+  by: Schema.String,
+  action: Schema.String,
+  before: Schema.optional(Schema.Unknown),
+  after: Schema.optional(Schema.Unknown),
+});
+export type DropwaveMemoryJournalEntry = typeof DropwaveMemoryJournalEntry.Type;
 
 export const DropwaveMemoryItem = Schema.Struct({
   id: TrimmedNonEmptyString,
-  projectId: ProjectId,
+  projectId: Schema.NullOr(ProjectId),
   botThreadId: Schema.NullOr(ThreadId),
   scope: DropwaveMemoryScope,
   personaId: Schema.NullOr(TrimmedNonEmptyString),
   kind: DropwaveMemoryKind,
+  subject: Schema.String,
   text: Schema.String.check(Schema.isMaxLength(600)),
+  aliases: Schema.Array(Schema.String),
+  tags: Schema.Array(Schema.String),
+  tier: DropwaveMemoryTier,
+  status: DropwaveMemoryStatus,
+  authority: DropwaveMemoryAuthority,
+  evidence: Schema.Array(DropwaveMemoryEvidence),
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   sourceMessageId: Schema.optional(Schema.NullOr(Schema.String)),
+  supersedesId: Schema.optional(Schema.NullOr(Schema.String)),
+  supersededById: Schema.optional(Schema.NullOr(Schema.String)),
+  conflict: Schema.optional(DropwaveMemoryConflict),
+  journal: Schema.Array(DropwaveMemoryJournalEntry),
+  revision: NonNegativeInt,
+  lastUserModifiedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   confidence: DropwaveMemoryConfidence,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -214,6 +269,9 @@ export const DropwaveMemoryListInput = Schema.Struct({
   botThreadId: Schema.optional(ThreadId),
   personaId: Schema.optional(TrimmedNonEmptyString),
   query: Schema.optional(Schema.String),
+  statuses: Schema.optional(Schema.Array(DropwaveMemoryStatus)),
+  scope: Schema.optional(DropwaveMemoryScope),
+  limit: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 export type DropwaveMemoryListInput = typeof DropwaveMemoryListInput.Type;
 
@@ -229,7 +287,9 @@ export const DropwaveMemorySaveInput = Schema.Struct({
   about: Schema.optional(Schema.Literals(["owner", "self"])),
   personaId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   kind: DropwaveMemoryKind,
+  subject: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
   text: TrimmedNonEmptyString.check(Schema.isMaxLength(600)),
+  tags: Schema.optional(Schema.Array(Schema.String.check(Schema.isMaxLength(40)))),
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   confidence: Schema.optional(DropwaveMemoryConfidence),
 });
@@ -253,6 +313,8 @@ export type DropwaveMemoryRemoveResult = typeof DropwaveMemoryRemoveResult.Type;
 export const DropwaveMemorySetScopeInput = Schema.Struct({
   id: TrimmedNonEmptyString,
   scope: DropwaveMemoryScope,
+  projectId: Schema.optional(ProjectId),
+  personaId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 export type DropwaveMemorySetScopeInput = typeof DropwaveMemorySetScopeInput.Type;
 
@@ -260,6 +322,128 @@ export const DropwaveMemorySetScopeResult = Schema.Struct({
   item: DropwaveMemoryItem,
 });
 export type DropwaveMemorySetScopeResult = typeof DropwaveMemorySetScopeResult.Type;
+
+export const DropwaveMemoryUpdateInput = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  revision: NonNegativeInt,
+  text: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(600))),
+  subject: Schema.optional(Schema.String.check(Schema.isMaxLength(120))),
+  kind: Schema.optional(DropwaveMemoryKind),
+});
+export type DropwaveMemoryUpdateInput = typeof DropwaveMemoryUpdateInput.Type;
+
+export const DropwaveMemoryUpdateResult = Schema.Struct({
+  item: DropwaveMemoryItem,
+});
+export type DropwaveMemoryUpdateResult = typeof DropwaveMemoryUpdateResult.Type;
+
+export const DropwaveMemoryUndoInput = Schema.Struct({
+  id: TrimmedNonEmptyString,
+});
+export type DropwaveMemoryUndoInput = typeof DropwaveMemoryUndoInput.Type;
+
+export const DropwaveMemoryUndoResult = Schema.Struct({
+  item: DropwaveMemoryItem,
+});
+export type DropwaveMemoryUndoResult = typeof DropwaveMemoryUndoResult.Type;
+
+export const DropwaveMemoryReviewAction = Schema.Literals(["keep_old", "use_new", "keep_both"]);
+export type DropwaveMemoryReviewAction = typeof DropwaveMemoryReviewAction.Type;
+
+export const DropwaveMemoryReviewInput = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  action: DropwaveMemoryReviewAction,
+});
+export type DropwaveMemoryReviewInput = typeof DropwaveMemoryReviewInput.Type;
+
+export const DropwaveMemoryReviewResult = Schema.Struct({
+  item: DropwaveMemoryItem,
+});
+export type DropwaveMemoryReviewResult = typeof DropwaveMemoryReviewResult.Type;
+
+export const DropwaveMemorySearchInput = Schema.Struct({
+  projectId: ProjectId,
+  query: TrimmedNonEmptyString,
+  botThreadId: Schema.optional(ThreadId),
+});
+export type DropwaveMemorySearchInput = typeof DropwaveMemorySearchInput.Type;
+
+export const DropwaveMemorySearchResult = Schema.Struct({
+  items: Schema.Array(DropwaveMemoryItem),
+  trace: Schema.optional(
+    Schema.Struct({
+      gate: Schema.String,
+      shown: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          score: Schema.Number,
+          semantic: Schema.Number,
+          lexical: Schema.Number,
+          via: Schema.optional(Schema.String),
+        }),
+      ),
+      drops: Schema.Array(Schema.Struct({ id: Schema.String, reason: Schema.String })),
+    }),
+  ),
+});
+export type DropwaveMemorySearchResult = typeof DropwaveMemorySearchResult.Type;
+
+export const DropwaveMemoryTracesInput = Schema.Struct({
+  threadId: TrimmedNonEmptyString,
+  limit: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+});
+export type DropwaveMemoryTracesInput = typeof DropwaveMemoryTracesInput.Type;
+
+export const DropwaveMemoryTracesResult = Schema.Struct({
+  traces: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      turnKey: Schema.String,
+      createdAt: IsoDateTime,
+      trace: Schema.Unknown,
+    }),
+  ),
+});
+export type DropwaveMemoryTracesResult = typeof DropwaveMemoryTracesResult.Type;
+
+export const DropwaveMemoryEmbeddingStatusResult = Schema.Struct({
+  status: Schema.Struct({
+    state: Schema.Literals(["disabled", "loading", "ready", "error"]),
+    modelId: Schema.String,
+    dim: Schema.Int,
+    enabled: Schema.Boolean,
+    lastError: Schema.optional(Schema.String),
+    /** 0..1 while the model downloads; absent otherwise. */
+    progress: Schema.optional(Schema.Number),
+  }),
+  lastTidy: Schema.optional(
+    Schema.Struct({
+      at: IsoDateTime,
+      summary: Schema.String,
+      merged: Schema.Int,
+      enriched: Schema.Int,
+      relationsPruned: Schema.Int,
+    }),
+  ),
+});
+export type DropwaveMemoryEmbeddingStatusResult = typeof DropwaveMemoryEmbeddingStatusResult.Type;
+
+export const DropwaveMemorySetEmbeddingEnabledInput = Schema.Struct({
+  enabled: Schema.Boolean,
+});
+export type DropwaveMemorySetEmbeddingEnabledInput =
+  typeof DropwaveMemorySetEmbeddingEnabledInput.Type;
+
+export const DropwaveMemorySetEmbeddingEnabledResult = Schema.Struct({
+  status: DropwaveMemoryEmbeddingStatusResult.fields.status,
+});
+export type DropwaveMemorySetEmbeddingEnabledResult =
+  typeof DropwaveMemorySetEmbeddingEnabledResult.Type;
+
+export const DropwaveMemoryUndoTidyResult = Schema.Struct({
+  undone: Schema.Int,
+});
+export type DropwaveMemoryUndoTidyResult = typeof DropwaveMemoryUndoTidyResult.Type;
 
 export const DropwavePersonaRole = Schema.Literals(["chief_of_staff", "specialist"]);
 export type DropwavePersonaRole = typeof DropwavePersonaRole.Type;

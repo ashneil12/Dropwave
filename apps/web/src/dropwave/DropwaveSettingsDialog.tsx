@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { T, msg, useGT, useMessages } from "gt-react";
 import {
   ArrowUpRightIcon,
+  BrainIcon,
   CpuIcon,
   FolderGit2Icon,
   ImageIcon,
@@ -19,9 +20,11 @@ import { useState } from "react";
 import { ProviderSettingsPanel } from "../components/settings/ProviderSettingsPanel";
 import { Dialog, DialogPopup } from "../components/ui/dialog";
 import { DropwaveCrewSettings } from "./DropwaveCrewSettings";
+import { DropwaveMemorySettings } from "./DropwaveMemorySettings";
 import type { useDropwaveAppearance } from "./DropwaveToolbar";
+import { useDropwaveWorkspace } from "./workspaceContext";
 
-type SettingsSection = "dropwave" | "crew" | "providers" | "engine";
+type SettingsSection = "dropwave" | "crew" | "memory" | "providers" | "engine";
 
 const PRESETS = [
   { key: "mountains", file: "mountains.jpg", label: msg("Mountains") },
@@ -47,6 +50,7 @@ export function DropwaveSettingsDialog({
   const navigate = useNavigate();
   const gt = useGT();
   const m = useMessages();
+  const workspace = useDropwaveWorkspace();
   const [section, setSection] = useState<SettingsSection>("dropwave");
 
   if (!open) return null;
@@ -108,6 +112,18 @@ export function DropwaveSettingsDialog({
               <button
                 type="button"
                 data-dw-settings-nav-item=""
+                aria-current={section === "memory" ? "true" : undefined}
+                onClick={() => setSection("memory")}
+              >
+                <BrainIcon className="size-4" />
+                <span>
+                  <T>Memory</T>
+                </span>
+              </button>
+
+              <button
+                type="button"
+                data-dw-settings-nav-item=""
                 aria-current={section === "providers" ? "true" : undefined}
                 onClick={() => setSection("providers")}
               >
@@ -142,6 +158,8 @@ export function DropwaveSettingsDialog({
                   <T>Workspace & Look</T>
                 ) : section === "crew" ? (
                   <T>Crew</T>
+                ) : section === "memory" ? (
+                  <T>Memory</T>
                 ) : section === "providers" ? (
                   <T>Providers & Models</T>
                 ) : (
@@ -262,6 +280,13 @@ export function DropwaveSettingsDialog({
                 </>
               ) : section === "crew" ? (
                 <DropwaveCrewSettings />
+              ) : section === "memory" ? (
+                <DropwaveMemorySettings
+                  onOpenMemory={() => {
+                    onClose();
+                    workspace?.setMainView("docs", { docsTab: "memory" });
+                  }}
+                />
               ) : section === "providers" ? (
                 <div data-dw-embedded-providers="">
                   <ProviderSettingsPanel />

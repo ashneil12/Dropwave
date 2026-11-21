@@ -24,9 +24,11 @@ function normalizeMarkdown(markdown: string): string {
 
 export default function DropwaveBlockNoteEditor({
   markdown,
+  title,
   onChange,
 }: {
   readonly markdown: string;
+  readonly title?: string | undefined;
   readonly onChange: (markdown: string) => void;
 }) {
   const gt = useGT();
@@ -45,7 +47,23 @@ export default function DropwaveBlockNoteEditor({
     const blocks = editor.tryParseMarkdownToBlocks(markdown);
     const lossy =
       normalizeMarkdown(editor.blocksToMarkdownLossy(blocks)) !== normalizeMarkdown(markdown);
-    return { blocks, lossy };
+    // A leading "# Title" that only repeats the title field is hidden in the
+    // editor; it stays in the block model so saves round-trip it unchanged.
+    const first = blocks[0];
+    const firstContent =
+      first?.type === "heading" && first.props.level === 1
+        ? (first.content as ReadonlyArray<{ readonly text?: string }>)
+        : undefined;
+    const firstText =
+      firstContent === undefined
+        ? ""
+        : firstContent
+            .map((part) => part.text ?? "")
+            .join("")
+            .trim();
+    const hideTitleH1 =
+      !lossy && firstText !== "" && title !== undefined && firstText === title.trim();
+    return { blocks, lossy, hideTitleH1 };
   });
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps the latest onChange reachable from BlockNote's change callback
@@ -80,7 +98,7 @@ export default function DropwaveBlockNoteEditor({
   }
 
   return (
-    <div data-dw-blocknote="">
+    <div data-dw-blocknote="" {...(initial.hideTitleH1 ? { "data-dw-hide-title-h1": "" } : {})}>
       <BlockNoteView
         editor={editor}
         slashMenu

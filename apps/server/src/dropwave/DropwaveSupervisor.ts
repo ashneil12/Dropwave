@@ -27,8 +27,11 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
-import { parseVerifiedModelAsks, quoteInMessage } from "./askExtraction.ts";
+import { isOwnerTypedMessage, parseVerifiedModelAsks, quoteInMessage } from "./askExtraction.ts";
 import { DROPWAVE_ASK_EXTRACTION_PROMPT } from "./askExtractionPrompt.ts";
+import * as MemoryEmbeddings from "./memoryEmbeddings.ts";
+import * as MemoryExtractor from "./memoryExtractor.ts";
+import { saveMemoryMerged } from "./memoryDedupe.ts";
 
 const MODEL_EXTRACTION_TIMEOUT = "90 seconds";
 
@@ -80,19 +83,29 @@ const make = Effect.gen(function* () {
     readonly sourceMessageId: Parameters<typeof store.saveMemory>[0]["sourceMessageId"];
     readonly asks: ReadonlyArray<{ kind: string; summary: string; quote: string }>;
   }) {
-    for (const ask of input.asks) {
-      if (ask.kind !== "rule") continue;
-      yield* store
-        .saveMemory({
-          projectId: input.projectId,
-          botThreadId: input.botThreadId,
-          kind: "rule",
-          text: ask.summary,
-          quote: ask.quote,
-          sourceMessageId: input.sourceMessageId,
-          confidence: "confirmed",
-        })
-        .pipe(Effect.ignore);
+    const ruleAsks = input.asks.filter((ask) => ask.kind === "rule");
+    if (ruleAsks.length === 0) return;
+    const project = yield* projects
+      .get(input.projectId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    const workspaceRoot = Option.isSome(project) ? project.value.workspaceRoot : undefined;
+    const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+    for (const ask of ruleAsks) {
+      yield* saveMemoryMerged({
+        store,
+        embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+        textGeneration,
+        serverSettings,
+        ...(workspaceRoot !== undefined ? { workspaceRoot } : {}),
+        projectId: input.projectId,
+        botThreadId: input.botThreadId,
+        kind: "rule",
+        text: ask.summary,
+        quote: ask.quote,
+        sourceMessageId: input.sourceMessageId,
+        threadId: input.botThreadId,
+        confidence: "confirmed",
+      }).pipe(Effect.ignore);
     }
   });
 
@@ -190,7 +203,7 @@ const make = Effect.gen(function* () {
       // 1. Capture asks & summary tree leaf the instant the owner sends a message to a Dropwave bot.
       if (event.type === "message.updated") {
         const message = event.payload;
-        if (message.role !== "user" || message.createdBy !== "user" || !message.text.trim()) {
+        if (!isOwnerTypedMessage(message) || !message.text.trim()) {
           return;
         }
         const thread = yield* projections.getThread(event.threadId);
@@ -239,6 +252,78 @@ const make = Effect.gen(function* () {
           ),
           serviceScope,
         );
+        // Memory v2 writer trigger (design §3b): count owner messages; run the
+        // extractor every 6, otherwise arm a ~2-minute idle check. The watermark
+        // inside extractMemoriesForThread keeps re-runs idempotent.
+        const botProfile = thread.dropwaveBot;
+        const runExtraction = Effect.gen(function* () {
+          const projectOption = yield* projects.get(thread.projectId);
+          if (Option.isNone(projectOption)) return;
+          const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+          yield* MemoryExtractor.extractMemoriesForThread({
+            store,
+            projections,
+            textGeneration,
+            serverSettings,
+            embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+            projectId: thread.projectId,
+            botThreadId: thread.id,
+            personaId: botProfile?.personaId,
+            botName: thread.title,
+            botRole:
+              botProfile?.kind === "teammate" ? (botProfile.role ?? "teammate") : "Chief of Staff",
+            projectName: projectOption.value.title,
+            workspaceRoot: projectOption.value.workspaceRoot,
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("dropwave memory extraction failed", {
+              botThreadId: thread.id,
+              cause,
+            }),
+          ),
+        );
+        const trigger = yield* MemoryExtractor.noteOwnerMessage({
+          store,
+          botThreadId: thread.id,
+          now: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+        }).pipe(Effect.orElseSucceed(() => "skip" as const));
+        if (trigger === "run") {
+          yield* Effect.forkIn(runExtraction, serviceScope);
+        } else if (trigger === "schedule") {
+          yield* MemoryExtractor.markExtractionScheduled({
+            store,
+            botThreadId: thread.id,
+          }).pipe(Effect.ignore);
+          yield* Effect.forkIn(
+            Effect.gen(function* () {
+              // Wait out the idle window, then re-check: a newer owner message
+              // pushes the deadline out once before we extract anyway.
+              for (let attempt = 0; attempt < 2; attempt += 1) {
+                yield* Effect.sleep(MemoryExtractor.EXTRACTION_IDLE_MS);
+                const due = yield* MemoryExtractor.extractionIdleDue({
+                  store,
+                  botThreadId: thread.id,
+                  now: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+                });
+                if (due || attempt === 1) break;
+              }
+              yield* runExtraction;
+              yield* MemoryExtractor.clearExtractionSchedule({
+                store,
+                botThreadId: thread.id,
+              }).pipe(Effect.ignore);
+            }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("dropwave idle memory extraction failed", {
+                  botThreadId: thread.id,
+                  cause,
+                }),
+              ),
+            ),
+            serviceScope,
+          );
+        }
         yield* store.appendTurnSummary({
           threadId: thread.id,
           messageId: message.id,

@@ -1,14 +1,23 @@
 import {
   type DropwaveBotProfile,
+  type DropwaveMemoryScope,
   MessageId,
   OrchestratorMcpFailure,
   ThreadId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import * as DropwaveDocsService from "../../../dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "../../../dropwave/DropwaveStore.ts";
 import * as DropwaveSupervisor from "../../../dropwave/DropwaveSupervisor.ts";
+import * as MemoryDedupe from "../../../dropwave/memoryDedupe.ts";
+import * as MemoryEmbeddings from "../../../dropwave/memoryEmbeddings.ts";
+import * as MemoryRecall from "../../../dropwave/memoryRecall.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
+import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
+import { isOwnerTypedMessage, quoteInMessage } from "../../../dropwave/askExtraction.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { dispatchFailure, newCommandId, readCaller, readThread } from "../../threadAccess.ts";
 import { DropwaveToolkit } from "./tools.ts";
@@ -85,44 +94,198 @@ const handlers = {
     Effect.gen(function* () {
       const { thread } = yield* resolveCallerThread();
       const store = yield* DropwaveStore.DropwaveStore;
-      if (input.action === "list" || input.action === "search") {
+      const callerPersonaId = thread.dropwaveBot?.personaId;
+
+      const recentOwnerTexts = Effect.gen(function* () {
+        const { projection } = yield* readThread(thread.id, ["messages"]);
+        return projection.messages
+          .filter((message) => isOwnerTypedMessage(message))
+          .sort((a, b) => b.createdAt.epochMilliseconds - a.createdAt.epochMilliseconds)
+          .slice(0, 10)
+          .map((message) => message.text);
+      }).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<string>));
+
+      if (input.action === "list") {
         const items = yield* store
           .listMemories({
             projectId: thread.projectId,
             botThreadId: thread.id,
-            ...(thread.dropwaveBot?.personaId !== undefined
-              ? { personaId: thread.dropwaveBot.personaId }
-              : {}),
+            ...(callerPersonaId !== undefined ? { personaId: callerPersonaId } : {}),
             ...(input.query ? { query: input.query } : {}),
           })
           .pipe(Effect.mapError(mapDropwaveError));
         return { items };
       }
+      if (input.action === "search") {
+        const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+        const ownerTexts = input.query?.trim() ? [input.query] : yield* recentOwnerTexts;
+        const result = yield* MemoryRecall.recallMemories({
+          store,
+          embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+          projectId: thread.projectId,
+          botThreadId: thread.id,
+          ...(callerPersonaId !== undefined ? { personaId: callerPersonaId } : {}),
+          threadId: thread.id,
+          turnKey: `mcp:${MessageId.make(`memory-search:${DateTime.toEpochMillis(DateTime.nowUnsafe())}`)}`,
+          ownerTexts,
+        });
+        const items = yield* Effect.forEach(result.itemIds, (id) =>
+          store.getMemory(id).pipe(Effect.orElseSucceed(() => undefined)),
+        );
+        return {
+          items: items.filter((item) => item !== undefined),
+          trace: result.trace,
+        };
+      }
       if (input.action === "save") {
         if (!input.text) {
           return yield* fail("invalid_request", "save requires text.");
         }
-        const callerPersonaId = thread.dropwaveBot?.personaId;
-        // Global "self" memories bind to the caller's persona; without one they fall
-        // back to project scope so they still only reach this bot.
-        const scope =
-          input.scope === "global"
-            ? input.about === "self" && callerPersonaId === undefined
-              ? "project"
-              : "global"
-            : "project";
-        const personaId =
-          scope === "global" && input.about === "self" ? (callerPersonaId ?? null) : null;
+        // Scope vocabulary: owner = shared with every bot, bot = this persona only,
+        // project = this project. `about` stays as the legacy owner/self shortcut.
+        const scope: DropwaveMemoryScope =
+          input.scope ??
+          (input.about === "self" ? "bot" : input.about === "owner" ? "owner" : "project");
+        const effectiveScope = scope === "bot" && callerPersonaId === undefined ? "project" : scope;
+        const personaId = effectiveScope === "bot" ? (callerPersonaId ?? null) : null;
+        const kind = input.kind ?? "fact";
+        // Owner-scope and rule items need the owner's exact words, verified
+        // against a recent owner message on this thread.
+        if ((effectiveScope === "owner" || kind === "rule") && input.quote?.trim()) {
+          const ownerTexts = yield* recentOwnerTexts;
+          const verified = ownerTexts.some((ownerText) => quoteInMessage(input.quote!, ownerText));
+          if (!verified) {
+            return yield* fail(
+              "invalid_request",
+              "owner-scope and rule memories need a quote copied verbatim from a recent owner message.",
+            );
+          }
+        }
+        const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+        const maybeTextGeneration = yield* Effect.serviceOption(TextGeneration.TextGeneration);
+        const maybeServerSettings = yield* Effect.serviceOption(
+          ServerSettings.ServerSettingsService,
+        );
+        const item = yield* MemoryDedupe.saveMemoryMerged({
+          store,
+          embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+          textGeneration: Option.isSome(maybeTextGeneration)
+            ? maybeTextGeneration.value
+            : undefined,
+          serverSettings: Option.isSome(maybeServerSettings)
+            ? maybeServerSettings.value
+            : undefined,
+          workspaceRoot: "/",
+          projectId: thread.projectId,
+          botThreadId: thread.id,
+          scope: effectiveScope,
+          personaId,
+          kind,
+          ...(input.subject ? { subject: input.subject } : {}),
+          ...(input.aliases?.length ? { aliases: input.aliases } : {}),
+          ...(input.tags?.length ? { tags: input.tags } : {}),
+          text: input.text,
+          ...(input.quote ? { quote: input.quote } : {}),
+          confidence: input.confidence ?? "learned",
+        }).pipe(Effect.mapError(mapDropwaveError));
+        return { item };
+      }
+      if (input.action === "update") {
+        if (!input.id) return yield* fail("invalid_request", "update requires id.");
+        const current = yield* store.getMemory(input.id).pipe(Effect.mapError(mapDropwaveError));
+        if (current === undefined) return yield* fail("invalid_request", "memory not found.");
+        if (current.authority === "owner") {
+          return yield* fail(
+            "invalid_request",
+            "owner-authored memories can only be changed by the owner.",
+          );
+        }
+        const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+        const maybeTextGeneration = yield* Effect.serviceOption(TextGeneration.TextGeneration);
+        const maybeServerSettings = yield* Effect.serviceOption(
+          ServerSettings.ServerSettingsService,
+        );
+        const item = yield* MemoryDedupe.updateMemoryMerged({
+          store,
+          embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+          textGeneration: Option.isSome(maybeTextGeneration)
+            ? maybeTextGeneration.value
+            : undefined,
+          serverSettings: Option.isSome(maybeServerSettings)
+            ? maybeServerSettings.value
+            : undefined,
+          workspaceRoot: "/",
+          projectId: current.projectId ?? thread.projectId,
+          id: input.id,
+          revision: current.revision,
+          ...(input.text !== undefined ? { text: input.text } : {}),
+          ...(input.subject !== undefined ? { subject: input.subject } : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.tags !== undefined ? { tags: input.tags } : {}),
+          ...(input.quote !== undefined ? { quote: input.quote } : {}),
+          ...(input.quote
+            ? {
+                evidence: [
+                  {
+                    quote: input.quote.slice(0, 500),
+                    sourceMessageId: null,
+                    threadId: thread.id,
+                    at: DateTime.formatIso(DateTime.nowUnsafe()),
+                  },
+                ],
+              }
+            : {}),
+          threadId: thread.id,
+          by: "agent",
+        }).pipe(Effect.mapError(mapDropwaveError));
+        return { item };
+      }
+      if (input.action === "link") {
+        if (!input.id || !input.targetId || !input.relationType) {
+          return yield* fail("invalid_request", "link requires id, targetId and relationType.");
+        }
+        if (input.id === input.targetId) {
+          return yield* fail("invalid_request", "a memory cannot link to itself.");
+        }
+        const relation = yield* store
+          .addMemoryRelation({
+            sourceId: input.id,
+            targetId: input.targetId,
+            type: input.relationType,
+            confidence: 1,
+            origin: "agent",
+          })
+          .pipe(Effect.mapError(mapDropwaveError));
+        return { relation };
+      }
+      if (input.action === "forget") {
+        if (!input.id) return yield* fail("invalid_request", "forget requires id.");
+        const current = yield* store.getMemory(input.id).pipe(Effect.mapError(mapDropwaveError));
+        if (current === undefined) return yield* fail("invalid_request", "memory not found.");
+        if (current.authority === "owner") {
+          return yield* fail(
+            "invalid_request",
+            "owner-authored memories can only be removed by the owner.",
+          );
+        }
         const item = yield* store
-          .saveMemory({
+          .updateMemory({
+            id: input.id,
+            revision: current.revision,
+            status: "archived",
+            by: "agent",
+          })
+          .pipe(Effect.mapError(mapDropwaveError));
+        return { item };
+      }
+      if (input.action === "set_scope") {
+        if (!input.id || !input.scope) {
+          return yield* fail("invalid_request", "set_scope requires id and scope.");
+        }
+        const item = yield* store
+          .setMemoryScope(input.id, input.scope, {
             projectId: thread.projectId,
-            botThreadId: thread.id,
-            scope,
-            personaId,
-            kind: input.kind ?? "fact",
-            text: input.text,
-            ...(input.quote ? { quote: input.quote } : {}),
-            confidence: input.confidence ?? "learned",
+            personaId: callerPersonaId ?? null,
           })
           .pipe(Effect.mapError(mapDropwaveError));
         return { item };
