@@ -105,6 +105,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.dropwavePersonaList]: AuthOrchestrationReadScope,
   [WS_METHODS.dropwaveHabitSummariesList]: AuthOrchestrationReadScope,
   [WS_METHODS.dropwaveWorkerReviewsList]: AuthOrchestrationReadScope,
+  [WS_METHODS.dropwaveWorkerReviewsSubscribe]: AuthOrchestrationReadScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   [WS_METHODS.serverUpdateSettings]: AuthSettingsWriteScope,
   [WS_METHODS.serverSearchAcpRegistry]: AuthOrchestrationReadScope,

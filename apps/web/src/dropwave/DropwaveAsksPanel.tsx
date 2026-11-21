@@ -289,15 +289,9 @@ export function DropwaveAsksPanel() {
     : "[]";
   const subagentsByThread = useAtomValue(askBoardSubagentsAtom(subagentsKey));
 
-  const reviewRefreshKey = `${reloadNonce}:${JSON.stringify(
-    Object.values(subagentsByThread)
-      .flatMap((subs) => subs ?? [])
-      .map((sub) => `${sub.id}:${sub.status}`),
-  )}`;
   const workerReviews = useWorkerReviews({
     environmentId: project?.environmentId ?? null,
     projectId: project?.id ?? null,
-    refreshKey: reviewRefreshKey,
   });
   const leadReviewSelection =
     workspace?.lead?.source.dropwaveBot?.kind === "lead"

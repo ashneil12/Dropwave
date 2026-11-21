@@ -662,6 +662,7 @@ export const WS_METHODS = {
   dropwaveBotAdded: "dropwave.bot.added",
   dropwaveHabitSummariesList: "dropwave.habitSummaries.list",
   dropwaveWorkerReviewsList: "dropwave.workerReviews.list",
+  dropwaveWorkerReviewsSubscribe: "dropwave.workerReviews.subscribe",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2444,6 +2445,13 @@ const WsDropwaveWorkerReviewsListRpc = Rpc.make(WS_METHODS.dropwaveWorkerReviews
   error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
 });
 
+const WsDropwaveWorkerReviewsSubscribeRpc = Rpc.make(WS_METHODS.dropwaveWorkerReviewsSubscribe, {
+  payload: DropwaveWorkerReviewsListInput,
+  success: DropwaveWorkerReviewsListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2742,4 +2750,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsDropwaveBotAddedRpc,
   WsDropwaveHabitSummariesListRpc,
   WsDropwaveWorkerReviewsListRpc,
+  WsDropwaveWorkerReviewsSubscribeRpc,
 ).middleware(RpcScopeAuthorization);

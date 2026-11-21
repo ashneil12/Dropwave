@@ -461,13 +461,9 @@ export function DropwaveChatPillar({
 
   const projection = useThreadProjection(activeThreadRef);
   const visibleItems = useThreadVisibleTurnItems(activeThreadRef);
-  const workerSubagentKey = (projection?.projection.subagents ?? [])
-    .map((sub) => `${sub.id}:${sub.status}`)
-    .join("|");
   const workerReviews = useWorkerReviews({
     environmentId: workspace?.project?.environmentId ?? activeThread?.environmentId ?? null,
     projectId: workspace?.project?.id ?? null,
-    refreshKey: workerSubagentKey,
   });
   const leadReviewSelection =
     workspace?.lead?.source.dropwaveBot?.kind === "lead"

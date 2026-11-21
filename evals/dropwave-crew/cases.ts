@@ -237,6 +237,18 @@ const pulseBilling: FixtureFiles = {
   ].join("\n"),
 };
 
+// PulseBilling with the usage bug already fixed: the messy dump's standing rule ("always run npm test before you
+// tell me anything is done") must be satisfiable once the two asked-for fixes land.
+const pulseBillingUsageFixed: FixtureFiles = {
+  ...pulseBilling,
+  "src/usage.js": [
+    "export function overage(used, included) {",
+    "  return Math.max(0, used - included);",
+    "}",
+    "",
+  ].join("\n"),
+};
+
 const fusionShop: FixtureFiles = {
   "package.json": JSON.stringify(
     {
@@ -373,7 +385,7 @@ export const LIVE_EVAL_CASES: ReadonlyArray<LiveEvalCase> = [
     home: "fresh",
     project: {
       title: "PulseBilling",
-      files: pulseBilling,
+      files: pulseBillingUsageFixed,
       setup: {
         mode: "configured",
         // YOLO so finished work can land and asks can close without a merge approval turn.
@@ -426,11 +438,8 @@ export const LIVE_EVAL_CASES: ReadonlyArray<LiveEvalCase> = [
       { kind: "memory_saved", keywords: ["npm test"], scope: "project", memoryKind: "rule" },
       { kind: "no_lead_project_edits" },
       { kind: "jobs_in_isolated_worktrees", min: 1 },
-      // The usage.js bug is deliberately out of scope for this message, so only these suites must pass.
-      {
-        kind: "landed_checks_pass",
-        command: "node --test test/pricing.test.js test/invoice.test.js",
-      },
+      // This fixture has no unrelated failing suite, so the owner's own standing rule (npm test) is the bar.
+      { kind: "landed_checks_pass", command: "npm test" },
       { kind: "teammate_received", teammate: "QA", keywords: [] },
       { kind: "lead_replies_never", mustNotContain: ["captain"] },
     ],

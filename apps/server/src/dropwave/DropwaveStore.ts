@@ -30,6 +30,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
+import * as Stream from "effect/Stream";
 
 import { PERSONALITY_SOURCES } from "./personality/sources.ts";
 import * as Schema from "effect/Schema";
@@ -867,6 +869,15 @@ export interface DropwaveStoreShape {
     readonly limit?: number | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveWorkerReview>, DropwaveOperationError>;
 
+  readonly subscribeWorkerReviews: (input: {
+    readonly projectId?: ProjectId | undefined;
+    readonly leadThreadId?: ThreadId | undefined;
+    readonly limit?: number | undefined;
+  }) => Stream.Stream<
+    { readonly reviews: ReadonlyArray<DropwaveWorkerReview> },
+    DropwaveOperationError
+  >;
+
   readonly recordWorkerReviewLandOverride: (input: {
     readonly jobId: string;
     readonly quote: string;
@@ -1202,7 +1213,10 @@ function storageError(cause: unknown): DropwaveOperationError {
   });
 }
 
-function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
+function makeDropwaveStore(
+  db: NodeSqlite.DatabaseSync,
+  workerReviewChanges: PubSub.PubSub<void>,
+): DropwaveStoreShape {
   const getOne = <T>(sql: string, ...params: Array<NodeSqlite.SQLInputValue>): T | undefined =>
     db.prepare(sql).get(...params) as unknown as T | undefined;
 
@@ -1368,6 +1382,40 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
       compressLevelIfReady(threadId, level + 1);
     }
   };
+
+  // Review writes notify subscribers; slow subscribers need only the newest dirty signal.
+  const notifyWorkerReviewsChanged = PubSub.publish(workerReviewChanges, undefined).pipe(
+    Effect.asVoid,
+  );
+
+  const listWorkerReviewRows = (input: {
+    readonly projectId?: ProjectId | undefined;
+    readonly leadThreadId?: ThreadId | undefined;
+    readonly limit?: number | undefined;
+  }) =>
+    Effect.try({
+      try: () => {
+        const clauses: Array<string> = [];
+        const params: Array<string | number> = [];
+        if (input.projectId !== undefined) {
+          clauses.push("project_id = ?");
+          params.push(input.projectId);
+        }
+        if (input.leadThreadId !== undefined) {
+          clauses.push("lead_thread_id = ?");
+          params.push(input.leadThreadId);
+        }
+        const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+        const limit = input.limit ?? 100;
+        const rows = db
+          .prepare(
+            `SELECT * FROM dropwave_worker_reviews ${where} ORDER BY updated_at DESC LIMIT ?`,
+          )
+          .all(...params, limit) as unknown as Array<WorkerReviewRow>;
+        return rows.map(rowToWorkerReview);
+      },
+      catch: storageError,
+    });
 
   return {
     captureMessageAsks: (input) =>
@@ -2936,7 +2984,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           );
         },
         catch: storageError,
-      }),
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
 
     getWorkerReview: (jobId) =>
       Effect.try({
@@ -2971,7 +3019,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           );
         },
         catch: storageError,
-      }),
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
 
     updateWorkerReview: (input) =>
       Effect.try({
@@ -2992,32 +3040,23 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           );
         },
         catch: storageError,
-      }),
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
 
-    listWorkerReviews: (input) =>
-      Effect.try({
-        try: () => {
-          const clauses: Array<string> = [];
-          const params: Array<string | number> = [];
-          if (input.projectId !== undefined) {
-            clauses.push("project_id = ?");
-            params.push(input.projectId);
-          }
-          if (input.leadThreadId !== undefined) {
-            clauses.push("lead_thread_id = ?");
-            params.push(input.leadThreadId);
-          }
-          const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
-          const limit = input.limit ?? 100;
-          const rows = db
-            .prepare(
-              `SELECT * FROM dropwave_worker_reviews ${where} ORDER BY updated_at DESC LIMIT ?`,
-            )
-            .all(...params, limit) as unknown as Array<WorkerReviewRow>;
-          return rows.map(rowToWorkerReview);
-        },
-        catch: storageError,
-      }),
+    listWorkerReviews: listWorkerReviewRows,
+
+    subscribeWorkerReviews: (input) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          // Subscribe before reading to buffer concurrent changes.
+          const subscription = yield* PubSub.subscribe(workerReviewChanges);
+          const list = () =>
+            listWorkerReviewRows(input).pipe(Effect.map((reviews) => ({ reviews })));
+          return Stream.concat(
+            Stream.fromEffect(list()),
+            Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => list())),
+          );
+        }),
+      ),
 
     recordWorkerReviewLandOverride: (input) =>
       Effect.try({
@@ -3033,7 +3072,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
           ).run(JSON.stringify(override), nowIso(), input.jobId);
         },
         catch: storageError,
-      }),
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
   };
 }
 
@@ -3062,28 +3101,33 @@ export const layer: Layer.Layer<DropwaveStore, DropwaveOperationError, ServerCon
             }
           }),
       );
-      return DropwaveStore.of(makeDropwaveStore(db));
+      const workerReviewChanges = yield* PubSub.sliding<void>(1);
+      return DropwaveStore.of(makeDropwaveStore(db, workerReviewChanges));
     }),
   );
 
 export const layerMemory: Layer.Layer<DropwaveStore, DropwaveOperationError> = Layer.effect(
   DropwaveStore,
-  Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        const handle = new NodeSqlite.DatabaseSync(":memory:");
-        initializeDropwaveSchema(handle);
-        return handle;
-      },
-      catch: storageError,
-    }),
-    (handle) =>
-      Effect.sync(() => {
-        try {
-          handle.close();
-        } catch {
-          // ignore
-        }
+  Effect.gen(function* () {
+    const db = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => {
+          const handle = new NodeSqlite.DatabaseSync(":memory:");
+          initializeDropwaveSchema(handle);
+          return handle;
+        },
+        catch: storageError,
       }),
-  ).pipe(Effect.map((db) => DropwaveStore.of(makeDropwaveStore(db)))),
+      (handle) =>
+        Effect.sync(() => {
+          try {
+            handle.close();
+          } catch {
+            // ignore
+          }
+        }),
+    );
+    const workerReviewChanges = yield* PubSub.sliding<void>(1);
+    return DropwaveStore.of(makeDropwaveStore(db, workerReviewChanges));
+  }),
 );

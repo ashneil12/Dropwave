@@ -5,6 +5,7 @@ import * as NodePath from "node:path";
 
 import { expect, it } from "@effect/vitest";
 import {
+  type IsoDateTime,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -15,6 +16,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
 
 import * as ProjectService from "../project/ProjectService.ts";
 import { dropwaveBotInstructions } from "../orchestration-v2/dropwaveBotInstructions.ts";
@@ -888,3 +891,59 @@ it("renders onboarding blocks only for the matching phase and all three memory s
   expect(steady).not.toContain(DROPWAVE_FIRST_RUN_ONBOARDING);
   expect(steady).not.toContain(DROPWAVE_PROJECT_ONBOARDING);
 });
+
+it.effect("worker review stream emits the initial list and every state change", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const queue = yield* Queue.unbounded<{
+      readonly reviews: ReadonlyArray<DropwaveStore.DropwaveWorkerReview>;
+    }>();
+    yield* store.subscribeWorkerReviews({ projectId: projectA }).pipe(
+      Stream.runForEach((value) => Queue.offer(queue, value).pipe(Effect.asVoid)),
+      Effect.forkChild,
+    );
+    const jobId = "job-review-stream";
+
+    const initial = yield* Queue.take(queue);
+    expect(initial.reviews).toHaveLength(0);
+
+    yield* store.startWorkerReview({
+      jobId,
+      leadThreadId: leadThreadA,
+      projectId: projectA,
+      workerThreadId: leadThreadB,
+      workerBranch: "worker-1",
+    });
+    const reviewing = yield* Queue.take(queue);
+    expect(reviewing.reviews).toHaveLength(1);
+    expect(reviewing.reviews[0]?.status).toBe("reviewing");
+
+    yield* store.appendWorkerReviewVerdict({
+      jobId,
+      verdict: {
+        round: 0,
+        verdict: "changes",
+        summary: "Issues found.",
+        issues: [],
+        reviewerModel: "Codex 5.4",
+        at: DateTime.formatIso(DateTime.nowUnsafe()) as IsoDateTime,
+      },
+    });
+    const verdictAppended = yield* Queue.take(queue);
+    expect(verdictAppended.reviews[0]?.verdicts).toHaveLength(1);
+    expect(verdictAppended.reviews[0]?.status).toBe("reviewing");
+
+    yield* store.updateWorkerReview({ jobId, status: "fixing", rounds: 1 });
+    const fixing = yield* Queue.take(queue);
+    expect(fixing.reviews[0]?.status).toBe("fixing");
+    expect(fixing.reviews[0]?.rounds).toBe(1);
+
+    yield* store.updateWorkerReview({ jobId, status: "approved" });
+    const approved = yield* Queue.take(queue);
+    expect(approved.reviews[0]?.status).toBe("approved");
+
+    yield* store.recordWorkerReviewLandOverride({ jobId, quote: "ship it anyway" });
+    const overridden = yield* Queue.take(queue);
+    expect(overridden.reviews[0]?.landOverride?.quote).toBe("ship it anyway");
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);

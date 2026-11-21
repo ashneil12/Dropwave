@@ -2296,6 +2296,10 @@ export const layerWsRpc = (
             Effect.flatMap((store) => store.listWorkerReviews(input)),
             Effect.map((reviews) => ({ reviews })),
           ),
+        [WS_METHODS.dropwaveWorkerReviewsSubscribe]: (input) =>
+          Stream.unwrap(
+            requireDropwaveStore().pipe(Effect.map((store) => store.subscribeWorkerReviews(input))),
+          ),
         [WS_METHODS.dropwaveBotAdded]: Effect.fn("ws.dropwaveBotAdded")(
           function* (input: DropwaveBotAddedInput) {
             const leadShell = yield* threadManagement
