@@ -6,8 +6,6 @@ import {
   type DropwaveDoc,
   type DropwaveDocKind,
   type DropwaveDocSummary,
-  type DropwaveMemoryItem,
-  type DropwaveMemoryKind,
 } from "@t3tools/contracts";
 import { T, Var, useGT } from "gt-react";
 import {
@@ -27,6 +25,7 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import { serverEnvironment } from "../state/server";
 import { useAtomCommand } from "../state/use-atom-command";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
+import { DropwaveMemoryView } from "./DropwaveMemoryView";
 import { DropwaveSelect, type DropwaveSelectOption } from "./DropwaveSelect";
 import { formatShortAge } from "./model";
 import { useDropwaveWorkspace } from "./workspaceContext";
@@ -56,10 +55,6 @@ export function DropwaveDocsView({
   const [draftContent, setDraftContent] = useState("");
   const [creatingNew, setCreatingNew] = useState(false);
 
-  const [memories, setMemories] = useState<ReadonlyArray<DropwaveMemoryItem>>([]);
-  const [personaNames, setPersonaNames] = useState<ReadonlyMap<string, string>>(new Map());
-  const [newMemoryText, setNewMemoryText] = useState("");
-  const [newMemoryKind, setNewMemoryKind] = useState<DropwaveMemoryKind>("rule");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -67,17 +62,6 @@ export function DropwaveDocsView({
   const readDocCmd = useAtomCommand(serverEnvironment.dropwaveDocRead, { reportFailure: false });
   const writeDocCmd = useAtomCommand(serverEnvironment.dropwaveDocWrite, { reportFailure: false });
   const deleteDocCmd = useAtomCommand(serverEnvironment.dropwaveDocDelete, {
-    reportFailure: false,
-  });
-  const listMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryList, { reportFailure: false });
-  const saveMemCmd = useAtomCommand(serverEnvironment.dropwaveMemorySave, { reportFailure: false });
-  const removeMemCmd = useAtomCommand(serverEnvironment.dropwaveMemoryRemove, {
-    reportFailure: false,
-  });
-  const setScopeCmd = useAtomCommand(serverEnvironment.dropwaveMemorySetScope, {
-    reportFailure: false,
-  });
-  const listPersonasCmd = useAtomCommand(serverEnvironment.dropwavePersonaList, {
     reportFailure: false,
   });
 
@@ -92,57 +76,33 @@ export function DropwaveDocsView({
     narrowRef.current = narrowViewport;
   }, [narrowViewport]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live server docs or memories
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads live server docs
   useEffect(() => {
-    if (!project || reloadNonce < 0) return;
+    if (!project || reloadNonce < 0 || tab !== "docs") return;
     let cancelled = false;
-    if (tab === "docs") {
-      void listDocsCmd({
-        environmentId: project.environmentId,
-        input: { projectId: project.id },
-      }).then((res) => {
-        if (cancelled) return;
-        if (res._tag === "Success") {
-          setError(null);
-          const onlyDocs = res.value.docs.filter(
-            (doc) => doc.kind !== "hub" && !doc.path.startsWith(".dropwave/hubs/"),
-          );
-          setDocs(onlyDocs);
-          setSelectedPath((prev) =>
-            prev && onlyDocs.some((doc) => doc.path === prev) ? prev : (onlyDocs[0]?.path ?? null),
-          );
-        } else if (!isAtomCommandInterrupted(res)) {
-          const cause = squashAtomCommandFailure(res);
-          setError(cause instanceof Error ? cause.message : gt("Could not load docs."));
-        }
-      });
-    } else {
-      void listMemCmd({
-        environmentId: project.environmentId,
-        input: { projectId: project.id, ...(query.trim() ? { query: query.trim() } : {}) },
-      }).then((res) => {
-        if (cancelled) return;
-        if (res._tag === "Success") {
-          setError(null);
-          setMemories(res.value.items);
-          void listPersonasCmd({ environmentId: project.environmentId, input: {} }).then(
-            (personaRes) => {
-              if (cancelled || personaRes._tag !== "Success") return;
-              setPersonaNames(
-                new Map(personaRes.value.items.map((persona) => [persona.id, persona.name])),
-              );
-            },
-          );
-        } else if (!isAtomCommandInterrupted(res)) {
-          const cause = squashAtomCommandFailure(res);
-          setError(cause instanceof Error ? cause.message : gt("Could not load memory."));
-        }
-      });
-    }
+    void listDocsCmd({
+      environmentId: project.environmentId,
+      input: { projectId: project.id },
+    }).then((res) => {
+      if (cancelled) return;
+      if (res._tag === "Success") {
+        setError(null);
+        const onlyDocs = res.value.docs.filter(
+          (doc) => doc.kind !== "hub" && !doc.path.startsWith(".dropwave/hubs/"),
+        );
+        setDocs(onlyDocs);
+        setSelectedPath((prev) =>
+          prev && onlyDocs.some((doc) => doc.path === prev) ? prev : (onlyDocs[0]?.path ?? null),
+        );
+      } else if (!isAtomCommandInterrupted(res)) {
+        const cause = squashAtomCommandFailure(res);
+        setError(cause instanceof Error ? cause.message : gt("Could not load docs."));
+      }
+    });
     return () => {
       cancelled = true;
     };
-  }, [gt, listDocsCmd, listMemCmd, listPersonasCmd, project, query, reloadNonce, tab]);
+  }, [gt, listDocsCmd, project, reloadNonce, tab]);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads selected markdown document content
   useEffect(() => {
@@ -274,14 +234,6 @@ export function DropwaveDocsView({
     { value: "loop", label: gt("Core loop") },
     { value: "memory", label: gt("Memory") },
   ];
-  const memoryKindOptions: ReadonlyArray<DropwaveSelectOption<DropwaveMemoryKind>> = [
-    { value: "rule", label: gt("Rule") },
-    { value: "preference", label: gt("Preference") },
-    { value: "decision", label: gt("Decision") },
-    { value: "fact", label: gt("Fact") },
-    { value: "lesson", label: gt("Lesson") },
-  ];
-
   const startNewDoc = () => {
     setCreatingNew(true);
     setEditing(true);
@@ -317,61 +269,6 @@ export function DropwaveDocsView({
     } else if (!isAtomCommandInterrupted(res)) {
       const cause = squashAtomCommandFailure(res);
       setError(cause instanceof Error ? cause.message : gt("Could not delete document."));
-    }
-  };
-
-  const addMemory = async () => {
-    if (!newMemoryText.trim() || busy) return;
-    setBusy(true);
-    setError(null);
-    const res = await saveMemCmd({
-      environmentId: project.environmentId,
-      input: {
-        projectId: project.id,
-        botThreadId: workspace.lead?.id ?? null,
-        kind: newMemoryKind,
-        text: newMemoryText.trim(),
-        confidence: "confirmed",
-      },
-    });
-    setBusy(false);
-    if (res._tag === "Success") {
-      setNewMemoryText("");
-      triggerReload();
-      workspace.refreshOpenAsksCount();
-    } else if (!isAtomCommandInterrupted(res)) {
-      const cause = squashAtomCommandFailure(res);
-      setError(cause instanceof Error ? cause.message : gt("Could not save memory."));
-    }
-  };
-
-  const toggleMemoryScope = async (item: DropwaveMemoryItem) => {
-    if (busy || item.scope === "bot") return;
-    setBusy(true);
-    const nextScope = item.scope === "project" ? "owner" : "project";
-    const res = await setScopeCmd({
-      environmentId: project.environmentId,
-      input: {
-        id: item.id,
-        scope: nextScope,
-        ...(nextScope === "project" ? { projectId: project.id } : {}),
-      },
-    });
-    setBusy(false);
-    if (res._tag === "Success") triggerReload();
-  };
-
-  const removeMemory = async (id: string) => {
-    if (busy) return;
-    setBusy(true);
-    const res = await removeMemCmd({
-      environmentId: project.environmentId,
-      input: { id },
-    });
-    setBusy(false);
-    if (res._tag === "Success") {
-      triggerReload();
-      workspace.refreshOpenAsksCount();
     }
   };
 
@@ -472,7 +369,7 @@ export function DropwaveDocsView({
           <div data-dropwave-docs-heading="">
             <span>
               <T>
-                <Var>{project.title}</Var> memory (<Var>{memories.length}</Var>)
+                <Var>{project.title}</Var> memory
               </T>
             </span>
           </div>
@@ -596,87 +493,7 @@ export function DropwaveDocsView({
             </div>
           )
         ) : (
-          <div data-dropwave-memory-view="">
-            <header>
-              <h2>
-                <T>Learned memory & standing rules</T>
-              </h2>
-              <p>
-                <T>
-                  Injected automatically before every turn. Global memories are shared with every
-                  bot in every project; project memories stay here.
-                </T>
-              </p>
-            </header>
-            <form
-              data-dropwave-memory-form=""
-              onSubmit={(event) => {
-                event.preventDefault();
-                void addMemory();
-              }}
-            >
-              <DropwaveSelect
-                value={newMemoryKind}
-                options={memoryKindOptions}
-                ariaLabel={gt("Memory kind")}
-                onChange={setNewMemoryKind}
-              />
-              <input
-                value={newMemoryText}
-                onChange={(event) => setNewMemoryText(event.currentTarget.value)}
-                placeholder={gt("Add a fact, rule, or preference for this project…")}
-              />
-              <button
-                type="submit"
-                data-dropwave-primary-button=""
-                disabled={busy || !newMemoryText.trim()}
-              >
-                <PlusIcon />
-                <T>Save</T>
-              </button>
-            </form>
-            <ul data-dropwave-memory-list="">
-              {memories.map((item) => (
-                <li key={item.id}>
-                  <div>
-                    <span data-dropwave-doc-pill="">{item.kind}</span>
-                    {item.scope === "bot" ? (
-                      <span data-dropwave-doc-pill="">
-                        {item.personaId === null
-                          ? gt("Bot")
-                          : (personaNames.get(item.personaId) ?? gt("Bot"))}
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        data-dropwave-doc-pill=""
-                        onClick={() => void toggleMemoryScope(item)}
-                      >
-                        {item.scope === "owner" ? gt("Everywhere") : gt("This project")}
-                      </button>
-                    )}
-                    <p>{item.text}</p>
-                    {item.quote ? <small>“{item.quote}”</small> : null}
-                  </div>
-                  <button
-                    type="button"
-                    data-dropwave-icon-button=""
-                    aria-label={gt("Remove memory")}
-                    onClick={() => void removeMemory(item.id)}
-                  >
-                    <Trash2Icon />
-                  </button>
-                </li>
-              ))}
-              {memories.length === 0 ? (
-                <li data-dropwave-docs-empty="">
-                  <T>
-                    No project memories yet. Answer asks with “Always do this” or add rules above.
-                  </T>
-                </li>
-              ) : null}
-            </ul>
-          </div>
+          <DropwaveMemoryView project={project} />
         )}
       </div>
     </section>

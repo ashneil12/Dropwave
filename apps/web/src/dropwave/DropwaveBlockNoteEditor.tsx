@@ -50,13 +50,17 @@ export default function DropwaveBlockNoteEditor({
     // A leading "# Title" that only repeats the title field is hidden in the
     // editor; it stays in the block model so saves round-trip it unchanged.
     const first = blocks[0];
-    const firstText =
+    const firstContent =
       first?.type === "heading" && first.props.level === 1
-        ? first.content
-            .map((part) => ("text" in part ? part.text : ""))
+        ? (first.content as ReadonlyArray<{ readonly text?: string }>)
+        : undefined;
+    const firstText =
+      firstContent === undefined
+        ? ""
+        : firstContent
+            .map((part) => part.text ?? "")
             .join("")
-            .trim()
-        : "";
+            .trim();
     const hideTitleH1 =
       !lossy && firstText !== "" && title !== undefined && firstText === title.trim();
     return { blocks, lossy, hideTitleH1 };
