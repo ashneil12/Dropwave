@@ -39,6 +39,27 @@ function normalizedForQuoteCheck(value: string): string {
     .trim();
 }
 
+/**
+ * True only for messages the owner typed in chat. Scheduled-task deliveries,
+ * agent relays and linked-environment senders reuse the user role but are not
+ * the owner, so they must never feed asks, rule memories or the extractor.
+ */
+export function isOwnerTypedMessage(message: {
+  readonly role: string;
+  readonly createdBy: string;
+  readonly scheduledTaskId?: unknown;
+  readonly senderThreadId?: unknown;
+  readonly linkedSender?: unknown;
+}): boolean {
+  return (
+    message.role === "user" &&
+    message.createdBy === "user" &&
+    message.scheduledTaskId === undefined &&
+    message.senderThreadId === undefined &&
+    message.linkedSender === undefined
+  );
+}
+
 /** Verifies a quote appears verbatim in the owner's message so models cannot invent asks or poison memory. */
 export function quoteInMessage(quote: string, message: string): boolean {
   const q = normalizedForQuoteCheck(quote).replace(/[.!?,;:…]+$/, "");

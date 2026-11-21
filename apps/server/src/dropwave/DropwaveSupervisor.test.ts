@@ -838,3 +838,139 @@ it.effect(
       }
     }).pipe(Effect.provide(layerRealGit)),
 );
+
+it.effect("habit deliveries, agent relays and worker threads never write memory", () =>
+  Effect.gen(function* () {
+    const leadThread = makeThread(leadId, "Chief of Staff", {
+      kind: "lead",
+      brief: "Own the project.",
+      workflow: [],
+      rules: [],
+      riskLevel: "normal",
+    });
+    const workerThread = makeThread(workerId, "Fix pricing", undefined);
+    const threads: Record<string, OrchestrationV2AppThread> = {
+      [leadId]: leadThread,
+      [workerId]: workerThread,
+    };
+
+    const habitText = "Scheduled check-in: the deploy password is hunter2.";
+    const ownerText = "I prefer short answers.";
+    const msg = (id: string, threadId: ThreadId, text: string, extra: Record<string, unknown>) => ({
+      id: MessageId.make(id),
+      threadId,
+      role: "user",
+      text,
+      createdBy: "user",
+      createdAt: now,
+      updatedAt: now,
+      attachments: [],
+      ...extra,
+    });
+    // Six habit deliveries on the lead thread: owner-created and
+    // agent-created alike, all tagged scheduledTaskId. Ungated, the sixth
+    // would trip the extractor counter.
+    const habitMessages = Array.from({ length: 6 }, (_, i) =>
+      msg(`msg:habit-${i}`, leadId, habitText, {
+        scheduledTaskId: "task:habit-1",
+        createdBy: i % 2 === 0 ? "user" : "agent",
+      }),
+    );
+    const workerMessages = [
+      msg("msg:worker-1", workerId, "Owner note relayed into the worker: ship it.", {}),
+      msg("msg:worker-2", workerId, "Also remember the staging URL.", {}),
+    ];
+    const ownerMessages = Array.from({ length: 6 }, (_, i) =>
+      msg(`msg:owner-${i}`, leadId, `${ownerText} (${i})`, {}),
+    );
+    const messagesByThread: Record<string, ReadonlyArray<unknown>> = {
+      [leadId]: [...habitMessages, ...ownerMessages],
+      [workerId]: workerMessages,
+    };
+
+    // The ops reply quotes both a real owner line and the habit prompt; the
+    // habit quote must be rejected because habit text is not an owner line.
+    const opsReply = JSON.stringify([
+      {
+        op: "add",
+        scope: "project",
+        kind: "preference",
+        subject: "answers",
+        text: "Prefers short answers",
+        quote: "I prefer short answers",
+        confidence: 0.95,
+      },
+      {
+        op: "add",
+        scope: "project",
+        kind: "fact",
+        text: "Deploy password is hunter2",
+        quote: "deploy password is hunter2",
+        confidence: 0.95,
+      },
+    ]);
+    const memoryModelCalled = yield* Deferred.make<void>();
+    const generation = Layer.mock(TextGeneration.TextGeneration)({
+      generateTranscriptionPostProcessing: (input: { readonly prompt: string }) =>
+        input.prompt.includes("long-term memory")
+          ? Deferred.succeed(memoryModelCalled, undefined).pipe(
+              Effect.as({ transcription: opsReply }),
+            )
+          : Effect.succeed({ transcription: "[]" }),
+    });
+    const testLayer = DropwaveSupervisor.layer.pipe(
+      Layer.provideMerge(DropwaveStore.layerMemory),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          dispatch: () => Effect.succeed({ sequence: 1 } as never),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProjectionStore.ProjectionStoreV2)({
+          getThread: (id) => Effect.succeed(threads[id] as never),
+          getThreadRecords: (id, fields) =>
+            Effect.succeed({
+              thread: threads[id],
+              runs: [],
+              messages: (fields as ReadonlyArray<string>).includes("messages")
+                ? (messagesByThread[id] ?? [])
+                : [],
+              turnItems: [],
+            } as never),
+        }),
+      ),
+      Layer.provide(mockProjectStore("/tmp/hivra")),
+      Layer.provide(mockServerSettings()),
+      Layer.provide(generation),
+      Layer.provideMerge(layerRealGit),
+    );
+
+    yield* Effect.gen(function* () {
+      const supervisor = yield* DropwaveSupervisor.DropwaveSupervisor;
+      const store = yield* DropwaveStore.DropwaveStore;
+      const send = (threadId: ThreadId, message: Record<string, unknown>) =>
+        supervisor.handle({
+          id: EventId.make(`ev:${String(message.id)}`),
+          threadId,
+          occurredAt: now,
+          type: "message.updated",
+          payload: message as never,
+        });
+
+      for (const message of habitMessages) yield* send(leadId, message as never);
+      for (const message of workerMessages) yield* send(workerId, message as never);
+      expect(yield* store.getMemoryMeta(`extractor-trigger:${leadId}`)).toBeUndefined();
+      expect(yield* store.getMemoryMeta(`extractor-trigger:${workerId}`)).toBeUndefined();
+      expect(yield* store.listMemories({ projectId })).toHaveLength(0);
+
+      // Control: six real owner messages run the extractor and write memory,
+      // proving the zero-write assertions above are not vacuous.
+      for (const message of ownerMessages) yield* send(leadId, message as never);
+      yield* Deferred.await(memoryModelCalled);
+      for (let i = 0; i < 10; i += 1) yield* Effect.yieldNow;
+      const memories = yield* store.listMemories({ projectId });
+      expect(memories.some((m) => m.text.includes("Prefers short answers"))).toBe(true);
+      expect(memories.some((m) => m.text.includes("hunter2"))).toBe(false);
+    }).pipe(Effect.provide(testLayer));
+  }),
+);

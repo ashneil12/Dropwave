@@ -17,7 +17,7 @@ import * as MemoryEmbeddings from "../../../dropwave/memoryEmbeddings.ts";
 import * as MemoryRecall from "../../../dropwave/memoryRecall.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
-import { quoteInMessage } from "../../../dropwave/askExtraction.ts";
+import { isOwnerTypedMessage, quoteInMessage } from "../../../dropwave/askExtraction.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { dispatchFailure, newCommandId, readCaller, readThread } from "../../threadAccess.ts";
 import { DropwaveToolkit } from "./tools.ts";
@@ -99,7 +99,7 @@ const handlers = {
       const recentOwnerTexts = Effect.gen(function* () {
         const { projection } = yield* readThread(thread.id, ["messages"]);
         return projection.messages
-          .filter((message) => message.role === "user" && message.createdBy === "user")
+          .filter((message) => isOwnerTypedMessage(message))
           .sort((a, b) => b.createdAt.epochMilliseconds - a.createdAt.epochMilliseconds)
           .slice(0, 10)
           .map((message) => message.text);

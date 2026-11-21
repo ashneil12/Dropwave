@@ -27,7 +27,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
-import { parseVerifiedModelAsks, quoteInMessage } from "./askExtraction.ts";
+import { isOwnerTypedMessage, parseVerifiedModelAsks, quoteInMessage } from "./askExtraction.ts";
 import { DROPWAVE_ASK_EXTRACTION_PROMPT } from "./askExtractionPrompt.ts";
 import * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import * as MemoryExtractor from "./memoryExtractor.ts";
@@ -192,7 +192,7 @@ const make = Effect.gen(function* () {
       // 1. Capture asks & summary tree leaf the instant the owner sends a message to a Dropwave bot.
       if (event.type === "message.updated") {
         const message = event.payload;
-        if (message.role !== "user" || message.createdBy !== "user" || !message.text.trim()) {
+        if (!isOwnerTypedMessage(message) || !message.text.trim()) {
           return;
         }
         const thread = yield* projections.getThread(event.threadId);

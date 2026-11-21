@@ -18,7 +18,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import type * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
-import { quoteInMessage } from "./askExtraction.ts";
+import { isOwnerTypedMessage, quoteInMessage } from "./askExtraction.ts";
 import { saveMemoryMerged } from "./memoryDedupe.ts";
 import type * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import type { DropwaveStoreShape } from "./DropwaveStore.ts";
@@ -80,7 +80,7 @@ function parseFirstJsonArray(raw: string): Array<unknown> | undefined {
 }
 
 function isOwnerMessage(message: OrchestrationV2ConversationMessage): boolean {
-  return message.role === "user" && message.createdBy === "user";
+  return isOwnerTypedMessage(message);
 }
 
 /** Format the extraction window: owner lines full, assistant clipped, rest skipped. */
