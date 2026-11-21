@@ -53,6 +53,12 @@ import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as DropwaveStore from "../dropwave/DropwaveStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as TextGeneration from "../textGeneration/TextGeneration.ts";
+import { cleanHabitSummary, habitSummaryFallback, habitSummaryPrompt } from "./habitSummary.ts";
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
@@ -513,6 +519,10 @@ export const layer = Layer.effect(
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
     const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
+    const dropwaveStore = yield* Effect.serviceOption(DropwaveStore.DropwaveStore);
+    const projectStore = yield* Effect.serviceOption(ProjectStore.ProjectStoreV2);
+    const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+    const textGeneration = yield* Effect.serviceOption(TextGeneration.TextGeneration);
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
     const dueTasks = DueHint.make();
@@ -1449,6 +1459,60 @@ export const layer = Layer.effect(
       },
     );
 
+    // One-line card summaries for the Dropwave Habits view, stored per
+    // (task, prompt hash) so prompt edits regenerate while renames reuse.
+    const refreshHabitSummary = Effect.fn("ScheduledTaskService.refreshHabitSummary")(function* (
+      task: ScheduledTask,
+    ) {
+      yield* Effect.gen(function* () {
+        if (
+          Option.isNone(dropwaveStore) ||
+          Option.isNone(projectStore) ||
+          Option.isNone(serverSettings)
+        ) {
+          return;
+        }
+        const project = yield* projectStore.value
+          .get(task.projectId)
+          .pipe(Effect.catch(() => Effect.succeedNone));
+        if (Option.isNone(project)) return;
+        const allSettings = yield* serverSettings.value.getSettings;
+        const { settings } = resolveProjectSettings(allSettings, task.projectId);
+        const modelSelection =
+          settings.textGenerationModelSelection ?? settings.defaultModelSelection;
+        const promptHash = (yield* digest.digestHex(Digest.sha256, task.prompt)).slice(0, 24);
+        let summary = habitSummaryFallback(task.prompt);
+        if (modelSelection !== undefined && Option.isSome(textGeneration)) {
+          const reply = yield* textGeneration.value
+            .generateTranscriptionPostProcessing({
+              cwd: project.value.workspaceRoot,
+              prompt: habitSummaryPrompt(task.title, task.prompt),
+              modelSelection,
+            })
+            .pipe(
+              Effect.timeoutOption(Duration.seconds(10)),
+              Effect.catch(() => Effect.succeedNone),
+            );
+          if (Option.isSome(reply)) {
+            summary = cleanHabitSummary(reply.value.transcription) ?? summary;
+          }
+        }
+        yield* dropwaveStore.value.saveHabitSummary({
+          taskId: task.id,
+          projectId: task.projectId,
+          promptHash,
+          summary,
+        });
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("habit summary refresh failed", {
+            taskId: task.id,
+            cause,
+          }).pipe(Effect.asVoid),
+        ),
+      );
+    });
+
     const upsert: ScheduledTaskService["Service"]["upsert"] = Effect.fn(
       "ScheduledTaskService.upsert",
     )(function* (input) {
@@ -1617,6 +1681,13 @@ export const layer = Layer.effect(
         webhook,
       );
       yield* notifyChanged;
+      if (
+        existingTask === null ||
+        existingTask.prompt !== task.prompt ||
+        existingTask.title !== task.title
+      ) {
+        yield* refreshHabitSummary(task).pipe(Effect.forkIn(serviceScope));
+      }
       return { task: (yield* findTask(id)) ?? task };
     });
 

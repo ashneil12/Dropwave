@@ -260,6 +260,9 @@ const RPC_AGGREGATES = {
   [WS_METHODS.dropwaveMemorySetScope]: "dropwave",
   [WS_METHODS.dropwavePersonaList]: "dropwave",
   [WS_METHODS.dropwavePersonaUpsert]: "dropwave",
+  [WS_METHODS.dropwavePersonaDelete]: "dropwave",
+  [WS_METHODS.dropwaveBotAdded]: "dropwave",
+  [WS_METHODS.dropwaveHabitSummariesList]: "dropwave",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

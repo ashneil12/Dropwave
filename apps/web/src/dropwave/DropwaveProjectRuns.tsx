@@ -227,7 +227,7 @@ export function DropwaveProjectRuns({
                 </span>
                 <AskToChange
                   leadName={lead.title}
-                  message={gt("I'd like to change the team: add, remove, or reshape a helper bot.")}
+                  message={gt("I'd like to change the team: add, remove, or reshape a bot.")}
                 />
               </header>
               {teammates.length > 0 ? (
@@ -253,7 +253,7 @@ export function DropwaveProjectRuns({
                 </div>
               ) : (
                 <p data-dw-runs-empty="">
-                  <T>No helpers yet. Your lead handles everything itself.</T>
+                  <T>No other bots yet. Your lead handles everything itself.</T>
                 </p>
               )}
             </section>

@@ -54,7 +54,7 @@ export function DropwaveIndex() {
             ) : project ? (
               <T>
                 Set up one main bot for this project. It maps your core loop, coordinates workers
-                and helpers, and only interrupts you when a decision needs you.
+                and bots, and only interrupts you when a decision needs you.
               </T>
             ) : (
               <T>Add a project folder to launch your Chief of Staff and core loop.</T>
@@ -204,7 +204,7 @@ const leadStarters = [
   {
     label: msg("Design core loop"),
     prompt:
-      "Let’s set up this project’s core loop together. Ask me what shipped means here, propose the loop steps and any helper bots we need, then save them with dropwave_team.",
+      "Let’s set up this project’s core loop together. Ask me what shipped means here, propose the loop steps and any bots we need, then save them with dropwave_team.",
   },
   {
     label: msg("Plan next work"),
@@ -253,7 +253,7 @@ export function DropwaveConversationStart({
         ) : profile.kind === "lead" ? (
           <T>Dump ideas, decisions, or tasks. Everything is tracked through your core loop.</T>
         ) : (
-          <T>Inspect or coordinate directly with this helper bot.</T>
+          <T>Inspect or coordinate directly with this bot.</T>
         )}
       </p>
       <div data-dropwave-starters="">

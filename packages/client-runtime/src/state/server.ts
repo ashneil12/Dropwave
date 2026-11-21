@@ -1944,6 +1944,18 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:dropwave:persona:upsert",
       tag: WS_METHODS.dropwavePersonaUpsert,
     }),
+    dropwavePersonaDelete: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:persona:delete",
+      tag: WS_METHODS.dropwavePersonaDelete,
+    }),
+    dropwaveBotAdded: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:bot:added",
+      tag: WS_METHODS.dropwaveBotAdded,
+    }),
+    dropwaveHabitSummariesList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:habit-summaries:list",
+      tag: WS_METHODS.dropwaveHabitSummariesList,
+    }),
     checkOtlpEndpoint: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:check-otlp-endpoint",
       tag: WS_METHODS.serverCheckOtlpEndpoint,

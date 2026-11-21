@@ -1,33 +1,54 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { DropwaveDoc, DropwaveDocSummary } from "@t3tools/contracts";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
+import type {
+  DropwaveAsk,
+  DropwaveDoc,
+  DropwaveDocSummary,
+  DropwaveMemoryItem,
+  ScheduledTask,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { T, useGT } from "gt-react";
+import { AsyncResult } from "effect/reactivity";
+import { useAtomValue } from "@effect/atom-react";
+import { T, useGT, useMessages } from "gt-react";
 import {
+  ActivityIcon,
+  ArrowLeftIcon,
+  CalendarDaysIcon,
   CheckCircle2Icon,
   LayoutGridIcon,
   PinIcon,
   PinOffIcon,
+  ScrollTextIcon,
+  SendIcon,
   Trash2Icon,
   Wand2Icon,
 } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useNowSecond } from "../hooks/useNowSecond";
 import { newMessageId } from "../lib/utils";
 import { serverEnvironment } from "../state/server";
 import { threadEnvironment } from "../state/threads";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { workState, workStateLabel } from "./model";
+import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 export const PINNED_HUBS_KEY = "dropwave:pinned-hubs";
 export const PinnedHubsSchema = Schema.Array(Schema.String);
 export const BUILTIN_SHIP_GATE_HUB_ID = "builtin:ship-gate";
+const BUILTIN_PROJECT_PULSE_HUB_ID = "builtin:project-pulse";
+const BUILTIN_DECISIONS_HUB_ID = "builtin:decisions-log";
+const BUILTIN_HABITS_HUB_ID = "builtin:habits-calendar";
 /** Retired hub id kept only to sanitize stale pins stored in localStorage. */
 const RETIRED_KANBAN_HUB_ID = "builtin:kanban";
 
-function liveHubId(id: string | null | undefined): string {
-  return !id || id === RETIRED_KANBAN_HUB_ID ? BUILTIN_SHIP_GATE_HUB_ID : id;
+function liveHubId(id: string | null | undefined): string | null {
+  if (!id || id === RETIRED_KANBAN_HUB_ID) return null;
+  return id;
 }
 
 const DROPWAVE_HUB_THEME_HEAD = `<style>
@@ -103,12 +124,278 @@ function BuiltinShipGateHub({ projectKey }: { projectKey: string }) {
   );
 }
 
+/** What each bot and worker is doing now, from live thread state + the ask ledger. */
+function BuiltinProjectPulseHub() {
+  const workspace = useDropwaveWorkspace();
+  const gt = useGT();
+  const m = useMessages();
+  const project = workspace?.project ?? null;
+  const [asks, setAsks] = useState<ReadonlyArray<DropwaveAsk>>([]);
+  const listAsks = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads open asks for per-bot counts
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    void listAsks({
+      environmentId: project.environmentId,
+      input: { projectId: project.id, includeClosed: false },
+    }).then((res) => {
+      if (!cancelled && res._tag === "Success") setAsks(res.value.asks);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [listAsks, project]);
+
+  if (!workspace || !project) return null;
+  const bots = workspace.bots.filter((bot) => bot.projectId === project.id);
+  const openByThread = new Map<string, number>();
+  for (const ask of asks) {
+    if (ask.status === "done" || ask.status === "dropped") continue;
+    openByThread.set(ask.botThreadId, (openByThread.get(ask.botThreadId) ?? 0) + 1);
+  }
+  const working = bots.filter((bot) => workState(bot) === "working").length;
+  const waiting = bots.filter((bot) => workState(bot) === "needs-you").length;
+
+  return (
+    <div data-dw-hub-builtin="">
+      <div data-dw-hub-builtin-head="">
+        <h3>
+          <T>Project pulse</T>
+        </h3>
+        <span data-dw-mono="dim">
+          {gt("{working} working · {waiting} need you", { working, waiting })}
+        </span>
+      </div>
+      <div data-dw-pulse-list="">
+        {bots.map((bot) => {
+          const state = workState(bot);
+          const openAsks = openByThread.get(bot.id) ?? 0;
+          return (
+            <div key={bot.id} data-dw-pulse-row="">
+              <DropwaveBotAvatar
+                name={bot.title}
+                seed={bot.source.dropwaveBot?.avatarSeed}
+                role={bot.source.dropwaveBot?.kind === "lead" ? "lead" : "specialist"}
+                size="sm"
+              />
+              <div data-dw-pulse-meta="">
+                <strong>{bot.title}</strong>
+                <small>
+                  {m(workStateLabel[state])}
+                  {openAsks > 0
+                    ? ` · ${gt("{count, plural, one {# open ask} other {# open asks}}", { count: openAsks })}`
+                    : ""}
+                </small>
+              </div>
+              <span
+                data-dw-dot={
+                  state === "working" ? "indigo" : state === "needs-you" ? "coral" : "dim"
+                }
+              />
+            </div>
+          );
+        })}
+        {bots.length === 0 ? (
+          <p data-dw-rail-empty="">
+            <T>No bots on this project yet.</T>
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** Every owner decision and standing rule, with date and quote. */
+function BuiltinDecisionsHub() {
+  const workspace = useDropwaveWorkspace();
+  const project = workspace?.project ?? null;
+  const [items, setItems] = useState<
+    ReadonlyArray<{ key: string; text: string; quote: string | null; at: string; kind: string }>
+  >([]);
+  const listAsks = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
+  const listMemories = useAtomCommand(serverEnvironment.dropwaveMemoryList, {
+    reportFailure: false,
+  });
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads decide asks and rule memories
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    void Promise.all([
+      listAsks({
+        environmentId: project.environmentId,
+        input: { projectId: project.id, includeClosed: true },
+      }),
+      listMemories({
+        environmentId: project.environmentId,
+        input: { projectId: project.id },
+      }),
+    ]).then(([asksRes, memRes]) => {
+      if (cancelled) return;
+      const next: Array<{
+        key: string;
+        text: string;
+        quote: string | null;
+        at: string;
+        kind: string;
+      }> = [];
+      if (asksRes._tag === "Success") {
+        for (const ask of asksRes.value.asks) {
+          if (ask.kind !== "decide") continue;
+          next.push({
+            key: `ask-${ask.id}`,
+            text: ask.summary,
+            quote: ask.quote || null,
+            at: ask.updatedAt,
+            kind: ask.status,
+          });
+        }
+      }
+      if (memRes._tag === "Success") {
+        for (const mem of memRes.value.items as ReadonlyArray<DropwaveMemoryItem>) {
+          if (mem.kind !== "rule") continue;
+          next.push({
+            key: `mem-${mem.id}`,
+            text: mem.text,
+            quote: mem.quote ?? null,
+            at: mem.updatedAt,
+            kind: "rule",
+          });
+        }
+      }
+      next.sort((a, b) => b.at.localeCompare(a.at));
+      setItems(next.slice(0, 40));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [listAsks, listMemories, project]);
+
+  if (!project) return null;
+  return (
+    <div data-dw-hub-builtin="">
+      <div data-dw-hub-builtin-head="">
+        <h3>
+          <T>Decisions log</T>
+        </h3>
+        <span data-dw-mono="dim">{items.length}</span>
+      </div>
+      <div data-dw-decisions-list="">
+        {items.map((item) => (
+          <div key={item.key} data-dw-decision-row="">
+            <div data-dw-decision-main="">
+              <strong>{item.text}</strong>
+              {item.quote ? <q>{item.quote}</q> : null}
+            </div>
+            <small data-dw-mono="dim">
+              {item.at.slice(0, 10)} · {item.kind}
+            </small>
+          </div>
+        ))}
+        {items.length === 0 ? (
+          <p data-dw-rail-empty="">
+            <T>No decisions logged yet. Asks you settle and rules you set land here.</T>
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+/** The week ahead of scheduled habit runs. */
+function BuiltinHabitsCalendarHub() {
+  const workspace = useDropwaveWorkspace();
+  const project = workspace?.project ?? null;
+  if (!project) return null;
+  return <HabitsCalendar project={project} />;
+}
+
+function HabitsCalendar({ project }: { project: EnvironmentProject }) {
+  const tasksResult = useAtomValue(
+    serverEnvironment.scheduledTasksLive({ environmentId: project.environmentId, input: {} }),
+  );
+  const tasks: ReadonlyArray<ScheduledTask> = AsyncResult.isSuccess(tasksResult)
+    ? tasksResult.value.tasks.filter((task) => task.projectId === project.id)
+    : [];
+
+  const nowSeconds = useNowSecond();
+  const days = (() => {
+    const out: Array<{
+      key: string;
+      label: string;
+      items: Array<{ task: ScheduledTask; at: Date }>;
+    }> = [];
+    const now = new Date(nowSeconds * 1000);
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i);
+      out.push({
+        key: day.toISOString().slice(0, 10),
+        label: day.toLocaleDateString(undefined, {
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+        }),
+        items: [],
+      });
+    }
+    for (const task of tasks) {
+      if (!task.enabled || !task.nextRunAt) continue;
+      const at = new Date(task.nextRunAt);
+      const bucket = out.find((d) => d.key === at.toISOString().slice(0, 10));
+      if (bucket) bucket.items.push({ task, at });
+    }
+    return out;
+  })();
+
+  const total = days.reduce((sum, d) => sum + d.items.length, 0);
+  return (
+    <div data-dw-hub-builtin="">
+      <div data-dw-hub-builtin-head="">
+        <h3>
+          <T>Habits calendar</T>
+        </h3>
+        <span data-dw-mono="dim">{total}</span>
+      </div>
+      <div data-dw-habits-cal="">
+        {days.map((day) => (
+          <div
+            key={day.key}
+            data-dw-cal-day=""
+            data-empty={day.items.length === 0 ? "true" : undefined}
+          >
+            <header>
+              <strong>{day.label}</strong>
+              <span data-dw-mono="dim">{day.items.length}</span>
+            </header>
+            {day.items.map(({ task, at }) => (
+              <div key={task.id} data-dw-cal-item="">
+                <span data-dw-dot={task.enabled ? "emerald" : "dim"} />
+                <span>{task.title}</span>
+                <small data-dw-mono="dim">
+                  {at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}
+                </small>
+              </div>
+            ))}
+          </div>
+        ))}
+        {total === 0 ? (
+          <p data-dw-rail-empty="">
+            <T>No habits scheduled this week.</T>
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function DropwaveHubsView({
   initialHubId,
   onSelectHubId,
 }: {
   initialHubId?: string | null;
-  onSelectHubId?: (id: string) => void;
+  onSelectHubId?: (id: string | null) => void;
 }) {
   const workspace = useDropwaveWorkspace();
   const gt = useGT();
@@ -120,10 +407,9 @@ export function DropwaveHubsView({
     PinnedHubsSchema,
   );
   const [customHubs, setCustomHubs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
-  const [selectedHubId, setSelectedHubId] = useState<string>(() => liveHubId(initialHubId));
   const [loadedHubDoc, setLoadedHubDoc] = useState<DropwaveDoc | null>(null);
-  const [buildIdea, setBuildIdea] = useState("");
-  const [building, setBuilding] = useState(false);
+  const [askLead, setAskLead] = useState("");
+  const [sending, setSending] = useState(false);
   const [nonce, setNonce] = useState(0);
 
   const listDocs = useAtomCommand(serverEnvironment.dropwaveDocsList, { reportFailure: false });
@@ -131,7 +417,7 @@ export function DropwaveHubsView({
   const deleteDoc = useAtomCommand(serverEnvironment.dropwaveDocDelete, { reportFailure: false });
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
 
-  const activeHubId = liveHubId(initialHubId || selectedHubId);
+  const activeHubId = liveHubId(initialHubId ?? null);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- lists custom agent-built HTML hubs from .dropwave/hubs/
   useEffect(() => {
@@ -154,7 +440,7 @@ export function DropwaveHubsView({
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads active custom hub HTML source
   useEffect(() => {
-    if (!project || activeHubId.startsWith("builtin:")) {
+    if (!project || activeHubId === null || activeHubId.startsWith("builtin:")) {
       return;
     }
     let cancelled = false;
@@ -188,30 +474,38 @@ export function DropwaveHubsView({
     else setPinnedHubs([...pinnedHubs, id]);
   };
 
-  const selectHub = (id: string) => {
-    setSelectedHubId(id);
+  const selectHub = (id: string | null) => {
     onSelectHubId?.(id);
   };
 
-  const askLeadToBuildHub = async (e: FormEvent) => {
-    e.preventDefault();
-    const idea = buildIdea.trim();
-    if (!idea || !workspace.lead || building) return;
-    setBuilding(true);
-    const prompt = `Build a custom interactive Dropwave Hub mod for this project: "${idea}". Write a single self-contained HTML file to .dropwave/hubs/ using dropwave_docs (kind: "hub") with a clean <title> and Dropwave dark glass styling (transparent body, crisp typography, interactive controls). Tell me when it is ready so I can pin it.`;
+  const sendToLead = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || !workspace.lead || sending) return;
+    setSending(true);
     const res = await startTurn({
       environmentId: workspace.lead.environmentId,
       input: {
         threadId: workspace.lead.id,
-        message: { messageId: newMessageId(), role: "user", text: prompt, attachments: [] },
+        message: { messageId: newMessageId(), role: "user", text: trimmed, attachments: [] },
         runtimeMode: workspace.lead.source.runtimeMode,
         interactionMode: workspace.lead.source.interactionMode,
       },
     });
-    setBuilding(false);
+    setSending(false);
     if (res._tag === "Success") {
-      setBuildIdea("");
+      setAskLead("");
       workspace.openThread(scopeThreadRef(workspace.lead.environmentId, workspace.lead.id));
+      workspace.setMainView("chat");
+    }
+  };
+
+  const askLeadToChangeHub = (name: string) => {
+    if (workspace.lead) {
+      workspace.prefillComposer(
+        scopeThreadRef(workspace.lead.environmentId, workspace.lead.id),
+        gt("I’d like to change the “{name}” hub: ", { name }),
+      );
+      workspace.setMainView("chat");
     }
   };
 
@@ -221,34 +515,168 @@ export function DropwaveHubsView({
       input: { projectId: project.id, path },
     });
     if (pinnedSet.has(path)) togglePin(path);
-    selectHub(BUILTIN_SHIP_GATE_HUB_ID);
+    selectHub(null);
     setNonce((n) => n + 1);
   };
 
-  const isBuiltin = activeHubId.startsWith("builtin:");
+  const builtinHubs: ReadonlyArray<{
+    id: string;
+    title: string;
+    line: string;
+    icon: typeof CheckCircle2Icon;
+  }> = [
+    {
+      id: BUILTIN_SHIP_GATE_HUB_ID,
+      title: gt("Ship Gate"),
+      line: gt("The pre-ship checklist"),
+      icon: CheckCircle2Icon,
+    },
+    {
+      id: BUILTIN_PROJECT_PULSE_HUB_ID,
+      title: gt("Project pulse"),
+      line: gt("What every bot is doing now"),
+      icon: ActivityIcon,
+    },
+    {
+      id: BUILTIN_DECISIONS_HUB_ID,
+      title: gt("Decisions log"),
+      line: gt("Every call you made, with the quote"),
+      icon: ScrollTextIcon,
+    },
+    {
+      id: BUILTIN_HABITS_HUB_ID,
+      title: gt("Habits calendar"),
+      line: gt("The week ahead of scheduled runs"),
+      icon: CalendarDaysIcon,
+    },
+  ];
+
+  if (activeHubId !== null) {
+    const isBuiltin = activeHubId.startsWith("builtin:");
+    const customHub = customHubs.find((hub) => hub.path === activeHubId) ?? null;
+    const hubTitle = isBuiltin
+      ? (builtinHubs.find((hub) => hub.id === activeHubId)?.title ?? gt("Hub"))
+      : (loadedHubDoc?.title ?? customHub?.title ?? gt("Hub"));
+    const pinned = pinnedSet.has(activeHubId);
+    return (
+      <section data-dw-hubs-view="" data-dw-hub-canvas="" aria-label={gt("Hub")}>
+        <header data-dw-hub-canvas-head="">
+          <button type="button" data-dw-back-pill="" onClick={() => selectHub(null)}>
+            <ArrowLeftIcon className="size-3.5" />
+            <T>Hubs</T>
+          </button>
+          <div data-dw-hub-canvas-title="">
+            <strong>{hubTitle}</strong>
+          </div>
+          <div data-dw-head-actions="">
+            <button
+              type="button"
+              data-dw-pin-btn=""
+              aria-label={pinned ? gt("Unpin hub") : gt("Pin hub to sidebar")}
+              aria-pressed={pinned}
+              onClick={() => togglePin(activeHubId)}
+            >
+              {pinned ? <PinOffIcon className="size-3.5" /> : <PinIcon className="size-3.5" />}
+            </button>
+            <button type="button" data-dw-back-pill="" onClick={() => askLeadToChangeHub(hubTitle)}>
+              <Wand2Icon className="size-3.5" />
+              {gt("Ask {name} to change", { name: workspace.lead?.title ?? gt("your lead") })}
+            </button>
+            {!isBuiltin && loadedHubDoc ? (
+              <button
+                type="button"
+                data-dw-mini-icon=""
+                aria-label={gt("Delete custom hub")}
+                onClick={() => void deleteCustomHub(loadedHubDoc.path)}
+              >
+                <Trash2Icon className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+        </header>
+        <div data-dw-hubs-stage="" data-canvas="true">
+          {activeHubId === BUILTIN_SHIP_GATE_HUB_ID ? (
+            <BuiltinShipGateHub projectKey={`${project.environmentId}:${project.id}`} />
+          ) : activeHubId === BUILTIN_PROJECT_PULSE_HUB_ID ? (
+            <BuiltinProjectPulseHub />
+          ) : activeHubId === BUILTIN_DECISIONS_HUB_ID ? (
+            <BuiltinDecisionsHub />
+          ) : activeHubId === BUILTIN_HABITS_HUB_ID ? (
+            <BuiltinHabitsCalendarHub />
+          ) : !isBuiltin && loadedHubDoc ? (
+            <iframe
+              title={loadedHubDoc.title}
+              sandbox="allow-scripts"
+              srcDoc={injectHubTheme(loadedHubDoc.content)}
+            />
+          ) : (
+            <div data-dropwave-panel-empty="">
+              <LayoutGridIcon />
+              <p>
+                <T>Loading hub…</T>
+              </p>
+            </div>
+          )}
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <section data-dw-hubs-view="" aria-label={gt("Project Hubs")}>
-      <aside data-dw-hubs-rail="">
-        <div data-dw-rail-head="">
-          <span>
-            <T>Shipped Hubs</T>
-          </span>
-        </div>
-        <div data-dw-hub-list="">
-          {[{ id: BUILTIN_SHIP_GATE_HUB_ID, title: gt("Ship Gate"), icon: CheckCircle2Icon }].map(
-            (hub) => {
+    <section data-dw-hubs-view="" data-dw-hubs-home="" aria-label={gt("Hubs")}>
+      <div data-dw-hubs-home-scroll="">
+        <form
+          data-dw-composer-box=""
+          data-dw-hub-ask=""
+          onSubmit={(event) => {
+            event.preventDefault();
+            void sendToLead(askLead);
+          }}
+        >
+          <input
+            value={askLead}
+            onChange={(event) => setAskLead(event.currentTarget.value)}
+            placeholder={gt("Describe a hub… e.g. a pricing calculator")}
+            aria-label={gt("Ask your lead for a hub")}
+            disabled={sending || !workspace.lead}
+          />
+          <div data-dw-composer-bar="">
+            <div data-dw-composer-left="">
+              <span data-dw-section-micro="">
+                {gt("Ask {name}", { name: workspace.lead?.title ?? gt("your lead") })}
+              </span>
+            </div>
+            <div data-dw-composer-right="">
+              <button
+                type="submit"
+                data-dw-composer-icon=""
+                aria-label={gt("Send")}
+                disabled={sending || !askLead.trim() || !workspace.lead}
+              >
+                <SendIcon className="size-3.5" />
+              </button>
+            </div>
+          </div>
+        </form>
+
+        <div data-dw-hubs-section="">
+          <h3>
+            <T>Built in</T>
+          </h3>
+          <div data-dw-hubs-grid="">
+            {builtinHubs.map((hub) => {
               const Icon = hub.icon;
               const pinned = pinnedSet.has(hub.id);
               return (
-                <div
-                  key={hub.id}
-                  data-dw-hub-item=""
-                  data-active={activeHubId === hub.id ? "true" : undefined}
-                >
-                  <button type="button" data-dw-hub-pick="" onClick={() => selectHub(hub.id)}>
-                    <Icon className="size-3.5 shrink-0" />
-                    <span>{hub.title}</span>
+                <div key={hub.id} data-dw-hub-card="">
+                  <button type="button" data-dw-hub-card-open="" onClick={() => selectHub(hub.id)}>
+                    <span data-dw-hub-card-icon="">
+                      <Icon className="size-4" />
+                    </span>
+                    <span data-dw-hub-card-meta="">
+                      <strong>{hub.title}</strong>
+                      <small>{hub.line}</small>
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -261,101 +689,54 @@ export function DropwaveHubsView({
                   </button>
                 </div>
               );
-            },
+            })}
+          </div>
+        </div>
+
+        <div data-dw-hubs-section="">
+          <h3>
+            <T>Made for this project</T>
+          </h3>
+          {customHubs.length > 0 ? (
+            <div data-dw-hubs-grid="">
+              {customHubs.map((hub) => {
+                const pinned = pinnedSet.has(hub.path);
+                return (
+                  <div key={hub.path} data-dw-hub-card="">
+                    <button
+                      type="button"
+                      data-dw-hub-card-open=""
+                      onClick={() => selectHub(hub.path)}
+                    >
+                      <span data-dw-hub-card-icon="">
+                        <LayoutGridIcon className="size-4" />
+                      </span>
+                      <span data-dw-hub-card-meta="">
+                        <strong>{hub.title}</strong>
+                        <small>
+                          <T>Agent-built mod</T>
+                        </small>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      data-dw-pin-btn=""
+                      aria-label={pinned ? gt("Unpin hub") : gt("Pin hub to sidebar")}
+                      aria-pressed={pinned}
+                      onClick={() => togglePin(hub.path)}
+                    >
+                      {pinned ? <PinOffIcon className="size-3" /> : <PinIcon className="size-3" />}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <p data-dw-rail-empty="">
+              <T>Ask your lead above. Agent-built hubs land here.</T>
+            </p>
           )}
         </div>
-
-        <div data-dw-rail-head="" style={{ marginTop: 14 }}>
-          <span>
-            <T>Agent Mods</T>
-          </span>
-          <span data-dw-rail-count="">{customHubs.length}</span>
-        </div>
-        <div data-dw-hub-list="">
-          {customHubs.map((hub) => {
-            const pinned = pinnedSet.has(hub.path);
-            return (
-              <div
-                key={hub.path}
-                data-dw-hub-item=""
-                data-active={activeHubId === hub.path ? "true" : undefined}
-              >
-                <button type="button" data-dw-hub-pick="" onClick={() => selectHub(hub.path)}>
-                  <LayoutGridIcon className="size-3.5 shrink-0" />
-                  <span>{hub.title}</span>
-                </button>
-                <button
-                  type="button"
-                  data-dw-pin-btn=""
-                  aria-label={pinned ? gt("Unpin hub") : gt("Pin hub to sidebar")}
-                  aria-pressed={pinned}
-                  onClick={() => togglePin(hub.path)}
-                >
-                  {pinned ? <PinOffIcon className="size-3" /> : <PinIcon className="size-3" />}
-                </button>
-              </div>
-            );
-          })}
-          {customHubs.length === 0 ? (
-            <p data-dw-rail-empty="">
-              <T>Ask your Lead bot below to generate custom UIs saved in .dropwave/hubs/.</T>
-            </p>
-          ) : null}
-        </div>
-
-        <form data-dw-hub-builder="" onSubmit={(e) => void askLeadToBuildHub(e)}>
-          <span data-dw-section-micro="">
-            <T>Create a custom Hub</T>
-          </span>
-          <input
-            value={buildIdea}
-            onChange={(e) => setBuildIdea(e.currentTarget.value)}
-            placeholder={gt("e.g. Pricing calculator, KPI board…")}
-          />
-          <button
-            type="submit"
-            data-dw-btn-solid=""
-            disabled={!buildIdea.trim() || !workspace.lead || building}
-          >
-            <Wand2Icon className="size-3.5" />
-            <T>Ask Lead to build</T>
-          </button>
-        </form>
-      </aside>
-
-      <div data-dw-hubs-stage="">
-        {activeHubId === BUILTIN_SHIP_GATE_HUB_ID ? (
-          <BuiltinShipGateHub projectKey={`${project.environmentId}:${project.id}`} />
-        ) : !isBuiltin && loadedHubDoc ? (
-          <div data-dw-custom-hub-frame="">
-            <header data-dw-custom-hub-head="">
-              <div>
-                <strong>{loadedHubDoc.title}</strong>
-                <span data-dw-mono="dim">{loadedHubDoc.path}</span>
-              </div>
-              <button
-                type="button"
-                data-dw-mini-icon=""
-                aria-label={gt("Delete custom hub")}
-                onClick={() => void deleteCustomHub(loadedHubDoc.path)}
-              >
-                <Trash2Icon className="size-3.5" />
-              </button>
-            </header>
-            <iframe
-              title={loadedHubDoc.title}
-              sandbox="allow-scripts"
-              srcDoc={injectHubTheme(loadedHubDoc.content)}
-            />
-          </div>
-        ) : (
-          <div data-dropwave-panel-empty="">
-            <LayoutGridIcon />
-            <p>
-              <T>Loading custom hub…</T>
-            </p>
-          </div>
-        )}
       </div>
     </section>
   );

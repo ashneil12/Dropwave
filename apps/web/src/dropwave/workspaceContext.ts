@@ -8,6 +8,7 @@ import { createContext, use } from "react";
 export type BotEditorTarget =
   | { kind: "new-lead"; project: EnvironmentProject }
   | { kind: "new-teammate"; project: EnvironmentProject; lead: EnvironmentThreadShell }
+  | { kind: "add-bot"; project: EnvironmentProject; lead: EnvironmentThreadShell }
   | { kind: "edit"; bot: EnvironmentThreadShell; decision?: string };
 
 export type WorkspacePanel =
@@ -32,7 +33,7 @@ interface DropwaveWorkspaceState {
   readonly mainView: DropwaveMainView;
   readonly setMainView: (
     view: DropwaveMainView,
-    options?: { readonly newProject?: boolean },
+    options?: { readonly newProject?: boolean; readonly docsTab?: "docs" | "memory" },
   ) => void;
   readonly openHub: (hubId: string) => void;
   readonly openAsksCount: number;

@@ -147,6 +147,18 @@ function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS dropwave_habit_summaries (
+      task_id TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (task_id, prompt_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dropwave_habit_summaries_project
+      ON dropwave_habit_summaries (project_id);
   `);
 
   const memoryColumns = new Set(
@@ -302,6 +314,12 @@ function rowToSummaryNode(row: SummaryNodeRow): DropwaveSummaryNode {
   };
 }
 
+export interface DropwaveHabitSummaryItem {
+  readonly taskId: string;
+  readonly summary: string;
+  readonly updatedAt: IsoDateTime;
+}
+
 export interface DropwaveStoreShape {
   readonly captureMessageAsks: (input: {
     readonly projectId: ProjectId;
@@ -394,6 +412,33 @@ export interface DropwaveStoreShape {
     readonly soul?: string | undefined;
     readonly identity?: string | undefined;
   }) => Effect.Effect<DropwavePersona, DropwaveOperationError>;
+
+  readonly deletePersona: (id: string) => Effect.Effect<boolean, DropwaveOperationError>;
+
+  readonly saveHabitSummary: (input: {
+    readonly taskId: string;
+    readonly projectId: ProjectId;
+    readonly promptHash: string;
+    readonly summary: string;
+  }) => Effect.Effect<void, DropwaveOperationError>;
+
+  readonly listHabitSummaries: (input: {
+    readonly projectId: ProjectId;
+  }) => Effect.Effect<ReadonlyArray<DropwaveHabitSummaryItem>, DropwaveOperationError>;
+
+  readonly deleteProjectData: (input: {
+    readonly projectId: ProjectId;
+    readonly threadIds: ReadonlyArray<ThreadId>;
+  }) => Effect.Effect<
+    {
+      readonly asks: number;
+      readonly counters: number;
+      readonly memories: number;
+      readonly summaryNodes: number;
+      readonly habitSummaries: number;
+    },
+    DropwaveOperationError
+  >;
 
   readonly appendTurnSummary: (input: {
     readonly threadId: ThreadId;
@@ -1160,6 +1205,109 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             limit,
           );
           return rows.map(rowToSummaryNode);
+        },
+        catch: storageError,
+      }),
+
+    deletePersona: (id) =>
+      Effect.try({
+        try: () => {
+          const result = db.prepare("DELETE FROM dropwave_personas WHERE id = ?").run(id);
+          return result.changes > 0;
+        },
+        catch: storageError,
+      }),
+
+    saveHabitSummary: (input) =>
+      Effect.try({
+        try: () => {
+          const now = nowIso();
+          db.prepare(
+            `INSERT INTO dropwave_habit_summaries (task_id, prompt_hash, project_id, summary, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(task_id, prompt_hash) DO UPDATE SET
+               project_id = excluded.project_id,
+               summary = excluded.summary,
+               updated_at = excluded.updated_at`,
+          ).run(input.taskId, input.promptHash, input.projectId, input.summary, now, now);
+        },
+        catch: storageError,
+      }),
+
+    listHabitSummaries: (input) =>
+      Effect.try({
+        try: () => {
+          const rows = db
+            .prepare(
+              `SELECT task_id, summary, updated_at FROM dropwave_habit_summaries
+               WHERE project_id = ? ORDER BY updated_at DESC`,
+            )
+            .all(input.projectId) as Array<{
+            task_id: string;
+            summary: string;
+            updated_at: string;
+          }>;
+          const seen = new Set<string>();
+          const items: Array<DropwaveHabitSummaryItem> = [];
+          for (const row of rows) {
+            if (seen.has(row.task_id)) continue;
+            seen.add(row.task_id);
+            items.push({
+              taskId: row.task_id,
+              summary: row.summary,
+              updatedAt: asIsoDateTime(row.updated_at),
+            });
+          }
+          return items;
+        },
+        catch: storageError,
+      }),
+
+    deleteProjectData: (input) =>
+      Effect.try({
+        try: () => {
+          db.exec("BEGIN IMMEDIATE");
+          try {
+            const asks = Number(
+              db.prepare("DELETE FROM dropwave_asks WHERE project_id = ?").run(input.projectId)
+                .changes,
+            );
+            const counters = Number(
+              db
+                .prepare("DELETE FROM dropwave_ask_counters WHERE project_id = ?")
+                .run(input.projectId).changes,
+            );
+            const memories = Number(
+              db
+                .prepare("DELETE FROM dropwave_memories WHERE project_id = ? AND scope = 'project'")
+                .run(input.projectId).changes,
+            );
+            const habitSummaries = Number(
+              db
+                .prepare("DELETE FROM dropwave_habit_summaries WHERE project_id = ?")
+                .run(input.projectId).changes,
+            );
+            let summaryNodes = 0;
+            if (input.threadIds.length > 0) {
+              const placeholders = input.threadIds.map(() => "?").join(", ");
+              summaryNodes = Number(
+                db
+                  .prepare(
+                    `DELETE FROM dropwave_summary_nodes WHERE thread_id IN (${placeholders})`,
+                  )
+                  .run(...input.threadIds).changes,
+              );
+            }
+            db.exec("COMMIT");
+            return { asks, counters, memories, summaryNodes, habitSummaries };
+          } catch (error) {
+            try {
+              db.exec("ROLLBACK");
+            } catch {
+              // ignore rollback errors
+            }
+            throw error;
+          }
         },
         catch: storageError,
       }),

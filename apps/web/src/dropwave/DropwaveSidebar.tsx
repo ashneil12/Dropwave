@@ -394,12 +394,12 @@ export function DropwaveSidebar({
             <button
               type="button"
               data-dw-rail-plus=""
-              aria-label={gt("Add specialist bot")}
+              aria-label={gt("Add a bot")}
               onClick={() =>
                 workspace.openPanel({
                   kind: "profile",
                   target: {
-                    kind: "new-teammate",
+                    kind: "add-bot",
                     project: workspace.project!,
                     lead: workspace.lead!,
                   },

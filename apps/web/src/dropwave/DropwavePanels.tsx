@@ -25,8 +25,10 @@ import {
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useEnvironmentScope } from "../state/session";
 import { threadFamilies } from "../state/threads";
+import { DropwaveAddBot } from "./DropwaveAddBot";
 import { DropwaveAsksPanel } from "./DropwaveAsksPanel";
 import { DropwaveBotEditor } from "./DropwaveBotEditor";
+import { DropwaveBotProfile } from "./DropwaveBotProfile";
 import { DropwaveProjectRuns } from "./DropwaveProjectRuns";
 import {
   attentionFirst,
@@ -271,7 +273,7 @@ function Team() {
       <div data-dropwave-team-empty="">
         <p>
           <T>
-            Set up a Chief of Staff for <Var>{project.title}</Var> before adding helper bots.
+            Set up a Chief of Staff for <Var>{project.title}</Var> before adding bots.
           </T>
         </p>
         <Button
@@ -291,21 +293,27 @@ function Team() {
       bot.source.dropwaveBot?.kind === "teammate" &&
       bot.source.dropwaveBot.leadThreadId === lead.id,
   );
-  const teamRow = (bot: EnvironmentThreadShell) => (
+  const teamRow = (bot: EnvironmentThreadShell, opensProfile = false) => (
     <Row
       key={keyOfThread(bot)}
       thread={bot}
-      onOpen={() => workspace.openThread(scopeThreadRef(bot.environmentId, bot.id))}
+      onOpen={() =>
+        opensProfile
+          ? workspace.openPanel({ kind: "profile", target: { kind: "edit", bot } })
+          : workspace.openThread(scopeThreadRef(bot.environmentId, bot.id))
+      }
     >
-      <button
-        type="button"
-        data-dropwave-small-button=""
-        aria-label={gt("Edit {name}", { name: bot.title })}
-        disabled={!canOperate}
-        onClick={() => workspace.openPanel({ kind: "profile", target: { kind: "edit", bot } })}
-      >
-        <T>Edit</T>
-      </button>
+      {opensProfile ? null : (
+        <button
+          type="button"
+          data-dropwave-small-button=""
+          aria-label={gt("Edit {name}", { name: bot.title })}
+          disabled={!canOperate}
+          onClick={() => workspace.openPanel({ kind: "profile", target: { kind: "edit", bot } })}
+        >
+          <T>Edit</T>
+        </button>
+      )}
     </Row>
   );
   return (
@@ -319,7 +327,7 @@ function Team() {
       <section data-dropwave-group="">
         <div data-dropwave-group-heading="">
           <h3>
-            <T>Helper bots</T>
+            <T>Bots</T>
           </h3>
           <Button
             variant="outline"
@@ -328,18 +336,18 @@ function Team() {
             onClick={() =>
               workspace.openPanel({
                 kind: "profile",
-                target: { kind: "new-teammate", lead, project },
+                target: { kind: "add-bot", project, lead },
               })
             }
           >
-            <PlusIcon /> <T>Add helper</T>
+            <PlusIcon /> <T>Add a bot</T>
           </Button>
         </div>
         {teammates.length > 0 ? (
-          <ul data-dropwave-list="">{teammates.map(teamRow)}</ul>
+          <ul data-dropwave-list="">{teammates.map((bot) => teamRow(bot, true))}</ul>
         ) : (
           <p>
-            <T>Add a helper when you want a dedicated specialist like QA or SEO.</T>
+            <T>Add a bot when you want a dedicated specialist like QA or SEO.</T>
           </p>
         )}
       </section>
@@ -352,6 +360,18 @@ export function DropwavePanels({ panel, onClose }: { panel: WorkspacePanel; onCl
   const gt = useGT();
   if (!workspace) return null;
   if (panel.kind === "profile") {
+    if (panel.target.kind === "add-bot" || panel.target.kind === "new-teammate") {
+      return (
+        <DropwaveAddBot project={panel.target.project} lead={panel.target.lead} onClose={onClose} />
+      );
+    }
+    if (
+      panel.target.kind === "edit" &&
+      panel.target.decision === undefined &&
+      panel.target.bot.source.dropwaveBot?.kind === "teammate"
+    ) {
+      return <DropwaveBotProfile bot={panel.target.bot} onClose={onClose} />;
+    }
     if (
       panel.target.kind === "edit" &&
       panel.target.decision === undefined &&

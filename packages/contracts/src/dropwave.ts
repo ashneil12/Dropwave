@@ -296,3 +296,43 @@ export const DropwavePersonaUpsertResult = Schema.Struct({
   item: DropwavePersona,
 });
 export type DropwavePersonaUpsertResult = typeof DropwavePersonaUpsertResult.Type;
+
+export const DropwaveBotAddedInput = Schema.Struct({
+  projectId: ProjectId,
+  leadThreadId: ThreadId,
+  teammateThreadId: ThreadId,
+  name: TrimmedNonEmptyString.check(Schema.isMaxLength(80)),
+  brief: Schema.String.check(Schema.isMaxLength(4000)),
+});
+export type DropwaveBotAddedInput = typeof DropwaveBotAddedInput.Type;
+
+export const DropwaveBotAddedResult = Schema.Struct({
+  sent: Schema.Boolean,
+});
+export type DropwaveBotAddedResult = typeof DropwaveBotAddedResult.Type;
+
+export const DropwaveHabitSummaryItem = Schema.Struct({
+  taskId: TrimmedNonEmptyString,
+  summary: TrimmedNonEmptyString,
+});
+export type DropwaveHabitSummaryItem = typeof DropwaveHabitSummaryItem.Type;
+
+export const DropwaveHabitSummariesListInput = Schema.Struct({
+  projectId: ProjectId,
+});
+export type DropwaveHabitSummariesListInput = typeof DropwaveHabitSummariesListInput.Type;
+
+export const DropwaveHabitSummariesListResult = Schema.Struct({
+  items: Schema.Array(DropwaveHabitSummaryItem),
+});
+export type DropwaveHabitSummariesListResult = typeof DropwaveHabitSummariesListResult.Type;
+
+export const DropwavePersonaDeleteInput = Schema.Struct({
+  id: TrimmedNonEmptyString,
+});
+export type DropwavePersonaDeleteInput = typeof DropwavePersonaDeleteInput.Type;
+
+export const DropwavePersonaDeleteResult = Schema.Struct({
+  deleted: Schema.Boolean,
+});
+export type DropwavePersonaDeleteResult = typeof DropwavePersonaDeleteResult.Type;

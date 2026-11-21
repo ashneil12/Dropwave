@@ -23,6 +23,12 @@ import {
   DropwavePersonaListResult,
   DropwavePersonaUpsertInput,
   DropwavePersonaUpsertResult,
+  DropwavePersonaDeleteInput,
+  DropwavePersonaDeleteResult,
+  DropwaveBotAddedInput,
+  DropwaveBotAddedResult,
+  DropwaveHabitSummariesListInput,
+  DropwaveHabitSummariesListResult,
 } from "./dropwave.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -628,6 +634,9 @@ export const WS_METHODS = {
   dropwaveMemorySetScope: "dropwave.memory.setScope",
   dropwavePersonaList: "dropwave.persona.list",
   dropwavePersonaUpsert: "dropwave.persona.upsert",
+  dropwavePersonaDelete: "dropwave.persona.delete",
+  dropwaveBotAdded: "dropwave.bot.added",
+  dropwaveHabitSummariesList: "dropwave.habitSummaries.list",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2335,6 +2344,24 @@ const WsDropwavePersonaUpsertRpc = Rpc.make(WS_METHODS.dropwavePersonaUpsert, {
   error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
 });
 
+const WsDropwavePersonaDeleteRpc = Rpc.make(WS_METHODS.dropwavePersonaDelete, {
+  payload: DropwavePersonaDeleteInput,
+  success: DropwavePersonaDeleteResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveBotAddedRpc = Rpc.make(WS_METHODS.dropwaveBotAdded, {
+  payload: DropwaveBotAddedInput,
+  success: DropwaveBotAddedResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveHabitSummariesListRpc = Rpc.make(WS_METHODS.dropwaveHabitSummariesList, {
+  payload: DropwaveHabitSummariesListInput,
+  success: DropwaveHabitSummariesListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2621,4 +2648,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsDropwaveMemorySetScopeRpc,
   WsDropwavePersonaListRpc,
   WsDropwavePersonaUpsertRpc,
+  WsDropwavePersonaDeleteRpc,
+  WsDropwaveBotAddedRpc,
+  WsDropwaveHabitSummariesListRpc,
 ).middleware(RpcScopeAuthorization);

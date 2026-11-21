@@ -20,6 +20,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
+import * as DropwaveStore from "../dropwave/DropwaveStore.ts";
 import { withCommandMetrics } from "../observability/Metrics.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -110,6 +111,7 @@ export class ProjectOperationError extends Schema.TaggedError<ProjectOperationEr
       "list-projects",
       "list-threads",
       "delete-thread",
+      "delete-dropwave-data",
       "dispatch-project-command",
     ]),
     projectId: Schema.optional(ProjectId),
@@ -566,7 +568,31 @@ export const make = Effect.gen(function* () {
           ),
       { concurrency: 1, discard: true },
     );
+    return projectThreads.map((thread) => thread.id);
   });
+
+  // Dropwave keeps its own SQLite store keyed by project_id; crew personas are
+  // global and must survive project deletion.
+  const deleteDropwaveProjectData = (projectId: ProjectId, threadIds: ReadonlyArray<ThreadId>) =>
+    Effect.serviceOption(DropwaveStore.DropwaveStore).pipe(
+      Effect.flatMap((maybeStore) =>
+        Option.isNone(maybeStore)
+          ? Effect.void
+          : maybeStore.value
+              .deleteProjectData({ projectId, threadIds })
+              .pipe(
+                Effect.tap((counts) =>
+                  Effect.logInfo(
+                    `Deleted dropwave project data for ${projectId}: ${JSON.stringify(counts)}`,
+                  ),
+                ),
+              ),
+      ),
+      Effect.mapError(
+        (cause) =>
+          new ProjectOperationError({ operation: "delete-dropwave-data", projectId, cause }),
+      ),
+    );
 
   // Best-effort cleanup releases disabled instances kept alive by overrides; crashes have no replay to revisit deletion.
   const clearProjectSettingsOverrides = (projectId: ProjectId) =>
@@ -598,7 +624,8 @@ export const make = Effect.gen(function* () {
 
       const isFirstDelete = existing.value.deletedAt === null;
       if (isFirstDelete) {
-        yield* deleteChildThreads(input);
+        const threadIds = yield* deleteChildThreads(input);
+        yield* deleteDropwaveProjectData(projectId, threadIds);
       }
       yield* commit({ type: "project.delete", commandId: input.commandId, projectId });
       if (isFirstDelete) {

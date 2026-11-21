@@ -48,7 +48,7 @@ import {
   type OrchestrationV2Command,
   type GitActionProgressEvent,
   type GitManagerServiceError,
-  type MessageId,
+  MessageId,
   type AcpRegistryDeleteSessionInput,
   type AcpRegistryDisableProviderInput,
   type AcpRegistryListProvidersInput,
@@ -105,6 +105,7 @@ import {
   type PullRequestRef,
   WS_METHODS,
   WsRpcGroup,
+  type DropwaveBotAddedInput,
 } from "@t3tools/contracts";
 import {
   HttpRouter,
@@ -786,6 +787,7 @@ function toAuthAccessStreamEvent(
   }
 }
 
+const isDropwaveOperationError = Schema.is(DropwaveOperationError);
 const isClientSurface = Schema.is(ClientSurface);
 const isClientConnectionMethod = Schema.is(ClientConnectionMethod);
 const isClientDeviceType = Schema.is(ClientDeviceType);
@@ -2094,6 +2096,69 @@ export const layerWsRpc = (
             ),
             Effect.map((item) => ({ item })),
           ),
+        [WS_METHODS.dropwavePersonaDelete]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.deletePersona(input.id)),
+            Effect.map((deleted) => ({ deleted })),
+          ),
+        [WS_METHODS.dropwaveHabitSummariesList]: (input) =>
+          requireDropwaveStore().pipe(
+            Effect.flatMap((store) => store.listHabitSummaries(input)),
+            Effect.map((items) => ({
+              items: items.map((item) => ({ taskId: item.taskId, summary: item.summary })),
+            })),
+          ),
+        [WS_METHODS.dropwaveBotAdded]: Effect.fn("ws.dropwaveBotAdded")(
+          function* (input: DropwaveBotAddedInput) {
+            const leadShell = yield* threadManagement
+              .getThreadShell(input.leadThreadId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (
+              leadShell === null ||
+              leadShell.projectId !== input.projectId ||
+              leadShell.dropwaveBot?.kind !== "lead"
+            ) {
+              return yield* new DropwaveOperationError({
+                code: "not_found",
+                message: "Lead thread not found for this project.",
+              });
+            }
+            const teammateShell = yield* threadManagement
+              .getThreadShell(input.teammateThreadId)
+              .pipe(Effect.orElseSucceed(() => null));
+            if (
+              teammateShell === null ||
+              teammateShell.projectId !== input.projectId ||
+              teammateShell.dropwaveBot?.kind !== "teammate"
+            ) {
+              return yield* new DropwaveOperationError({
+                code: "not_found",
+                message: "Bot thread not found for this project.",
+              });
+            }
+            const commandId = yield* serverCommandId("dropwave-bot-added");
+            yield* threadManagement.sendToThread({
+              projectId: input.projectId,
+              commandId,
+              threadId: input.leadThreadId,
+              messageId: MessageId.make(`message:dropwave-bot-added:${input.teammateThreadId}`),
+              text: `Ash added ${input.name}: ${input.brief.trim() || "a new specialist"}. Set it up: write its soul and role, wire it into the core loop if it belongs there, and tell Ash in one line what it will do.`,
+              attachments: [],
+              mode: "queue",
+              createdBy: "agent",
+              creationSource: "server",
+            });
+            return { sent: true };
+          },
+          Effect.mapError((cause) =>
+            isDropwaveOperationError(cause)
+              ? cause
+              : new DropwaveOperationError({
+                  code: "storage_error",
+                  message: cause instanceof Error ? cause.message : "Could not notify the lead.",
+                }),
+          ),
+        ),
         [WS_METHODS.issuesList]: (input) => issues.list(input),
         [WS_METHODS.issuesDetail]: (input) => issues.detail(input),
         [WS_METHODS.issuesComments]: (input) => issues.comments(input),

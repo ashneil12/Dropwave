@@ -61,6 +61,18 @@ import { useDropwaveWorkspace } from "./workspaceContext";
 const EMPTY_PENDING_REQUESTS_ATOM = Atom.make(null);
 const EMPTY_CHILD_APPROVALS_ATOM = Atom.make<ReadonlyArray<ChildThreadApproval>>([]);
 
+// Fold pills for supervisor notes show a human label; the full text stays in the expanded body.
+function supervisorCheckLabel(text: string, gt: (message: string) => string): string {
+  const body = text.replace(/^\[Dropwave supervisor\]\s*/i, "");
+  if (/asks? with no status/i.test(body)) return gt("Checked that every ask is tracked");
+  if (/failed again|reached the fix-round cap/i.test(body)) return gt("Flagged a stuck worker");
+  if (/worker .* failed/i.test(body)) return gt("Flagged a failed worker");
+  if (/finished its assigned run/i.test(body)) return gt("Noted a teammate finishing up");
+  if (/landed into the main checkout/i.test(body)) return gt("Noted work landing in the project");
+  if (/changed .+ directly/i.test(body)) return gt("Noted a direct edit");
+  return gt("Supervisor check");
+}
+
 interface PendingImageAttachment {
   readonly id: string;
   readonly name: string;
@@ -735,16 +747,18 @@ export function DropwaveChatPillar({
       const senderBot = msg.senderThreadId
         ? workspace.bots.find((b) => b.id === msg.senderThreadId)
         : null;
+      const isSupervisor = msg.text.startsWith("[Dropwave supervisor]");
       const senderLabel = senderBot
         ? gt("From {name}", { name: senderBot.title })
-        : msg.text.startsWith("[Dropwave supervisor]")
+        : isSupervisor
           ? gt("Supervisor check")
           : gt("Agent update");
-      const preview = msg.text
-        .replace(/^\[Dropwave supervisor\]\s*/i, "")
-        .replace(/^\[From [^\]]+\]\s*/i, "")
-        .split("\n")[0]
-        ?.slice(0, 72);
+      const preview = isSupervisor
+        ? supervisorCheckLabel(msg.text, gt)
+        : msg.text
+            .replace(/^\[From [^\]]+\]\s*/i, "")
+            .split("\n")[0]
+            ?.slice(0, 72);
       return (
         <div key={msg.id} data-dw-turn="bot">
           <div data-dw-work-fold="">
@@ -756,7 +770,9 @@ export function DropwaveChatPillar({
             >
               <span data-dw-dot="indigo" />
               <span>{senderLabel}</span>
-              {preview ? <span data-dw-mono="dim">· {preview}</span> : null}
+              {preview ? (
+                <span data-dw-mono={isSupervisor ? undefined : "dim"}>· {preview}</span>
+              ) : null}
               {isOpen ? (
                 <ChevronUpIcon className="size-3 opacity-60" />
               ) : (

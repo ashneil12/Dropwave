@@ -268,6 +268,125 @@ it.effect(
 );
 
 it.effect(
+  "deleteProjectData removes every project-keyed dropwave row and keeps crew personas",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* DropwaveStore.DropwaveStore;
+
+      yield* store.captureMessageAsks({
+        projectId: projectA,
+        botThreadId: leadThreadA,
+        messageId: "msg-a",
+        text: "Fix the billing page please.",
+      });
+      yield* store.saveMemory({
+        projectId: projectA,
+        botThreadId: leadThreadA,
+        kind: "fact",
+        text: "Alpha prefers frosted glass",
+      });
+      yield* store.saveMemory({
+        projectId: projectA,
+        scope: "global",
+        kind: "preference",
+        text: "Owner likes dark mode",
+      });
+      const persona = yield* store.upsertPersona({
+        name: "Quill",
+        role: "specialist",
+        roleLabel: "Writer",
+      });
+      yield* store.saveMemory({
+        projectId: projectA,
+        scope: "global",
+        personaId: persona.id,
+        kind: "fact",
+        text: "Quill writes terse release notes",
+      });
+      yield* store.saveHabitSummary({
+        taskId: "task-a",
+        projectId: projectA,
+        promptHash: "hash-a",
+        summary: "Reviews billing nightly",
+      });
+      yield* store.appendTurnSummary({
+        threadId: leadThreadA,
+        messageId: "turn-a",
+        role: "owner",
+        text: "alpha turn",
+      });
+
+      yield* store.captureMessageAsks({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+        messageId: "msg-b",
+        text: "Ship the beta build.",
+      });
+      yield* store.saveMemory({
+        projectId: projectB,
+        botThreadId: leadThreadB,
+        kind: "fact",
+        text: "Beta uses Unreal",
+      });
+      yield* store.saveHabitSummary({
+        taskId: "task-b",
+        projectId: projectB,
+        promptHash: "hash-b",
+        summary: "Beta weekly chore",
+      });
+      yield* store.appendTurnSummary({
+        threadId: leadThreadB,
+        messageId: "turn-b",
+        role: "owner",
+        text: "beta turn",
+      });
+
+      const counts = yield* store.deleteProjectData({
+        projectId: projectA,
+        threadIds: [leadThreadA],
+      });
+      expect(counts.asks).toBeGreaterThan(0);
+      expect(counts.counters).toBeGreaterThan(0);
+      expect(counts.memories).toBe(1);
+      expect(counts.habitSummaries).toBe(1);
+      expect(counts.summaryNodes).toBeGreaterThan(0);
+
+      expect(yield* store.listAsks({ projectId: projectA })).toHaveLength(0);
+      expect((yield* store.listAsks({ projectId: projectB })).length).toBeGreaterThan(0);
+
+      const alphaMems = yield* store.listMemories({ projectId: projectA });
+      expect(alphaMems.map((mem) => mem.text)).toEqual(["Owner likes dark mode"]);
+      const personaMems = yield* store.listMemories({
+        projectId: projectA,
+        personaId: persona.id,
+      });
+      const personaTexts = personaMems.map((mem) => mem.text);
+      expect(personaTexts).toContain("Quill writes terse release notes");
+      expect(personaTexts).not.toContain("Alpha prefers frosted glass");
+      expect((yield* store.listMemories({ projectId: projectB })).length).toBeGreaterThan(0);
+
+      expect(yield* store.listHabitSummaries({ projectId: projectA })).toHaveLength(0);
+      expect((yield* store.listHabitSummaries({ projectId: projectB })).length).toBe(1);
+
+      expect(yield* store.getThreadTreeOverview(leadThreadA, 12)).toHaveLength(0);
+      expect((yield* store.getThreadTreeOverview(leadThreadB, 12)).length).toBeGreaterThan(0);
+
+      // Crew personas are global and survive project deletion.
+      const personas = yield* store.listPersonas();
+      expect(personas.map((item) => item.id)).toContain(persona.id);
+
+      // The ask counter row was deleted too: a fresh capture restarts numbering.
+      const recaptured = yield* store.captureMessageAsks({
+        projectId: projectA,
+        botThreadId: leadThreadA,
+        messageId: "msg-a2",
+        text: "Please update the footer copy too.",
+      });
+      expect(recaptured[0]!.n).toBe(1);
+    }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it.effect(
   "DropwaveDocsService writes, lists, reads, guards path traversal, and protects repo READMEs",
   () =>
     Effect.gen(function* () {
