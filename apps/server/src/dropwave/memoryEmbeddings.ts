@@ -308,6 +308,25 @@ export const layer: Layer.Layer<MemoryEmbeddings, never, ServerConfig.ServerConf
       }),
     );
 
+    // Every embed() caller gates on status "ready", so the lazy spawn inside
+    // embed() is unreachable: without this the model never downloads and
+    // vectors stay off forever. Warm the worker in the background when the
+    // feature is enabled; recall keeps using FTS until it reports ready.
+    if (enabled) {
+      yield* spawnWorker().pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            setState("error", cause.message);
+            if (worker !== undefined) {
+              worker.terminate().catch(() => undefined);
+              worker = undefined;
+            }
+          }),
+        ),
+        Effect.forkScoped,
+      );
+    }
+
     return MemoryEmbeddings.of({ status, setEnabled: setEnabledFlag, embed });
   }),
 );
