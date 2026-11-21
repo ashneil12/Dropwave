@@ -50,6 +50,8 @@ import { canForkBusySourceNatively, isActiveRun } from "./CommandPolicy.ts";
 import { contextBoundaryOrdinal, isScheduledFreshRun } from "./contextBoundary.ts";
 import * as DropwaveDocsService from "../dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "../dropwave/DropwaveStore.ts";
+import * as MemoryEmbeddings from "../dropwave/memoryEmbeddings.ts";
+import * as MemoryRecall from "../dropwave/memoryRecall.ts";
 import { discoverSkills, dropwaveLibraryRoots } from "../dropwave/DropwaveSkillsDiscovery.ts";
 import { dropwaveBotInstructions } from "./dropwaveBotInstructions.ts";
 import {
@@ -2076,10 +2078,40 @@ export const layer: Layer.Layer<
             inlineHistory === "" &&
             missedAttachments.length === 0 &&
             session.resumeTurn !== undefined;
+          // Memory v2 recall: per-turn <dropwave_recall> block; shown-once per
+          // segment, traced for the Memory screen. Best-effort, never blocks.
+          const recallBlock =
+            botContext === "" || compact || goalCommand || resumeNatively
+              ? ""
+              : yield* Effect.gen(function* () {
+                  const maybeStore = yield* Effect.serviceOption(DropwaveStore.DropwaveStore);
+                  if (Option.isNone(maybeStore)) return "";
+                  const maybeEmbeddings = yield* Effect.serviceOption(
+                    MemoryEmbeddings.MemoryEmbeddings,
+                  );
+                  const ownerTexts = projection.messages
+                    .filter((message) => message.role === "user" && message.createdBy === "user")
+                    .sort((a, b) => b.createdAt.epochMilliseconds - a.createdAt.epochMilliseconds)
+                    .slice(0, 3)
+                    .map((message) => message.text);
+                  const result = yield* MemoryRecall.recallMemories({
+                    store: maybeStore.value,
+                    embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+                    projectId: projection.thread.projectId,
+                    botThreadId: projection.thread.id,
+                    ...(projection.thread.dropwaveBot?.personaId !== undefined
+                      ? { personaId: projection.thread.dropwaveBot.personaId }
+                      : {}),
+                    threadId: projection.thread.id,
+                    turnKey: run.id,
+                    ownerTexts,
+                  });
+                  return result.block;
+                }).pipe(Effect.catch(() => Effect.succeed("")));
           const context =
             botContext === "" || compact || goalCommand || resumeNatively
               ? inlineHistory
-              : [botContext, inlineHistory].filter((part) => part !== "").join("\n\n");
+              : [botContext, inlineHistory, recallBlock].filter((part) => part !== "").join("\n\n");
           const prompted = context !== "" || missedAttachments.length > 0;
           // A resume that must be prompted still needs a request, or the agent has nothing to do.
           const requestText =

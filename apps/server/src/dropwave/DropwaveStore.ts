@@ -755,6 +755,17 @@ export interface DropwaveStoreShape {
     readonly limit?: number | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveMemoryItem>, DropwaveOperationError>;
 
+  readonly searchMemoryFts: (input: {
+    readonly query: string;
+    readonly projectId: ProjectId;
+    readonly botThreadId?: ThreadId | undefined;
+    readonly personaId?: string | undefined;
+    readonly limit?: number | undefined;
+  }) => Effect.Effect<
+    ReadonlyArray<{ readonly id: string; readonly rank: number }>,
+    DropwaveOperationError
+  >;
+
   readonly saveMemory: (input: {
     readonly projectId: ProjectId;
     readonly botThreadId?: ThreadId | null | undefined;
@@ -1452,6 +1463,106 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             ...params,
           );
           return rows.map(rowToMemory);
+        },
+        catch: storageError,
+      }),
+
+    searchMemoryFts: (input) =>
+      Effect.try({
+        try: () => {
+          const STOPWORDS = new Set([
+            "a",
+            "an",
+            "and",
+            "are",
+            "as",
+            "at",
+            "be",
+            "but",
+            "by",
+            "do",
+            "does",
+            "for",
+            "from",
+            "had",
+            "has",
+            "have",
+            "he",
+            "her",
+            "his",
+            "how",
+            "i",
+            "if",
+            "in",
+            "is",
+            "it",
+            "its",
+            "me",
+            "my",
+            "of",
+            "on",
+            "or",
+            "our",
+            "she",
+            "so",
+            "that",
+            "the",
+            "their",
+            "them",
+            "they",
+            "this",
+            "to",
+            "was",
+            "we",
+            "were",
+            "what",
+            "when",
+            "where",
+            "which",
+            "who",
+            "why",
+            "will",
+            "with",
+            "you",
+            "your",
+          ]);
+          const tokens = (input.query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
+            .filter((token) => !STOPWORDS.has(token))
+            .slice(0, 12)
+            .map((token) => `"${token.replace(/"/g, "")}"`);
+          if (tokens.length === 0) return [];
+          const scopeClauses = [
+            "(m.scope = 'project' AND m.project_id = ?" +
+              (input.botThreadId !== undefined
+                ? " AND (m.bot_thread_id IS NULL OR m.bot_thread_id = ?)"
+                : "") +
+              ")",
+            "m.scope = 'owner'",
+          ];
+          const params: Array<string> = [input.projectId];
+          if (input.botThreadId !== undefined) params.push(input.botThreadId);
+          if (input.personaId !== undefined) {
+            scopeClauses.push("(m.scope = 'bot' AND m.persona_id = ?)");
+            params.push(input.personaId);
+          }
+          const limit = Math.min(Math.max(input.limit ?? 30, 1), 100);
+          const rows = getAll<{ id: string }>(
+            `SELECT m.id
+             FROM memory_fts
+             JOIN dropwave_memories m ON m.id = memory_fts.item_id
+             WHERE memory_fts MATCH ?
+               AND (${scopeClauses.join(" OR ")})
+               AND m.status = 'active'
+             ORDER BY bm25(memory_fts)
+             LIMIT ${limit}`,
+            tokens.join(" OR "),
+            ...params,
+          );
+          // bm25 is negative (lower = better); expose a 0..1 rank, 0 = best.
+          return rows.map((row, index) => ({
+            id: row.id,
+            rank: rows.length <= 1 ? 0 : index / (rows.length - 1),
+          }));
         },
         catch: storageError,
       }),
