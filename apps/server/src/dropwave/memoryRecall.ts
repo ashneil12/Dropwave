@@ -47,12 +47,17 @@ export interface RecallResult {
     readonly vectors?: boolean;
     readonly shown: ReadonlyArray<{
       readonly id: string;
+      readonly subject?: string;
       readonly score: number;
       readonly semantic: number;
       readonly lexical: number;
       readonly via?: string;
     }>;
-    readonly drops: ReadonlyArray<{ readonly id: string; readonly reason: string }>;
+    readonly drops: ReadonlyArray<{
+      readonly id: string;
+      readonly subject?: string;
+      readonly reason: string;
+    }>;
     /** Wall-clock breakdown of the recall pass, for latency auditing. */
     readonly timing?: {
       readonly totalMs: number;
@@ -301,23 +306,27 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
   const shownIds = new Set(
     yield* input.store.getShownMemoryIds(input.threadId).pipe(Effect.orElseSucceed(() => [])),
   );
-  const drops: Array<{ id: string; reason: string }> = [];
+  const drops: Array<{ id: string; subject?: string; reason: string }> = [];
   const isBroad = BROAD_QUERY.test(query);
   const minScore = isBroad ? MIN_SCORE_BROAD : MIN_SCORE;
   const ranked = [...scores.values()]
     .filter((candidate) => {
       const item = candidate.item;
       if (shownIds.has(item.id)) {
-        drops.push({ id: item.id, reason: "already_shown" });
+        drops.push({ id: item.id, subject: item.subject, reason: "already_shown" });
         return false;
       }
       if (item.tier === "episodic" && !historyQuery) {
-        drops.push({ id: item.id, reason: "episodic" });
+        drops.push({ id: item.id, subject: item.subject, reason: "episodic" });
         return false;
       }
       const score = rerankScore(candidate, nowMs);
       if (score < minScore) {
-        drops.push({ id: item.id, reason: `score ${score.toFixed(2)} < ${minScore}` });
+        drops.push({
+          id: item.id,
+          subject: item.subject,
+          reason: `score ${score.toFixed(2)} < ${minScore}`,
+        });
         return false;
       }
       return true;
@@ -341,7 +350,11 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
     if (candidate.item.scope === "project") return true;
     const subject = normalizeSubject(candidate.item.subject);
     if (subject !== "" && projectSubjects.has(subject)) {
-      drops.push({ id: candidate.item.id, reason: "project_precedence" });
+      drops.push({
+        id: candidate.item.id,
+        subject: candidate.item.subject,
+        reason: "project_precedence",
+      });
       return false;
     }
     return true;
@@ -357,7 +370,11 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
     picked.push(entry);
   }
   for (const entry of finalPicks.slice(picked.length)) {
-    drops.push({ id: entry.candidate.item.id, reason: "budget" });
+    drops.push({
+      id: entry.candidate.item.id,
+      subject: entry.candidate.item.subject,
+      reason: "budget",
+    });
   }
   if (picked.length === 0) {
     return yield* finish({
@@ -403,6 +420,7 @@ export const recallMemories = Effect.fnUntraced(function* (input: {
         const viaValue = candidate.via ?? via.get(candidate.item.id);
         return {
           id: candidate.item.id,
+          subject: candidate.item.subject,
           score: Number(score.toFixed(3)),
           semantic: Number(candidate.semantic.toFixed(3)),
           lexical: Number(candidate.lexical.toFixed(3)),

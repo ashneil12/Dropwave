@@ -200,17 +200,44 @@ const handlers = {
             "owner-authored memories can only be changed by the owner.",
           );
         }
-        const item = yield* store
-          .updateMemory({
-            id: input.id,
-            revision: current.revision,
-            ...(input.text !== undefined ? { text: input.text } : {}),
-            ...(input.subject !== undefined ? { subject: input.subject } : {}),
-            ...(input.kind !== undefined ? { kind: input.kind } : {}),
-            ...(input.tags !== undefined ? { tags: input.tags } : {}),
-            by: "agent",
-          })
-          .pipe(Effect.mapError(mapDropwaveError));
+        const maybeEmbeddings = yield* Effect.serviceOption(MemoryEmbeddings.MemoryEmbeddings);
+        const maybeTextGeneration = yield* Effect.serviceOption(TextGeneration.TextGeneration);
+        const maybeServerSettings = yield* Effect.serviceOption(
+          ServerSettings.ServerSettingsService,
+        );
+        const item = yield* MemoryDedupe.updateMemoryMerged({
+          store,
+          embeddings: Option.isSome(maybeEmbeddings) ? maybeEmbeddings.value : undefined,
+          textGeneration: Option.isSome(maybeTextGeneration)
+            ? maybeTextGeneration.value
+            : undefined,
+          serverSettings: Option.isSome(maybeServerSettings)
+            ? maybeServerSettings.value
+            : undefined,
+          workspaceRoot: "/",
+          projectId: current.projectId ?? thread.projectId,
+          id: input.id,
+          revision: current.revision,
+          ...(input.text !== undefined ? { text: input.text } : {}),
+          ...(input.subject !== undefined ? { subject: input.subject } : {}),
+          ...(input.kind !== undefined ? { kind: input.kind } : {}),
+          ...(input.tags !== undefined ? { tags: input.tags } : {}),
+          ...(input.quote !== undefined ? { quote: input.quote } : {}),
+          ...(input.quote
+            ? {
+                evidence: [
+                  {
+                    quote: input.quote.slice(0, 500),
+                    sourceMessageId: null,
+                    threadId: thread.id,
+                    at: DateTime.formatIso(DateTime.nowUnsafe()),
+                  },
+                ],
+              }
+            : {}),
+          threadId: thread.id,
+          by: "agent",
+        }).pipe(Effect.mapError(mapDropwaveError));
         return { item };
       }
       if (input.action === "link") {

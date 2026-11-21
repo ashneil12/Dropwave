@@ -36,6 +36,7 @@ interface RecallTraceEntry {
 
 interface TraceScore {
   readonly id: string;
+  readonly subject?: string;
   readonly score?: number;
   readonly semantic?: number;
   readonly lexical?: number;
@@ -44,6 +45,7 @@ interface TraceScore {
 
 interface TraceDrop {
   readonly id: string;
+  readonly subject?: string;
   readonly reason: string;
 }
 
@@ -343,6 +345,29 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
   };
 
   const leadName = workspace?.lead?.title ?? gt("your lead");
+  const memorySubjects = new Map(items.map((item) => [item.id, item.subject]));
+  const actorLabel = (by: string | undefined, item: DropwaveMemoryItem): string => {
+    if (by === undefined || by === "") return "";
+    if (by === "owner") return gt("You");
+    if (by === "dream") return gt("Dropwave");
+    const bot = workspace?.bots.find((entry) => entry.id === by);
+    if (bot !== undefined) return bot.title;
+    if (by === "agent") {
+      return (item.personaId !== null ? personaNames.get(item.personaId) : undefined) ?? leadName;
+    }
+    return leadName;
+  };
+  const traceTitle = (turnKey: string): string => {
+    const run = /^run:thread:[^:]+:ordinal:(\d+)$/.exec(turnKey);
+    if (run !== null) {
+      const threadId = turnKey.split(":")[2];
+      const bot = workspace?.bots.find((entry) => entry.id === threadId);
+      const turn = gt("turn {n}", { n: Number(run[1]) });
+      return bot !== undefined ? `${bot.title} · ${turn}` : turn;
+    }
+    if (turnKey.startsWith("mcp:")) return gt("Memory search");
+    return gt("Recall run");
+  };
 
   return (
     <div data-dropwave-memory-view="">
@@ -386,7 +411,7 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
                 return (
                   <li key={entry.id}>
                     <div data-dropwave-memory-trace-head="">
-                      <code>{entry.turnKey}</code>
+                      <span>{traceTitle(entry.turnKey)}</span>
                       <span>
                         {trace.gate ?? "?"}
                         {trace.vectors === true ? ` · ${gt("vectors")}` : ""}
@@ -397,7 +422,7 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
                     </div>
                     {(trace.shown ?? []).map((shown) => (
                       <div key={shown.id} data-dropwave-memory-trace-row="">
-                        <span>{shown.id}</span>
+                        <span>{shown.subject ?? memorySubjects.get(shown.id) ?? ""}</span>
                         <span>
                           {typeof shown.score === "number" ? shown.score.toFixed(2) : ""}
                           {shown.via ? ` · ${shown.via}` : ""}
@@ -408,7 +433,9 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
                       <div data-dropwave-memory-trace-drops="">
                         {(trace.drops ?? []).map((drop) => (
                           <span key={drop.id}>
-                            {drop.id}: {drop.reason}
+                            {[drop.subject ?? memorySubjects.get(drop.id), drop.reason]
+                              .filter((part) => part !== undefined && part !== "")
+                              .join(": ")}
                           </span>
                         ))}
                       </div>
@@ -573,7 +600,7 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
                   <div data-dropwave-memory-journal="">
                     <span>
                       {gt("{count} changes", { count: item.journal.length })} ·{" "}
-                      {item.journal[item.journal.length - 1]?.by ?? ""}
+                      {actorLabel(item.journal[item.journal.length - 1]?.by, item)}
                     </span>
                     <button
                       type="button"

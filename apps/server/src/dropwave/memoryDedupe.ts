@@ -4,7 +4,10 @@
 // owner-authority items are never modified.
 import type {
   DropwaveMemoryItem,
+  DropwaveMemoryKind,
   DropwaveOperationError as DropwaveOperationErrorType,
+  ProjectId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -40,6 +43,7 @@ export interface MemoryWriteInput {
   readonly evidence?: Parameters<DropwaveStoreShape["saveMemory"]>[0]["evidence"];
   readonly authority?: "owner" | "agent" | "import" | undefined;
   readonly confidence?: Parameters<DropwaveStoreShape["saveMemory"]>[0]["confidence"];
+  readonly excludeId?: string | undefined;
 }
 
 function normalizeText(text: string): string {
@@ -107,47 +111,47 @@ function sameSource(item: DropwaveMemoryItem, input: MemoryWriteInput): boolean 
   return left === right;
 }
 
-function parseConflictVerdict(
-  raw: string,
-):
-  | { readonly contradicts: boolean; readonly reason: string; readonly merged?: string }
-  | undefined {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end <= start) return undefined;
-  try {
-    const parsed = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
-    return {
-      contradicts: parsed.contradicts === true,
-      reason: typeof parsed.reason === "string" ? parsed.reason : "",
-      ...(typeof parsed.merged === "string" && parsed.merged.trim() !== ""
-        ? { merged: parsed.merged }
-        : {}),
-    };
-  } catch {
-    return undefined;
-  }
+function mergeScoreThreshold(
+  item: DropwaveMemoryItem,
+  input: MemoryWriteInput,
+  vectorsReady: boolean,
+): number {
+  return sameSource(item, input)
+    ? vectorsReady
+      ? SAME_SOURCE_THRESHOLD
+      : LEXICAL_FALLBACK_THRESHOLD
+    : vectorsReady
+      ? CROSS_SOURCE_THRESHOLD
+      : LEXICAL_FALLBACK_THRESHOLD;
 }
 
-/**
- * Save with Row-Bot-style dedupe/merge/conflict. Returns the surviving item:
- * the existing row (evidence touched / text replaced / merged / needs_review),
- * a brand-new row, or the new needs_review candidate when an owner-authority
- * item blocked the write.
- */
-export const saveMemoryMerged = Effect.fnUntraced(function* (
-  input: MemoryWriteInput & {
-    readonly store: DropwaveStoreShape;
-    readonly embeddings?: MemoryEmbeddingsShape | undefined;
-    readonly textGeneration?: TextGeneration.TextGeneration["Service"] | undefined;
-    readonly serverSettings?: ServerSettings.ServerSettingsService["Service"] | undefined;
-    readonly workspaceRoot?: string | undefined;
-  },
-): Effect.fn.Return<DropwaveMemoryItem, DropwaveOperationErrorType, never> {
-  const { store } = input;
+function mergeEvidenceFor(input: {
+  readonly quote?: string | undefined;
+  readonly evidence?: MemoryWriteInput["evidence"];
+  readonly sourceMessageId?: string | null | undefined;
+  readonly threadId?: string | null | undefined;
+}) {
+  return (
+    input.evidence ??
+    (input.quote
+      ? [
+          {
+            quote: input.quote.slice(0, 500),
+            sourceMessageId: input.sourceMessageId ?? null,
+            threadId: input.threadId ?? null,
+            at: DateTime.formatIso(DateTime.nowUnsafe()),
+          },
+        ]
+      : undefined)
+  );
+}
+
+const collectMergeCandidates = Effect.fn("collectMergeCandidates")(function* (
+  store: DropwaveStoreShape,
+  input: MemoryWriteInput,
+) {
   const scope = input.scope ?? "project";
   const personaId = scope === "bot" ? (input.personaId ?? null) : null;
-
   // Candidate pool: same scope visibility as listMemories.
   const pool = yield* store
     .listMemories({
@@ -158,18 +162,30 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
       limit: 300,
     })
     .pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<DropwaveMemoryItem>));
-  const candidates = pool.filter(
-    (item) =>
+  return pool.filter((item) => {
+    if (input.excludeId !== undefined && item.id === input.excludeId) return false;
+    if (
       item.scope === scope &&
       (scope !== "bot" || item.personaId === personaId) &&
-      (scope !== "project" || item.projectId === input.projectId) &&
-      isDuplicateCandidate(item, input),
-  );
-  if (candidates.length === 0) {
-    return yield* store.saveMemory(input);
-  }
+      (scope !== "project" || item.projectId === input.projectId)
+    ) {
+      return isDuplicateCandidate(item, input);
+    }
+    // A project write can restate a fact kept at a wider scope: owner memories
+    // are visible to every project, so they dedupe against project writes too.
+    return (
+      scope === "project" &&
+      (item.scope === "owner" || item.scope === "bot") &&
+      isDuplicateCandidate(item, input)
+    );
+  });
+});
 
-  // Similarity gate: vectors when ready, lexical Jaccard otherwise.
+const scoreMergeCandidates = Effect.fn("scoreMergeCandidates")(function* (
+  candidates: ReadonlyArray<DropwaveMemoryItem>,
+  input: MemoryWriteInput,
+  embeddings: MemoryEmbeddingsShape | undefined,
+) {
   const newSource = memoryEmbedSource({
     kind: input.kind,
     subject: input.subject ?? "",
@@ -178,7 +194,6 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
     tags: input.tags ?? [],
   });
   let best: { item: DropwaveMemoryItem; score: number } | undefined;
-  const embeddings = input.embeddings;
   const vectorsReady =
     embeddings !== undefined &&
     (yield* embeddings.status.pipe(Effect.orElseSucceed(() => undefined)))?.state === "ready";
@@ -220,7 +235,7 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
       }
     }
   }
-  if (best === undefined) return yield* store.saveMemory(input);
+  if (best === undefined) return undefined;
   // Verbatim quote overlap outranks paraphrase distance: two writes grounded
   // in the same owner words are one fact, so let them reach containment or
   // the conflict prompt instead of saving a lexical lookalike twice.
@@ -232,47 +247,167 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
       best = { item, score };
     }
   }
-  const threshold = sameSource(best.item, input)
-    ? vectorsReady
-      ? SAME_SOURCE_THRESHOLD
-      : LEXICAL_FALLBACK_THRESHOLD
-    : vectorsReady
-      ? CROSS_SOURCE_THRESHOLD
-      : LEXICAL_FALLBACK_THRESHOLD;
-  if (best.score < threshold) return yield* store.saveMemory(input);
+  return { ...best, vectorsReady };
+});
 
-  const existing = best.item;
+const touchMemoryEvidence = Effect.fn("touchMemoryEvidence")(function* (
+  store: DropwaveStoreShape,
+  input: MemoryWriteInput,
+  existing: DropwaveMemoryItem,
+) {
+  const fresh = yield* store.getMemory(existing.id);
+  if (fresh === undefined) return yield* store.saveMemory(input);
+  const evidence = mergeEvidenceFor(input);
+  if (evidence === undefined || evidence.length === 0) return fresh;
+  return yield* store.withTransaction(
+    Effect.gen(function* () {
+      const current = yield* store.getMemory(existing.id);
+      if (current === undefined) return yield* store.saveMemory(input);
+      return yield* store.appendMemoryEvidence({
+        id: existing.id,
+        revision: current.revision,
+        evidence: evidence[0]!,
+      });
+    }),
+  );
+});
+
+const saveScopeOverride = (
+  store: DropwaveStoreShape,
+  input: MemoryWriteInput,
+  general: DropwaveMemoryItem,
+) =>
+  store.withTransaction(
+    Effect.gen(function* () {
+      const created = yield* store.saveMemory(input);
+      yield* store
+        .addMemoryRelation({
+          sourceId: created.id,
+          targetId: general.id,
+          type: "replaces",
+          confidence: 1,
+          origin: "agent",
+        })
+        .pipe(Effect.catch(() => Effect.void));
+      return created;
+    }),
+  );
+
+const judgeMemoryConflict = Effect.fn("judgeMemoryConflict")(function* (
+  input: MemoryWriteInput & {
+    readonly textGeneration?: TextGeneration.TextGeneration["Service"] | undefined;
+    readonly serverSettings?: ServerSettings.ServerSettingsService["Service"] | undefined;
+    readonly workspaceRoot?: string | undefined;
+  },
+  existing: DropwaveMemoryItem,
+) {
+  return yield* Effect.gen(function* () {
+    if (
+      input.textGeneration === undefined ||
+      input.serverSettings === undefined ||
+      input.workspaceRoot === undefined
+    ) {
+      return undefined;
+    }
+    const projectId = input.projectId ?? null;
+    const allSettings = yield* input.serverSettings.getSettings;
+    const { settings } = resolveProjectSettings(allSettings, projectId);
+    const modelSelection = settings.textGenerationModelSelection ?? settings.defaultModelSelection;
+    const prompt = DROPWAVE_MEMORY_CONFLICT_PROMPT.replace(
+      "{{EXISTING_DATE}}",
+      existing.updatedAt.slice(0, 10),
+    )
+      .replace("{{EXISTING}}", existing.text)
+      .replace("{{CANDIDATE_SOURCE}}", input.threadId ?? "a new message")
+      .replace("{{CANDIDATE_DATE}}", DateTime.formatIso(DateTime.nowUnsafe()).slice(0, 10))
+      .replace("{{CANDIDATE}}", input.text);
+    const reply = yield* input.textGeneration
+      .generateTranscriptionPostProcessing({
+        cwd: input.workspaceRoot,
+        prompt,
+        modelSelection,
+      })
+      .pipe(
+        Effect.timeoutOption(CONFLICT_TIMEOUT),
+        Effect.orElseSucceed(() => Option.none()),
+      );
+    if (Option.isNone(reply)) return undefined;
+    return parseConflictVerdict(reply.value.transcription);
+  }).pipe(Effect.orElseSucceed(() => undefined));
+});
+
+function parseConflictVerdict(
+  raw: string,
+):
+  | { readonly contradicts: boolean; readonly reason: string; readonly merged?: string }
+  | undefined {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start === -1 || end <= start) return undefined;
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as Record<string, unknown>;
+    return {
+      contradicts: parsed.contradicts === true,
+      reason: typeof parsed.reason === "string" ? parsed.reason : "",
+      ...(typeof parsed.merged === "string" && parsed.merged.trim() !== ""
+        ? { merged: parsed.merged }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Save with Row-Bot-style dedupe/merge/conflict. Returns the surviving item:
+ * the existing row (evidence touched / text replaced / merged / needs_review),
+ * a brand-new row, or the new needs_review candidate when an owner-authority
+ * item blocked the write.
+ */
+export const saveMemoryMerged = Effect.fnUntraced(function* (
+  input: MemoryWriteInput & {
+    readonly store: DropwaveStoreShape;
+    readonly embeddings?: MemoryEmbeddingsShape | undefined;
+    readonly textGeneration?: TextGeneration.TextGeneration["Service"] | undefined;
+    readonly serverSettings?: ServerSettings.ServerSettingsService["Service"] | undefined;
+    readonly workspaceRoot?: string | undefined;
+  },
+): Effect.fn.Return<DropwaveMemoryItem, DropwaveOperationErrorType, never> {
+  const { store } = input;
+  const scope = input.scope ?? "project";
+  const candidates = yield* collectMergeCandidates(store, input);
+  if (candidates.length === 0) {
+    return yield* store.saveMemory(input);
+  }
+  const scored = yield* scoreMergeCandidates(candidates, input, input.embeddings);
+  if (scored === undefined) return yield* store.saveMemory(input);
+  const threshold = mergeScoreThreshold(scored.item, input, scored.vectorsReady);
+  if (scored.score < threshold) return yield* store.saveMemory(input);
+
+  const existing = scored.item;
   const newNorm = normalizeText(input.text);
   const oldNorm = normalizeText(existing.text);
 
   // New text adds nothing the old one doesn't already say: touch evidence only.
   if (newNorm !== oldNorm && newNorm.length >= MIN_CONTAIN_CHARS && oldNorm.includes(newNorm)) {
-    const fresh = yield* store.getMemory(existing.id);
-    if (fresh === undefined) return yield* store.saveMemory(input);
-    const evidence =
-      input.evidence ??
-      (input.quote
-        ? [
-            {
-              quote: input.quote.slice(0, 500),
-              sourceMessageId: input.sourceMessageId ?? null,
-              threadId: input.threadId ?? null,
-              at: DateTime.formatIso(DateTime.nowUnsafe()),
-            },
-          ]
-        : []);
-    if (evidence.length === 0) return fresh;
-    return yield* store.withTransaction(
-      Effect.gen(function* () {
-        const current = yield* store.getMemory(existing.id);
-        if (current === undefined) return yield* store.saveMemory(input);
-        return yield* store.appendMemoryEvidence({
-          id: existing.id,
-          revision: current.revision,
-          evidence: evidence[0]!,
-        });
-      }),
-    );
+    return yield* touchMemoryEvidence(store, input, existing);
+  }
+
+  // A narrower write matched a wider-scope item: never modify the general
+  // record. Identical or contained text already touched evidence above; a
+  // genuine override saves the write at its own scope linked 'replaces'.
+  if (existing.scope !== scope) {
+    if (newNorm === oldNorm) {
+      return yield* touchMemoryEvidence(store, input, existing);
+    }
+    const overrides = oldNorm.length >= MIN_CONTAIN_CHARS && newNorm.includes(oldNorm);
+    if (!overrides) {
+      const crossVerdict = yield* judgeMemoryConflict(input, existing);
+      if (crossVerdict !== undefined && !crossVerdict.contradicts) {
+        return yield* touchMemoryEvidence(store, input, existing);
+      }
+    }
+    return yield* saveScopeOverride(store, input, existing);
   }
 
   // Old text is fully contained in the new one: replace, journaled by updateMemory.
@@ -290,6 +425,8 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
           ...(input.subject !== undefined && input.subject !== fresh.subject
             ? { subject: input.subject }
             : {}),
+          ...(input.quote !== undefined ? { quote: input.quote } : {}),
+          ...(mergeEvidenceFor(input) !== undefined ? { evidence: mergeEvidenceFor(input) } : {}),
           by: input.threadId ?? "agent",
         });
       }),
@@ -297,46 +434,7 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
   }
 
   // Ambiguous pair: one model verdict decides conflict vs merge.
-  const modelSelection = yield* Effect.gen(function* () {
-    if (
-      input.textGeneration === undefined ||
-      input.serverSettings === undefined ||
-      input.workspaceRoot === undefined
-    ) {
-      return undefined;
-    }
-    const projectId = input.projectId ?? null;
-    const allSettings = yield* input.serverSettings.getSettings;
-    const { settings } = resolveProjectSettings(allSettings, projectId);
-    return settings.textGenerationModelSelection ?? settings.defaultModelSelection;
-  }).pipe(Effect.orElseSucceed(() => undefined));
-  if (
-    modelSelection === undefined ||
-    input.textGeneration === undefined ||
-    input.workspaceRoot === undefined
-  ) {
-    return yield* store.saveMemory(input);
-  }
-  const prompt = DROPWAVE_MEMORY_CONFLICT_PROMPT.replace(
-    "{{EXISTING_DATE}}",
-    existing.updatedAt.slice(0, 10),
-  )
-    .replace("{{EXISTING}}", existing.text)
-    .replace("{{CANDIDATE_SOURCE}}", input.threadId ?? "a new message")
-    .replace("{{CANDIDATE_DATE}}", DateTime.formatIso(DateTime.nowUnsafe()).slice(0, 10))
-    .replace("{{CANDIDATE}}", input.text);
-  const reply = yield* input.textGeneration
-    .generateTranscriptionPostProcessing({
-      cwd: input.workspaceRoot,
-      prompt,
-      modelSelection,
-    })
-    .pipe(
-      Effect.timeoutOption(CONFLICT_TIMEOUT),
-      Effect.orElseSucceed(() => Option.none()),
-    );
-  if (Option.isNone(reply)) return yield* store.saveMemory(input);
-  const verdict = parseConflictVerdict(reply.value.transcription);
+  const verdict = yield* judgeMemoryConflict(input, existing);
   if (verdict === undefined) return yield* store.saveMemory(input);
 
   if (verdict.contradicts) {
@@ -414,8 +512,134 @@ export const saveMemoryMerged = Effect.fnUntraced(function* (
         revision: fresh.revision,
         text: mergedText,
         ...(aliases.length !== fresh.aliases.length ? { aliases } : {}),
+        ...(input.quote !== undefined ? { quote: input.quote } : {}),
+        ...(mergeEvidenceFor(input) !== undefined ? { evidence: mergeEvidenceFor(input) } : {}),
         by: input.threadId ?? "agent",
       });
     }),
   );
+});
+
+/**
+ * Update an existing memory through the same merge-on-write rules as a save:
+ * when the new text duplicates another visible item, the merge happens there
+ * and this row is retired (journaled) instead of leaving a duplicate behind.
+ */
+export const updateMemoryMerged = Effect.fnUntraced(function* (input: {
+  readonly store: DropwaveStoreShape;
+  readonly embeddings?: MemoryEmbeddingsShape | undefined;
+  readonly textGeneration?: TextGeneration.TextGeneration["Service"] | undefined;
+  readonly serverSettings?: ServerSettings.ServerSettingsService["Service"] | undefined;
+  readonly workspaceRoot?: string | undefined;
+  readonly projectId?: ProjectId | null | undefined;
+  readonly id: string;
+  readonly revision: number;
+  readonly text?: string | undefined;
+  readonly subject?: string | undefined;
+  readonly aliases?: ReadonlyArray<string> | undefined;
+  readonly tags?: ReadonlyArray<string> | undefined;
+  readonly kind?: DropwaveMemoryKind | undefined;
+  readonly quote?: string | null | undefined;
+  readonly evidence?: MemoryWriteInput["evidence"];
+  readonly sourceMessageId?: string | null | undefined;
+  readonly threadId?: string | null | undefined;
+  readonly botThreadId?: ThreadId | null | undefined;
+  readonly by?: string | undefined;
+}): Effect.fn.Return<DropwaveMemoryItem, DropwaveOperationErrorType, never> {
+  const { store } = input;
+  const fresh = yield* store.getMemory(input.id);
+  if (fresh === undefined) {
+    // updateMemory reports the canonical not_found error itself.
+    return yield* store.updateMemory({
+      id: input.id,
+      revision: input.revision,
+      by: input.by ?? "agent",
+    });
+  }
+  const patch = {
+    id: fresh.id,
+    revision: input.revision,
+    ...(input.text !== undefined ? { text: input.text } : {}),
+    ...(input.subject !== undefined ? { subject: input.subject } : {}),
+    ...(input.aliases !== undefined ? { aliases: input.aliases } : {}),
+    ...(input.tags !== undefined ? { tags: input.tags } : {}),
+    ...(input.kind !== undefined ? { kind: input.kind } : {}),
+    ...(input.quote !== undefined ? { quote: input.quote } : {}),
+    ...(mergeEvidenceFor({
+      quote: input.quote ?? undefined,
+      evidence: input.evidence,
+      sourceMessageId: input.sourceMessageId ?? undefined,
+      threadId: input.threadId ?? undefined,
+    }) !== undefined
+      ? {
+          evidence: mergeEvidenceFor({
+            quote: input.quote ?? undefined,
+            evidence: input.evidence,
+            sourceMessageId: input.sourceMessageId ?? undefined,
+            threadId: input.threadId ?? undefined,
+          }),
+        }
+      : {}),
+    by: input.by ?? "agent",
+  };
+  const nextText = input.text ?? fresh.text;
+  if (normalizeText(nextText) === normalizeText(fresh.text)) {
+    return yield* store.updateMemory(patch);
+  }
+  const projectId = fresh.projectId ?? input.projectId ?? null;
+  if (projectId === null) return yield* store.updateMemory(patch);
+  const probe: MemoryWriteInput = {
+    projectId,
+    ...(fresh.botThreadId !== null ? { botThreadId: fresh.botThreadId } : {}),
+    scope: fresh.scope,
+    ...(fresh.personaId !== null ? { personaId: fresh.personaId } : {}),
+    kind: input.kind ?? fresh.kind,
+    subject: input.subject ?? fresh.subject,
+    text: nextText,
+    aliases: input.aliases ?? fresh.aliases,
+    tags: input.tags ?? fresh.tags,
+    ...(input.quote !== undefined && input.quote !== null ? { quote: input.quote } : {}),
+    ...(input.sourceMessageId !== undefined ? { sourceMessageId: input.sourceMessageId } : {}),
+    ...(input.threadId !== undefined ? { threadId: input.threadId } : {}),
+    ...(input.botThreadId !== undefined ? { botThreadId: input.botThreadId } : {}),
+    ...(mergeEvidenceFor({
+      quote: input.quote ?? undefined,
+      evidence: input.evidence,
+      sourceMessageId: input.sourceMessageId ?? undefined,
+      threadId: input.threadId ?? undefined,
+    }) !== undefined
+      ? {
+          evidence: mergeEvidenceFor({
+            quote: input.quote ?? undefined,
+            evidence: input.evidence,
+            sourceMessageId: input.sourceMessageId ?? undefined,
+            threadId: input.threadId ?? undefined,
+          }),
+        }
+      : {}),
+    authority: fresh.authority === "owner" ? "owner" : "agent",
+    confidence: fresh.confidence,
+    excludeId: fresh.id,
+  };
+  const candidates = yield* collectMergeCandidates(store, probe);
+  if (candidates.length === 0) return yield* store.updateMemory(patch);
+  const scored = yield* scoreMergeCandidates(candidates, probe, input.embeddings);
+  if (
+    scored === undefined ||
+    scored.score < mergeScoreThreshold(scored.item, probe, scored.vectorsReady)
+  ) {
+    return yield* store.updateMemory(patch);
+  }
+  const merged = yield* saveMemoryMerged({
+    store,
+    embeddings: input.embeddings,
+    textGeneration: input.textGeneration,
+    serverSettings: input.serverSettings,
+    workspaceRoot: input.workspaceRoot,
+    ...probe,
+  });
+  if (merged.id !== fresh.id) {
+    yield* store.removeMemory(fresh.id, input.by ?? "agent").pipe(Effect.ignore);
+  }
+  return merged;
 });

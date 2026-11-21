@@ -846,6 +846,15 @@ export interface DropwaveStoreShape {
         }
       | null
       | undefined;
+    readonly quote?: string | null | undefined;
+    readonly evidence?:
+      | ReadonlyArray<{
+          readonly quote: string;
+          readonly sourceMessageId?: string | null;
+          readonly threadId?: string | null;
+          readonly at: string;
+        }>
+      | undefined;
     readonly by?: string | undefined;
   }) => Effect.Effect<DropwaveMemoryItem, DropwaveOperationError>;
 
@@ -1843,6 +1852,16 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
                     at: timestamp,
                     ...(input.conflict.withId ? { with_id: input.conflict.withId } : {}),
                   });
+          const nextQuote =
+            input.quote === undefined
+              ? existing.quote
+              : input.quote
+                ? clipQuote(input.quote)
+                : null;
+          const nextEvidence =
+            input.evidence !== undefined && input.evidence.length > 0
+              ? mergeEvidenceJson(existing.evidence_json, input.evidence)
+              : existing.evidence_json;
           const journal = appendJournal(
             existing.journal_json,
             by,
@@ -1854,19 +1873,21 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
               subject: existing.subject,
               kind: existing.kind,
               status: existing.status,
+              quote: existing.quote,
             },
             {
               text: nextText,
               subject: nextSubject,
               kind: nextKind,
               status: nextStatus,
+              quote: nextQuote,
             },
           );
           const active = nextStatus === "active" || nextStatus === "needs_review" ? 1 : 0;
           db.prepare(
             `UPDATE dropwave_memories
              SET text = ?, subject = ?, kind = ?, status = ?, aliases_json = ?, tags_json = ?,
-                 conflict_json = ?,
+                 conflict_json = ?, quote = ?, evidence_json = ?,
                  journal_json = ?, revision = revision + 1, updated_at = ?,
                  last_user_modified_at = ?, active = ?,
                  authority = CASE WHEN ? = 'owner' THEN 'owner' ELSE authority END
@@ -1879,6 +1900,8 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             nextAliases,
             nextTags,
             nextConflict,
+            nextQuote,
+            nextEvidence,
             journal,
             timestamp,
             isOwnerEdit ? timestamp : existing.last_user_modified_at,
@@ -2002,6 +2025,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
               scope?: string;
               project_id?: string | null;
               persona_id?: string | null;
+              quote?: string | null;
             };
             after?: unknown;
           }>(existing.journal_json);
@@ -2028,6 +2052,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
              SET text = COALESCE(?, text), subject = COALESCE(?, subject),
                  kind = COALESCE(?, kind), status = ?, scope = COALESCE(?, scope),
                  project_id = COALESCE(?, project_id), persona_id = COALESCE(?, persona_id),
+                 quote = COALESCE(?, quote),
                  journal_json = ?, revision = revision + 1, updated_at = ?,
                  active = ?, authority = CASE WHEN ? = 'owner' THEN 'owner' ELSE authority END
              WHERE id = ?`,
@@ -2039,6 +2064,7 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
             before?.scope ?? null,
             before?.project_id ?? null,
             before?.persona_id ?? null,
+            before?.quote ?? null,
             journalNext,
             timestamp,
             nextStatus === "active" || nextStatus === "needs_review" ? 1 : 0,

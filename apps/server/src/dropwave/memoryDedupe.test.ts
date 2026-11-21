@@ -7,7 +7,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as DropwaveStore from "./DropwaveStore.ts";
 import type { MemoryEmbeddingsShape } from "./memoryEmbeddings.ts";
-import { saveMemoryMerged } from "./memoryDedupe.ts";
+import { saveMemoryMerged, updateMemoryMerged } from "./memoryDedupe.ts";
 
 const projectId = ProjectId.make("project:dedupe-test");
 const threadId = ThreadId.make("thread:dedupe-test");
@@ -370,5 +370,148 @@ it.effect("overlapping evidence quotes route paraphrased rewrites to the merge v
     expect(merged.id).toBe(first.id);
     const all = yield* store.listMemories({ projectId, limit: 50 });
     expect(all.filter((item) => item.kind === "rule")).toHaveLength(1);
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it.effect("update replaces text and the newest quote becomes the primary evidence", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const item = yield* store.saveMemory({
+      projectId,
+      botThreadId: threadId,
+      scope: "project",
+      kind: "fact",
+      subject: "Favorite editor",
+      text: "Ash's favorite code editor is Helix.",
+      quote: "my favorite code editor is Helix",
+      sourceMessageId: "msg-1",
+      threadId,
+    });
+    const updated = yield* store.updateMemory({
+      id: item.id,
+      revision: item.revision,
+      text: "Ash's favorite code editor is Neovim.",
+      quote: "my favorite code editor is Neovim",
+      evidence: [
+        {
+          quote: "my favorite code editor is Neovim",
+          sourceMessageId: "msg-2",
+          threadId,
+          at: "2026-11-21T00:00:00.000Z",
+        },
+      ],
+      by: "agent",
+    });
+    expect(updated.quote).toBe("my favorite code editor is Neovim");
+    expect(updated.evidence.map((entry) => entry.quote)).toContain(
+      "my favorite code editor is Neovim",
+    );
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it.effect("update that duplicates another item merges there and retires the stale row", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const keep = yield* store.saveMemory({
+      projectId,
+      botThreadId: threadId,
+      scope: "project",
+      kind: "rule",
+      subject: "Test rule",
+      text: "Always run npm test before declaring work done in PulseBilling.",
+      threadId,
+    });
+    const stale = yield* store.saveMemory({
+      projectId,
+      botThreadId: threadId,
+      scope: "project",
+      kind: "fact",
+      subject: "Test rule",
+      text: "An older unrelated note about testing.",
+      threadId,
+    });
+    const merged = yield* updateMemoryMerged({
+      store,
+      embeddings: noEmbeddings,
+      projectId,
+      id: stale.id,
+      revision: stale.revision,
+      text: "Always run npm test before declaring work done.",
+      kind: "rule",
+    });
+    expect(merged.id).toBe(keep.id);
+    const retired = yield* store.getMemory(stale.id);
+    expect(retired?.status).toBe("archived");
+    const kept = yield* store.getMemory(keep.id);
+    expect(kept?.status).toBe("active");
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it.effect("project save matching an owner memory touches evidence instead of duplicating", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const owner = yield* store.saveMemory({
+      projectId,
+      botThreadId: threadId,
+      scope: "owner",
+      kind: "preference",
+      authority: "owner",
+      subject: "Answer style",
+      text: "Ash prefers short, direct answers with no filler.",
+      quote: "I prefer short, direct answers",
+      sourceMessageId: "msg-owner",
+      threadId,
+    });
+    const result = yield* saveMemoryMerged({
+      store,
+      embeddings: noEmbeddings,
+      ...baseInput,
+      kind: "rule",
+      subject: "Answer style",
+      text: "Ash prefers short, direct answers.",
+      quote: "I prefer short, direct answers, always",
+      sourceMessageId: "msg-project",
+    });
+    expect(result.id).toBe(owner.id);
+    const all = yield* store.listMemories({ projectId, limit: 50 });
+    expect(all.filter((entry) => entry.scope === "project")).toHaveLength(0);
+    const refreshed = yield* store.getMemory(owner.id);
+    expect(refreshed?.evidence.map((entry) => entry.quote)).toContain(
+      "I prefer short, direct answers, always",
+    );
+  }).pipe(Effect.provide(DropwaveStore.layerMemory)),
+);
+
+it.effect("project override of an owner memory saves a project row linked replaces", () =>
+  Effect.gen(function* () {
+    const store = yield* DropwaveStore.DropwaveStore;
+    const owner = yield* store.saveMemory({
+      projectId,
+      botThreadId: threadId,
+      scope: "owner",
+      kind: "preference",
+      authority: "owner",
+      subject: "Answer style",
+      text: "Ash prefers answers written in the Devin CLI.",
+      quote: "I like answers in the Devin CLI",
+      sourceMessageId: "msg-owner",
+      threadId,
+    });
+    const override = yield* saveMemoryMerged({
+      store,
+      embeddings: noEmbeddings,
+      ...baseInput,
+      kind: "rule",
+      subject: "Answer style",
+      text: "In this project, always answer in T3 chat instead.",
+      quote: "in THIS project always answer in T3 chat",
+      sourceMessageId: "msg-project",
+    });
+    expect(override.id).not.toBe(owner.id);
+    expect(override.scope).toBe("project");
+    const relations = yield* store.listMemoryRelations(override.id);
+    expect(relations.some((relation) => relation.type === "replaces")).toBe(true);
+    const refreshedOwner = yield* store.getMemory(owner.id);
+    expect(refreshedOwner?.text).toBe("Ash prefers answers written in the Devin CLI.");
   }).pipe(Effect.provide(DropwaveStore.layerMemory)),
 );

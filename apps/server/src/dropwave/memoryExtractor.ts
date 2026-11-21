@@ -12,6 +12,7 @@ import type {
 import { DropwaveOperationError } from "@t3tools/contracts";
 import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import * as ServerSettings from "../serverSettings.ts";
@@ -19,7 +20,7 @@ import type * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import { isOwnerTypedMessage, quoteInMessage } from "./askExtraction.ts";
-import { saveMemoryMerged } from "./memoryDedupe.ts";
+import { saveMemoryMerged, updateMemoryMerged } from "./memoryDedupe.ts";
 import type * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import type { DropwaveStoreShape } from "./DropwaveStore.ts";
 import { DROPWAVE_MEMORY_EXTRACTION_PROMPT } from "./memoryPrompts.ts";
@@ -308,16 +309,32 @@ export const extractMemoriesForThread = Effect.fnUntraced(function* (input: {
       if (current === undefined) continue;
       // Automated writers never overwrite owner-authority records.
       if (current.authority === "owner") continue;
-      yield* input.store
-        .updateMemory({
-          id: op.id,
-          revision: current.revision,
-          ...(op.text !== current.text ? { text: op.text } : {}),
-          ...(op.subject !== current.subject ? { subject: op.subject } : {}),
-          kind: op.kind,
-          by: "agent",
-        })
-        .pipe(Effect.ignore);
+      yield* updateMemoryMerged({
+        store: input.store,
+        embeddings: input.embeddings,
+        textGeneration: input.textGeneration,
+        serverSettings: input.serverSettings,
+        workspaceRoot: input.workspaceRoot,
+        projectId: input.projectId,
+        id: op.id,
+        revision: current.revision,
+        ...(op.text !== current.text ? { text: op.text } : {}),
+        ...(op.subject !== current.subject ? { subject: op.subject } : {}),
+        kind: op.kind,
+        quote: op.quote,
+        evidence: op.quote
+          ? [
+              {
+                quote: op.quote.slice(0, 500),
+                sourceMessageId,
+                threadId: null,
+                at: DateTime.formatIso(DateTime.nowUnsafe()),
+              },
+            ]
+          : undefined,
+        sourceMessageId,
+        by: "agent",
+      }).pipe(Effect.ignore);
       applied += 1;
       continue;
     }
