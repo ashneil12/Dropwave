@@ -43,6 +43,8 @@ import {
   DropwaveBotAddedResult,
   DropwaveHabitSummariesListInput,
   DropwaveHabitSummariesListResult,
+  DropwaveWorkerReviewsListInput,
+  DropwaveWorkerReviewsListResult,
 } from "./dropwave.ts";
 import {
   OrchestrationV2SearchThreadError,
@@ -659,6 +661,8 @@ export const WS_METHODS = {
   dropwavePersonaDelete: "dropwave.persona.delete",
   dropwaveBotAdded: "dropwave.bot.added",
   dropwaveHabitSummariesList: "dropwave.habitSummaries.list",
+  dropwaveWorkerReviewsList: "dropwave.workerReviews.list",
+  dropwaveWorkerReviewsSubscribe: "dropwave.workerReviews.subscribe",
 
   cloudGetRelayClientStatus: "cloud.getRelayClientStatus",
   cloudInstallRelayClient: "cloud.installRelayClient",
@@ -2435,6 +2439,19 @@ const WsDropwaveHabitSummariesListRpc = Rpc.make(WS_METHODS.dropwaveHabitSummari
   error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
 });
 
+const WsDropwaveWorkerReviewsListRpc = Rpc.make(WS_METHODS.dropwaveWorkerReviewsList, {
+  payload: DropwaveWorkerReviewsListInput,
+  success: DropwaveWorkerReviewsListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+});
+
+const WsDropwaveWorkerReviewsSubscribeRpc = Rpc.make(WS_METHODS.dropwaveWorkerReviewsSubscribe, {
+  payload: DropwaveWorkerReviewsListInput,
+  success: DropwaveWorkerReviewsListResult,
+  error: Schema.Union([DropwaveOperationError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
 const WsScheduledTasksListWebhookDeliveriesRpc = Rpc.make(
   WS_METHODS.scheduledTasksListWebhookDeliveries,
   {
@@ -2732,4 +2749,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsDropwavePersonaDeleteRpc,
   WsDropwaveBotAddedRpc,
   WsDropwaveHabitSummariesListRpc,
+  WsDropwaveWorkerReviewsListRpc,
+  WsDropwaveWorkerReviewsSubscribeRpc,
 ).middleware(RpcScopeAuthorization);

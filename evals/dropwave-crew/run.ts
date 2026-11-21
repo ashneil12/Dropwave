@@ -533,6 +533,51 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
       /* db missing or unreadable: report empty, don't fabricate */
     }
   }
+  // Fusion worker reviews live in the same dropwave.sqlite; verdicts_json carries
+  // the reviewer's strict-JSON verdicts per round.
+  const workerReviews: Array<CaseState["workerReviews"][number]> = [];
+  try {
+    const db = new NodeSqlite.DatabaseSync(
+      NodePath.join(server.home, "userdata", "dropwave.sqlite"),
+      { readOnly: true },
+    );
+    const rows = db
+      .prepare(
+        `SELECT job_id, status, rounds, max_rounds, verdicts_json
+         FROM dropwave_worker_reviews WHERE project_id = ?
+         ORDER BY updated_at DESC LIMIT 50`,
+      )
+      .all(ctx.projectId) as Array<{
+      job_id: string;
+      status: string;
+      rounds: number;
+      max_rounds: number;
+      verdicts_json: string;
+    }>;
+    db.close();
+    for (const row of rows) {
+      let verdicts: Array<{ verdict: string; summary: string; issues?: unknown }> = [];
+      try {
+        const parsed = JSON.parse(row.verdicts_json) as typeof verdicts;
+        verdicts = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        /* malformed verdicts column */
+      }
+      workerReviews.push({
+        jobId: row.job_id,
+        status: row.status,
+        rounds: row.rounds,
+        maxRounds: row.max_rounds,
+        verdicts: verdicts.map((v) => ({
+          verdict: v.verdict,
+          summary: v.summary,
+          issues: Array.isArray(v.issues) ? v.issues : [],
+        })),
+      });
+    }
+  } catch {
+    /* db missing or unreadable: report empty, don't fabricate */
+  }
   return {
     asks,
     memories,
@@ -550,6 +595,7 @@ async function collectState(ctx: CaseContext): Promise<CaseState> {
       return bot?.kind === "teammate" ? [{ title: p.thread.title, role: bot.role ?? "" }] : [];
     }),
     recallTraces,
+    workerReviews,
     workspaceRoot: ctx.workspaceRoot,
   };
 }
@@ -697,6 +743,31 @@ async function runCase(
           notes.push("workerModel requested but no alternative model on provider");
         }
       }
+      // Fusion review: pick a reviewer that is not the cheap executor when the
+      // provider offers one; otherwise the lead's own model reviews.
+      let workerReviewModelSelection: ModelSelection | undefined;
+      if (setup.workerReview === "on") {
+        const executorModel = workerModelSelection?.model ?? modelSlug;
+        const reviewSlug =
+          provider.models.find(
+            (m) =>
+              m.slug !== executorModel &&
+              m.slug !== modelSlug &&
+              !/mini|haiku|luna|flash|small/i.test(m.slug),
+          )?.slug ??
+          provider.models.find((m) => m.slug !== executorModel)?.slug ??
+          provider.models.find((m) => m.isDefault)?.slug ??
+          provider.models[0]?.slug;
+        if (reviewSlug !== undefined) {
+          workerReviewModelSelection = {
+            instanceId: provider.instanceId,
+            model: reviewSlug,
+          } as ModelSelection;
+          notes.push(`workerReview=${provider.instanceId}/${reviewSlug}`);
+        } else {
+          notes.push("workerReview requested but no reviewer model available");
+        }
+      }
       for (const text of setup.ownerMemories ?? []) {
         await call(
           server.rpc["dropwave.memory.save"]({
@@ -715,6 +786,7 @@ async function runCase(
         riskLevel: setup.riskLevel,
         chiefRoleLabel: "Chief of Staff",
         workerModelSelection,
+        workerReviewModelSelection,
         helpers: (setup.helpers ?? []).map((h) =>
           h === "QA"
             ? { name: "QA", roleLabel: "Verification & QA" }
@@ -724,6 +796,27 @@ async function runCase(
       ctx.leadId = configured.leadThreadId;
     }
 
+    // Worker reviews run as supervisor effects outside any thread run, so the
+    // projection-based settle check above cannot see them. A case is not settled
+    // while a review is still reviewing/fixing: its verdict wakes the lead.
+    const reviewsSettled = async (): Promise<boolean> => {
+      try {
+        const db = new NodeSqlite.DatabaseSync(
+          NodePath.join(server.home, "userdata", "dropwave.sqlite"),
+          { readOnly: true },
+        );
+        const row = db
+          .prepare(
+            `SELECT COUNT(*) AS n FROM dropwave_worker_reviews
+             WHERE project_id = ? AND status IN ('reviewing', 'fixing')`,
+          )
+          .get(ctx.projectId) as { n: number };
+        db.close();
+        return row.n === 0;
+      } catch {
+        return true;
+      }
+    };
     const settled = async (): Promise<boolean> => {
       // after_idle: no run in flight for any bot in the project and no delegated job running.
       // The thread map fills from the shell subscription; until the lead thread has
@@ -739,7 +832,7 @@ async function runCase(
         const lastAssistant = [...p.messages].reverse().find((m) => m.role === "assistant");
         if (lastAssistant?.streaming) return false;
       }
-      return true;
+      return reviewsSettled();
     };
     const leadSettled = async (): Promise<boolean> => {
       if (!ctx.leadId) return false;

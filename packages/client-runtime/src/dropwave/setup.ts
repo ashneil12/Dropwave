@@ -207,6 +207,8 @@ export async function configureDropwaveProject(
     readonly loopStepTitles?: ReadonlyArray<string>;
     readonly chiefRoleLabel: string;
     readonly workerModelSelection?: ModelSelection | undefined;
+    readonly workerReviewModelSelection?: ModelSelection | undefined;
+    readonly workerReviewRounds?: number | undefined;
     readonly helpers?: ReadonlyArray<DropwaveHelperSpec>;
   },
 ): Promise<{ leadThreadId: ThreadId; persona: DropwavePersona; helperThreadIds: ThreadId[] }> {
@@ -236,6 +238,14 @@ export async function configureDropwaveProject(
       personaId: persona.id,
       ...(input.workerModelSelection !== undefined
         ? { workerModelSelection: input.workerModelSelection }
+        : {}),
+      ...(input.workerReviewModelSelection !== undefined
+        ? {
+            workerReviewModelSelection: input.workerReviewModelSelection,
+            ...(input.workerReviewRounds !== undefined
+              ? { workerReviewRounds: input.workerReviewRounds }
+              : {}),
+          }
         : {}),
     },
     modelSelection: input.modelSelection,

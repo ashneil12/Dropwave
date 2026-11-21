@@ -1988,6 +1988,14 @@ export function createServerEnvironmentAtoms<R, E>(
       label: "environment-data:dropwave:habit-summaries:list",
       tag: WS_METHODS.dropwaveHabitSummariesList,
     }),
+    dropwaveWorkerReviewsList: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:dropwave:worker-reviews:list",
+      tag: WS_METHODS.dropwaveWorkerReviewsList,
+    }),
+    dropwaveWorkerReviewsLive: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+      label: "environment-data:dropwave:worker-reviews:live",
+      tag: WS_METHODS.dropwaveWorkerReviewsSubscribe,
+    }),
     checkOtlpEndpoint: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:server:check-otlp-endpoint",
       tag: WS_METHODS.serverCheckOtlpEndpoint,

@@ -3,9 +3,13 @@ import {
   DropwaveOperationError,
   MessageId,
   NodeId,
+  type ModelSelection,
+  type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Subagent,
+  type IsoDateTime,
   type ProjectId,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -23,6 +27,8 @@ import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import { registerDelegatedWakeClaim } from "../orchestration-v2/delegatedWakeClaims.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -32,6 +38,14 @@ import { DROPWAVE_ASK_EXTRACTION_PROMPT } from "./askExtractionPrompt.ts";
 import * as MemoryEmbeddings from "./memoryEmbeddings.ts";
 import * as MemoryExtractor from "./memoryExtractor.ts";
 import { saveMemoryMerged } from "./memoryDedupe.ts";
+import {
+  isReviewableWorkerTask,
+  workerReviewBrief,
+  workerReviewDoneChecks,
+  workerReviewFixMessage,
+  WORKER_REVIEW_DIFF_CAP_BYTES,
+  WORKER_REVIEW_INLINE_DIFF_NOTE,
+} from "./workerReview.ts";
 
 const MODEL_EXTRACTION_TIMEOUT = "90 seconds";
 
@@ -61,6 +75,13 @@ export class DropwaveSupervisor extends Context.Service<
       readonly jobId: string;
       readonly ownerApprovalQuote?: string | undefined;
     }) => Effect.Effect<DropwaveLandResult, DropwaveOperationError>;
+    /** Resolves once the job's review loop has settled (verdict persisted, lead woken). */
+    readonly awaitWorkerReview: (jobId: string) => Effect.Effect<void>;
+    /**
+     * Resolves once a review loop is parked waiting for the worker thread's
+     * fix-round run to reach a terminal state (or immediately if already parked).
+     */
+    readonly awaitWorkerFixRound: (workerThreadId: string) => Effect.Effect<void>;
   }
 >()("t3/dropwave/DropwaveSupervisor") {}
 
@@ -73,6 +94,7 @@ const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const textGeneration = yield* TextGeneration.TextGeneration;
   const git = yield* GitVcsDriver.GitVcsDriver;
+  const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
   // Model ask extraction runs detached so it never holds up the bot's turn; the
   // missed-ask nudge awaits these before judging coverage.
   const pendingExtractions = new Map<MessageId, Deferred.Deferred<void>>();
@@ -198,8 +220,528 @@ const make = Effect.gen(function* () {
       );
   });
 
+  // Fusion worker review: a fresh-context reviewer checks each completed worker
+  // diff before the lead hears the outcome; the wake claim owns that wake.
+  const activeWorkerReviews = new Set<string>();
+  const fixRoundWaiters = new Map<string, Array<Deferred.Deferred<void>>>();
+  const fixRoundWatchers = new Map<string, Array<Deferred.Deferred<void>>>();
+  const workerReviewSettled = new Map<string, Deferred.Deferred<void>>();
+  const reviewerLabelCache = new Map<string, string>();
+  const reviewNow = () => DateTime.formatIso(DateTime.nowUnsafe()) as IsoDateTime;
+
+  const reviewerLabel = Effect.fnUntraced(function* (selection: ModelSelection) {
+    const key = `${selection.instanceId}::${selection.model}`;
+    const cached = reviewerLabelCache.get(key);
+    if (cached !== undefined) return cached;
+    const instances = yield* providerInstances.listInstances.pipe(
+      Effect.orElseSucceed(() => [] as const),
+    );
+    const instance = instances.find((candidate) => candidate.instanceId === selection.instanceId);
+    const snapshot = instance === undefined ? null : yield* instance.snapshot.getSnapshot;
+    const model = snapshot?.models.find((m) => m.slug === selection.model);
+    const label = model?.name ?? selection.model;
+    reviewerLabelCache.set(key, label);
+    return label;
+  });
+
+  const latestWorkerReport = Effect.fnUntraced(function* (workerThreadId: string | null) {
+    if (workerThreadId === null) return "";
+    const records = yield* projections
+      .getThreadRecords(ThreadId.make(workerThreadId), ["messages"])
+      .pipe(Effect.orElseSucceed(() => undefined));
+    if (records === undefined) return "";
+    const reply = records.messages.findLast(
+      (message) => message.role === "assistant" && message.text.trim().length > 0,
+    );
+    return (reply?.text ?? "").trim().slice(0, 12_000);
+  });
+
+  const workerDiff = Effect.fnUntraced(function* (input: {
+    readonly worktreePath: string;
+    readonly mainRoot: string;
+  }) {
+    const exec = (cwd: string, args: ReadonlyArray<string>) =>
+      git.execute({
+        operation: "DropwaveSupervisor.workerReview",
+        cwd,
+        args,
+        allowNonZeroExit: true,
+        timeoutMs: 60_000,
+      });
+    const head = yield* exec(input.mainRoot, ["rev-parse", "HEAD"]).pipe(
+      Effect.orElseSucceed(() => ({ stdout: "", stderr: "" }) as const),
+    );
+    const mainHead = head.stdout.trim();
+    const mergeBase = yield* exec(input.worktreePath, ["merge-base", mainHead, "HEAD"]).pipe(
+      Effect.orElseSucceed(() => ({ stdout: "", stderr: "" }) as const),
+    );
+    const base = mergeBase.stdout.trim().length > 0 ? mergeBase.stdout.trim() : mainHead;
+    const committed = yield* exec(input.worktreePath, ["diff", `${base}...HEAD`]).pipe(
+      Effect.orElseSucceed(() => ({ stdout: "" }) as const),
+    );
+    const status = yield* exec(input.worktreePath, ["status", "--porcelain"]).pipe(
+      Effect.orElseSucceed(() => ({ stdout: "" }) as const),
+    );
+    const uncommitted = yield* exec(input.worktreePath, ["diff", "HEAD"]).pipe(
+      Effect.orElseSucceed(() => ({ stdout: "" }) as const),
+    );
+    const committedDiff = committed.stdout;
+    const uncommittedSection = [
+      status.stdout.trim().length > 0 ? `git status --porcelain:\n${status.stdout.trim()}` : "",
+      uncommitted.stdout.trim().length > 0 ? `git diff HEAD:\n${uncommitted.stdout}` : "",
+    ]
+      .filter((part) => part.length > 0)
+      .join("\n\n");
+    const hasChanges = committedDiff.trim().length > 0 || status.stdout.trim().length > 0;
+    let diff = committedDiff;
+    if (uncommittedSection.length > 0) {
+      diff += `\n\nUncommitted changes:\n${uncommittedSection}`;
+    }
+    const bytes = Buffer.byteLength(diff);
+    if (bytes > WORKER_REVIEW_DIFF_CAP_BYTES) {
+      diff = `${diff.slice(0, WORKER_REVIEW_DIFF_CAP_BYTES)}\n…[diff truncated at 120 KB]`;
+    }
+    return { hasChanges, diff };
+  });
+
+  const runWorkerReviewer = Effect.fnUntraced(function* (input: {
+    readonly worktreePath: string;
+    readonly projectId: ProjectId;
+    readonly modelSelection: ModelSelection;
+    readonly brief: string;
+    readonly doneChecks: string;
+    readonly workerReport: string;
+    readonly diff: string;
+  }) {
+    const base = {
+      cwd: input.worktreePath,
+      brief: input.brief,
+      doneChecks: input.doneChecks,
+      workerReport: input.workerReport,
+      diff: input.diff,
+      modelSelection: input.modelSelection,
+      projectId: input.projectId,
+    };
+    const reviewed = yield* textGeneration
+      .generateWorkerReview({ ...base, investigate: true })
+      .pipe(
+        Effect.catchTags({
+          TextGenerationError: (error) =>
+            error.detail.includes("cannot investigate")
+              ? textGeneration.generateWorkerReview({
+                  ...base,
+                  investigate: false,
+                  diffNote: WORKER_REVIEW_INLINE_DIFF_NOTE,
+                })
+              : Effect.fail(error),
+        }),
+        Effect.timeoutOption("5 minutes"),
+      );
+    if (Option.isNone(reviewed)) {
+      return {
+        verdict: "unreviewed" as const,
+        summary: "The review did not finish within five minutes.",
+        issues: [],
+        reason: "review timed out after 5 minutes",
+      };
+    }
+    const result = reviewed.value;
+    const hasBlocking = result.issues.some(
+      (issue) => issue.severity === "blocker" || issue.severity === "major",
+    );
+    // Minor-only findings approve with notes, whatever the model claimed.
+    const verdict =
+      result.verdict === "changes" && !hasBlocking ? ("approve" as const) : result.verdict;
+    return {
+      verdict,
+      summary: result.summary,
+      issues: result.issues,
+    };
+  });
+
+  const workerReviewWakeText = Effect.fnUntraced(function* (jobId: string) {
+    const record = yield* store.getWorkerReview(jobId);
+    if (record === null) return null;
+    const { subagents } = yield* projections
+      .getThreadRecords(record.leadThreadId, ["subagents"], {
+        subagentIds: [NodeId.make(jobId)],
+      })
+      .pipe(
+        Effect.orElseSucceed(() => ({ subagents: [] as ReadonlyArray<OrchestrationV2Subagent> })),
+      );
+    const task = subagents[0];
+    const latest = record.verdicts.at(-1);
+    const label = latest?.reviewerModel ?? "reviewer";
+    const outcome = `Delegated task ${jobId}${task?.title ? ` (${task.title})` : ""}${record.workerThreadId ? ` in child thread ${record.workerThreadId}` : ""} [completed]:\n${task?.result ?? "(no result captured)"}`;
+    let reviewLine: string;
+    if (latest === undefined) {
+      reviewLine = "";
+    } else if (latest.verdict === "approve") {
+      reviewLine = `Review (${label}): approved. ${latest.summary}`;
+    } else if (latest.verdict === "changes") {
+      const issues = latest.issues
+        .slice(0, 6)
+        .map(
+          (issue, index) =>
+            `${index + 1}. [${issue.severity}] ${issue.file}${issue.line === null ? "" : `:${issue.line}`} ${issue.problem}`,
+        )
+        .join("\n");
+      const roundWord = record.rounds === 1 ? "round" : "rounds";
+      reviewLine = `Review (${label}): changes still requested after ${record.rounds} ${roundWord}: send the work back with a brief that names the issues, or tell the owner plainly; do not land it.\n${issues}`;
+    } else {
+      reviewLine = `Review (${label}): unreviewed. ${latest.reason ?? latest.summary}`;
+    }
+    return `[Dropwave supervisor] ${outcome}${reviewLine.length > 0 ? `\n\n${reviewLine}` : ""}`;
+  });
+
+  const finishWorkerReview = Effect.fnUntraced(function* (jobId: string) {
+    const text = yield* workerReviewWakeText(jobId);
+    if (text === null) return;
+    const record = yield* store.getWorkerReview(jobId);
+    if (record === null) return;
+    yield* dispatchSupervisorMessage({
+      threadId: record.leadThreadId,
+      key: `worker-review:${jobId}`,
+      text,
+    });
+  });
+
+  const waitForWorkerFixRound = Effect.fnUntraced(function* (workerThreadId: string) {
+    const done = yield* Deferred.make<void>();
+    const waiters = fixRoundWaiters.get(workerThreadId) ?? [];
+    waiters.push(done);
+    fixRoundWaiters.set(workerThreadId, waiters);
+    // Parked: release anyone watching for the fix round to start.
+    const watchers = fixRoundWatchers.get(workerThreadId) ?? [];
+    fixRoundWatchers.delete(workerThreadId);
+    for (const watcher of watchers) {
+      yield* Deferred.succeed(watcher, undefined).pipe(Effect.ignore);
+    }
+    const finished = yield* Deferred.await(done).pipe(Effect.timeoutOption("30 minutes"));
+    const current = fixRoundWaiters.get(workerThreadId) ?? [];
+    fixRoundWaiters.set(
+      workerThreadId,
+      current.filter((waiter) => waiter !== done),
+    );
+    return Option.isSome(finished);
+  });
+
+  const runWorkerReviewLoop = Effect.fnUntraced(function* (jobId: string) {
+    const record = yield* store.getWorkerReview(jobId);
+    if (record === null) return;
+    const lead = yield* projections
+      .getThread(record.leadThreadId)
+      .pipe(Effect.orElseSucceed(() => null));
+    const profile = lead?.dropwaveBot;
+    if (lead === null || profile?.kind !== "lead") {
+      yield* store.updateWorkerReview({ jobId, status: "unreviewed" }).pipe(Effect.ignore);
+      return;
+    }
+    const reviewSelection = profile.workerReviewModelSelection;
+    if (reviewSelection === undefined) return;
+    const reviewerName = yield* reviewerLabel(reviewSelection);
+    const { subagents } = yield* projections
+      .getThreadRecords(record.leadThreadId, ["subagents"], {
+        subagentIds: [NodeId.make(jobId)],
+      })
+      .pipe(
+        Effect.orElseSucceed(() => ({ subagents: [] as ReadonlyArray<OrchestrationV2Subagent> })),
+      );
+    const task = subagents[0];
+    if (task === undefined) {
+      yield* store
+        .appendWorkerReviewVerdict({
+          jobId,
+          verdict: {
+            round: 0,
+            verdict: "unreviewed",
+            summary: "The worker job record is gone.",
+            issues: [],
+            reviewerModel: reviewerName,
+            reason: "job record missing",
+            at: reviewNow(),
+          },
+        })
+        .pipe(Effect.ignore);
+      yield* store.updateWorkerReview({ jobId, status: "unreviewed" }).pipe(Effect.ignore);
+      yield* finishWorkerReview(jobId);
+      return;
+    }
+    const brief = workerReviewBrief(task.prompt);
+    const doneChecks = workerReviewDoneChecks(brief);
+    const worker =
+      record.workerThreadId === null
+        ? null
+        : yield* projections
+            .getThread(ThreadId.make(record.workerThreadId))
+            .pipe(Effect.orElseSucceed(() => null));
+    const project = yield* projects
+      .get(record.projectId)
+      .pipe(Effect.orElseSucceed(() => Option.none()));
+    if (worker === null || worker.worktreePath === null || Option.isNone(project)) {
+      yield* store
+        .appendWorkerReviewVerdict({
+          jobId,
+          verdict: {
+            round: 0,
+            verdict: "unreviewed",
+            summary: "The worker checkout is gone.",
+            issues: [],
+            reviewerModel: reviewerName,
+            reason: "worker worktree missing",
+            at: reviewNow(),
+          },
+        })
+        .pipe(Effect.ignore);
+      yield* store.updateWorkerReview({ jobId, status: "unreviewed" }).pipe(Effect.ignore);
+      yield* finishWorkerReview(jobId);
+      return;
+    }
+    const maxRounds = record.maxRounds;
+    let round = 0;
+    for (;;) {
+      const workerReport =
+        (yield* latestWorkerReport(record.workerThreadId)) || (task.result ?? "");
+      const diff = yield* workerDiff({
+        worktreePath: worker.worktreePath,
+        mainRoot: project.value.workspaceRoot,
+      }).pipe(Effect.catchCause(() => Effect.succeed({ hasChanges: false, diff: "" } as const)));
+      if (!diff.hasChanges) {
+        yield* store
+          .appendWorkerReviewVerdict({
+            jobId,
+            verdict: {
+              round,
+              verdict: "unreviewed",
+              summary: "Nothing to review: the worker left no commits or diff.",
+              issues: [],
+              reviewerModel: reviewerName,
+              reason: "no changes to review",
+              at: reviewNow(),
+            },
+          })
+          .pipe(Effect.ignore);
+        yield* store.updateWorkerReview({ jobId, status: "unreviewed" }).pipe(Effect.ignore);
+        break;
+      }
+      const reviewed = yield* runWorkerReviewer({
+        worktreePath: worker.worktreePath,
+        projectId: record.projectId,
+        modelSelection: reviewSelection,
+        brief,
+        doneChecks,
+        workerReport,
+        diff: diff.diff,
+      }).pipe(
+        Effect.catchTags({
+          TextGenerationError: (error) =>
+            Effect.succeed({
+              verdict: "unreviewed" as const,
+              summary: `The reviewer could not produce a verdict: ${error.detail}`,
+              issues: [],
+              reason: error.detail.slice(0, 300),
+            }),
+        }),
+        Effect.catchCause((cause) =>
+          Effect.succeed({
+            verdict: "unreviewed" as const,
+            summary: "The reviewer failed before returning a verdict.",
+            issues: [],
+            reason: `reviewer error: ${String(cause).slice(0, 300)}`,
+          }),
+        ),
+      );
+      yield* store.appendWorkerReviewVerdict({
+        jobId,
+        verdict: {
+          round,
+          verdict: reviewed.verdict,
+          summary: reviewed.summary,
+          issues: reviewed.issues,
+          reviewerModel: reviewerName,
+          at: reviewNow(),
+          ...("reason" in reviewed && reviewed.reason !== undefined
+            ? { reason: reviewed.reason }
+            : {}),
+        },
+      });
+      if (reviewed.verdict === "approve") {
+        yield* store.updateWorkerReview({ jobId, status: "approved" }).pipe(Effect.ignore);
+        break;
+      }
+      if (reviewed.verdict === "unreviewed") {
+        yield* store.updateWorkerReview({ jobId, status: "unreviewed" }).pipe(Effect.ignore);
+        break;
+      }
+      const hasBlocking = reviewed.issues.some(
+        (issue) => issue.severity === "blocker" || issue.severity === "major",
+      );
+      if (!hasBlocking || round >= maxRounds) {
+        yield* store.updateWorkerReview({ jobId, status: "changes" }).pipe(Effect.ignore);
+        break;
+      }
+      round += 1;
+      yield* store
+        .updateWorkerReview({ jobId, status: "fixing", rounds: round })
+        .pipe(Effect.ignore);
+      if (record.workerThreadId !== null) {
+        yield* dispatchSupervisorMessage({
+          threadId: ThreadId.make(record.workerThreadId),
+          key: `worker-review-fix:${jobId}:r${round}`,
+          text: workerReviewFixMessage(reviewed.issues),
+        });
+        const finished = yield* waitForWorkerFixRound(record.workerThreadId);
+        if (!finished) {
+          // Never block forever: the last verdict stands and the lead decides.
+          yield* store.updateWorkerReview({ jobId, status: "changes" }).pipe(Effect.ignore);
+          break;
+        }
+      } else {
+        yield* store.updateWorkerReview({ jobId, status: "changes" }).pipe(Effect.ignore);
+        break;
+      }
+    }
+    yield* finishWorkerReview(jobId);
+  });
+
+  const forkWorkerReviewLoop = Effect.fnUntraced(function* (jobId: string) {
+    const settled = yield* Deferred.make<void>();
+    workerReviewSettled.set(jobId, settled);
+    yield* Effect.forkIn(
+      runWorkerReviewLoop(jobId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("dropwave worker review loop failed", {
+            jobId,
+            cause,
+          }).pipe(
+            Effect.andThen(
+              store.updateWorkerReview({ jobId, status: "unreviewed" }).pipe(Effect.ignore),
+            ),
+            Effect.andThen(finishWorkerReview(jobId).pipe(Effect.ignore)),
+          ),
+        ),
+        Effect.ensuring(
+          Deferred.succeed(settled, undefined).pipe(
+            Effect.ignore,
+            Effect.andThen(
+              Effect.sync(() => {
+                activeWorkerReviews.delete(jobId);
+                workerReviewSettled.delete(jobId);
+              }),
+            ),
+            Effect.andThen(
+              store.getWorkerReview(jobId).pipe(
+                Effect.orElseSucceed(() => null),
+                Effect.flatMap((record) => {
+                  const threadId = record?.workerThreadId;
+                  if (threadId === null || threadId === undefined) return Effect.void;
+                  const watchers = fixRoundWatchers.get(threadId) ?? [];
+                  fixRoundWatchers.delete(threadId);
+                  return Effect.forEach(
+                    watchers,
+                    (watcher) => Deferred.succeed(watcher, undefined).pipe(Effect.ignore),
+                    { discard: true },
+                  );
+                }),
+                Effect.ignore,
+              ),
+            ),
+          ),
+        ),
+      ),
+      serviceScope,
+    );
+  });
+
+  const ensureWorkerReview = Effect.fnUntraced(function* (
+    task: OrchestrationV2Subagent,
+    lead: OrchestrationV2AppThread,
+  ) {
+    const profile = lead.dropwaveBot;
+    if (profile?.kind !== "lead" || profile.workerReviewModelSelection === undefined) return;
+    if (!isReviewableWorkerTask(task)) return;
+    const existing = yield* store.getWorkerReview(task.id).pipe(Effect.orElseSucceed(() => null));
+    if (existing !== null) {
+      if (
+        !activeWorkerReviews.has(task.id) &&
+        (existing.status === "reviewing" || existing.status === "fixing")
+      ) {
+        activeWorkerReviews.add(task.id);
+        yield* forkWorkerReviewLoop(task.id);
+      }
+      return;
+    }
+    if (activeWorkerReviews.has(task.id)) return;
+    activeWorkerReviews.add(task.id);
+    const worker =
+      task.childThreadId === null
+        ? null
+        : yield* projections.getThread(task.childThreadId).pipe(Effect.orElseSucceed(() => null));
+    yield* store.startWorkerReview({
+      jobId: task.id,
+      leadThreadId: lead.id,
+      projectId: lead.projectId,
+      workerThreadId: task.childThreadId,
+      workerBranch: worker?.branch ?? null,
+      maxRounds: profile.workerReviewRounds ?? 1,
+    });
+    yield* forkWorkerReviewLoop(task.id);
+  });
+
+  // The continuation service asks before dispatching a delegated-completion
+  // wake; reviewed jobs are claimed so the lead hears the outcome once, with
+  // the verdict attached, from finishWorkerReview instead.
+  registerDelegatedWakeClaim(({ threadId, taskIds }) =>
+    Effect.gen(function* () {
+      const thread = yield* projections.getThread(threadId).pipe(Effect.orElseSucceed(() => null));
+      if (thread === null || thread.dropwaveBot?.kind !== "lead")
+        return [] as ReadonlyArray<string>;
+      if (thread.dropwaveBot.workerReviewModelSelection === undefined) {
+        return [] as ReadonlyArray<string>;
+      }
+      const { subagents } = yield* projections
+        .getThreadRecords(threadId, ["subagents"], {
+          subagentIds: taskIds.map((taskId) => NodeId.make(taskId)),
+        })
+        .pipe(
+          Effect.orElseSucceed(() => ({
+            subagents: [] as ReadonlyArray<OrchestrationV2Subagent>,
+          })),
+        );
+      const claimed: Array<string> = [];
+      for (const taskId of taskIds) {
+        const task = subagents.find((candidate) => candidate.id === taskId);
+        if (task !== undefined && isReviewableWorkerTask(task)) {
+          claimed.push(taskId);
+          // Self-heal: if the subagent.updated event was missed, the claim still
+          // starts the review so the suppressed wake is always replaced.
+          yield* ensureWorkerReview(task, thread).pipe(Effect.ignore);
+        }
+      }
+      return claimed;
+    }),
+  );
+
   const handle: DropwaveSupervisor["Service"]["handle"] = Effect.fnUntraced(
     function* (event) {
+      // A worker thread's fix-round run reaching a terminal state releases the
+      // review loop waiting on it (worker threads carry no dropwaveBot profile).
+      if (
+        event.type === "run.updated" &&
+        (event.payload.status === "completed" ||
+          event.payload.status === "failed" ||
+          event.payload.status === "cancelled" ||
+          event.payload.status === "interrupted")
+      ) {
+        const waiters = fixRoundWaiters.get(event.threadId);
+        if (waiters !== undefined && waiters.length > 0) {
+          fixRoundWaiters.delete(event.threadId);
+          for (const waiter of waiters) {
+            yield* Deferred.succeed(waiter, undefined).pipe(Effect.ignore);
+          }
+        }
+      }
+
       // 1. Capture asks & summary tree leaf the instant the owner sends a message to a Dropwave bot.
       if (event.type === "message.updated") {
         const message = event.payload;
@@ -400,6 +942,13 @@ const make = Effect.gen(function* () {
             status: "running",
             ...(task.title ? { title: task.title } : {}),
           });
+          return;
+        }
+        if (task.status === "completed") {
+          // Fusion review: a lead with a reviewer model gets the diff checked
+          // before the (claimed) wake reaches it. No review model → the generic
+          // delegated-completion wake proceeds untouched.
+          yield* ensureWorkerReview(task, owner).pipe(Effect.ignore);
           return;
         }
         if (task.status === "failed" || task.status === "cancelled") {
@@ -609,13 +1158,28 @@ const make = Effect.gen(function* () {
         );
       }
 
+      // Fusion review gate: the latest verdict decides whether this work may
+      // land. "changes" needs an owner approval quote just like a non-YOLO land.
+      const review = yield* store
+        .getWorkerReview(input.jobId)
+        .pipe(Effect.orElseSucceed(() => null));
+      if (review !== null && (review.status === "reviewing" || review.status === "fixing")) {
+        return yield* opError(
+          "invalid_input",
+          `Job ${input.jobId} is still being reviewed. Wait for the verdict before landing.`,
+        );
+      }
+      const changesRequested = review?.status === "changes";
+
       const riskLevel = lead.dropwaveBot.riskLevel ?? "normal";
-      if (riskLevel !== "yolo") {
+      if (riskLevel !== "yolo" || changesRequested) {
         const quote = input.ownerApprovalQuote?.trim();
         if (quote === undefined || quote.length === 0) {
           return yield* opError(
             "forbidden",
-            `This project's risk level is ${riskLevel}. Landing needs owner approval: ask the owner to confirm, then retry with ownerApprovalQuote quoting their reply.`,
+            changesRequested
+              ? `The reviewer requested changes on job ${input.jobId}. Send the work back for a fix round or ask the owner to approve landing anyway, then retry with ownerApprovalQuote.`
+              : `This project's risk level is ${riskLevel}. Landing needs owner approval: ask the owner to confirm, then retry with ownerApprovalQuote quoting their reply.`,
           );
         }
         const { messages } = yield* projections
@@ -635,6 +1199,23 @@ const make = Effect.gen(function* () {
             "forbidden",
             "No owner message after this job finished contains that approval quote. Ask the owner to confirm the landing first.",
           );
+        }
+        if (changesRequested) {
+          yield* store
+            .recordWorkerReviewLandOverride({ jobId: input.jobId, quote })
+            .pipe(Effect.ignore);
+          const linked = yield* store
+            .listAsks({ projectId: lead.projectId, includeClosed: true })
+            .pipe(Effect.orElseSucceed(() => [] as const));
+          for (const ask of linked.filter((candidate) => candidate.jobs.includes(input.jobId))) {
+            yield* store
+              .updateAsk({
+                askId: ask.id,
+                actor: "owner",
+                note: "Owner approved landing despite reviewer-requested changes.",
+              })
+              .pipe(Effect.ignore);
+          }
         }
       }
 
@@ -747,6 +1328,33 @@ const make = Effect.gen(function* () {
 
   const start: DropwaveSupervisor["Service"]["start"] = Effect.fn("DropwaveSupervisor.start")(
     function* () {
+      // Reviews are in-memory loops; anything persisted mid-flight died with the
+      // last process. Settle them as unreviewed and wake the lead once.
+      const stuck = yield* store
+        .listWorkerReviews({ limit: 200 })
+        .pipe(Effect.orElseSucceed((): ReadonlyArray<DropwaveStore.DropwaveWorkerReview> => []));
+      for (const review of stuck.filter(
+        (candidate) => candidate.status === "reviewing" || candidate.status === "fixing",
+      )) {
+        yield* store
+          .appendWorkerReviewVerdict({
+            jobId: review.jobId,
+            verdict: {
+              round: review.rounds,
+              verdict: "unreviewed",
+              summary: "The review was interrupted by a server restart.",
+              issues: [],
+              reviewerModel: "reviewer",
+              reason: "interrupted by restart",
+              at: reviewNow(),
+            },
+          })
+          .pipe(Effect.ignore);
+        yield* store
+          .updateWorkerReview({ jobId: review.jobId, status: "unreviewed" })
+          .pipe(Effect.ignore);
+        yield* finishWorkerReview(review.jobId).pipe(Effect.ignore);
+      }
       const locks = yield* KeyedLock.makeRunner<ThreadId>();
       yield* forkParked(
         Stream.runForEach(engine.streamDomainEvents, (event) =>
@@ -760,7 +1368,25 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return { start, handle, land } satisfies DropwaveSupervisor["Service"];
+  return {
+    start,
+    handle,
+    land,
+    awaitWorkerReview: (jobId) => {
+      const settled = workerReviewSettled.get(jobId);
+      return settled === undefined ? Effect.void : Deferred.await(settled);
+    },
+    awaitWorkerFixRound: Effect.fn("DropwaveSupervisor.awaitWorkerFixRound")(function* (
+      workerThreadId: string,
+    ) {
+      if ((fixRoundWaiters.get(workerThreadId) ?? []).length > 0) return;
+      const watcher = yield* Deferred.make<void>();
+      const watchers = fixRoundWatchers.get(workerThreadId) ?? [];
+      watchers.push(watcher);
+      fixRoundWatchers.set(workerThreadId, watchers);
+      yield* Deferred.await(watcher);
+    }),
+  } satisfies DropwaveSupervisor["Service"];
 });
 
 export const layer = Layer.effect(DropwaveSupervisor, make);

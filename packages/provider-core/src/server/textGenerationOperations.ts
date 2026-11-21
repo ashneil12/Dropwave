@@ -12,6 +12,7 @@ import {
   buildPrContentPrompt,
   buildReviewGuidePrompt,
   buildThreadTitlePrompt,
+  buildWorkerReviewPrompt,
 } from "./textGenerationPrompts.ts";
 import {
   sanitizeCommitSubject,
@@ -35,6 +36,7 @@ export interface Request<S extends Schema.Top> {
 }
 
 const INVESTIGATION_TIMEOUT_MS = 15 * 60_000;
+const WORKER_REVIEW_TIMEOUT_MS = 5 * 60_000;
 
 export const investigationUnsupported = (operation: Operation, provider: string) =>
   new TextGenerationError({
@@ -194,12 +196,27 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  const generateWorkerReview: ProviderTextGeneration["generateWorkerReview"] = Effect.fn(
+    `${name}.generateWorkerReview`,
+  )(function* (input) {
+    return yield* run({
+      operation: "generateWorkerReview",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...(input.investigate === false
+        ? {}
+        : { investigate: { timeoutMs: WORKER_REVIEW_TIMEOUT_MS } }),
+      ...buildWorkerReviewPrompt(input),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateWorkerReview,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 }

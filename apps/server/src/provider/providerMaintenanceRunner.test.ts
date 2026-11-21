@@ -1039,6 +1039,7 @@ describe("providerMaintenanceRunner", () => {
               log.push("text generation spawned provider");
               return { title: "Generated title" };
             }),
+          generateWorkerReview: () => Effect.die("unused"),
         }),
       };
       const textGeneration = yield* TextGeneration.make.pipe(

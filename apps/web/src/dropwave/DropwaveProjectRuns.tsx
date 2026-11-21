@@ -19,6 +19,7 @@ import {
 import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
+import { useModelSelectionLabel } from "./useWorkerReviews";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
 function AskToChange({
@@ -65,6 +66,16 @@ export function DropwaveProjectRuns({
   const update = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const leadProfile = profile?.kind === "lead" ? profile : null;
+  const workerModelName = useModelSelectionLabel(
+    bot.environmentId,
+    leadProfile?.workerModelSelection ?? null,
+  );
+  const reviewModelName = useModelSelectionLabel(
+    bot.environmentId,
+    leadProfile?.workerReviewModelSelection ?? null,
+  );
+  const leadModelName = useModelSelectionLabel(bot.environmentId, bot.source.modelSelection);
 
   if (!workspace || !profile || profile.kind !== "lead") return null;
 
@@ -114,6 +125,28 @@ export function DropwaveProjectRuns({
     { value: "normal", label: gt("Normal") },
     { value: "yolo", label: gt("YOLO") },
   ];
+
+  const workerSetup = (() => {
+    if (leadProfile === null) return null;
+    const workerSelection = leadProfile.workerModelSelection;
+    const workerPhrase = workerSelection
+      ? gt("{name} does the work", { name: workerModelName ?? workerSelection.model })
+      : gt("Workers inherit the {name} model", {
+          name: leadModelName ?? bot.source.modelSelection.model,
+        });
+    const reviewSelection = leadProfile.workerReviewModelSelection;
+    const reviewPhrase = reviewSelection
+      ? gt("{name} checks it", { name: reviewModelName ?? reviewSelection.model })
+      : gt("no review step");
+    const rounds = leadProfile.workerReviewRounds ?? 1;
+    const roundsPhrase =
+      reviewSelection !== undefined && rounds > 0
+        ? rounds === 1
+          ? gt("1 fix round before it reaches you")
+          : gt("{count} fix rounds before it reaches you", { count: rounds })
+        : null;
+    return { workerPhrase, reviewPhrase, roundsPhrase };
+  })();
 
   return (
     <Dialog
@@ -189,6 +222,24 @@ export function DropwaveProjectRuns({
                   />
                 </header>
                 <p data-dw-runs-done="">{profile.doneDefinition}</p>
+              </section>
+            ) : null}
+
+            {workerSetup ? (
+              <section data-dw-runs-section="">
+                <header data-dw-runs-section-head="">
+                  <span data-dw-section-micro="">
+                    <T>Workers</T>
+                  </span>
+                  <AskToChange
+                    leadName={lead.title}
+                    message={gt("I'd like to change how workers and review are set up.")}
+                  />
+                </header>
+                <p data-dw-runs-worker-line="">
+                  {workerSetup.workerPhrase} · {workerSetup.reviewPhrase}
+                  {workerSetup.roundsPhrase ? ` · ${workerSetup.roundsPhrase}` : ""}
+                </p>
               </section>
             ) : null}
 

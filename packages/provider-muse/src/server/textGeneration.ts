@@ -33,6 +33,7 @@ import {
   buildCommitMessagePrompt,
   buildPrContentPrompt,
   buildThreadTitlePrompt,
+  buildWorkerReviewPrompt,
 } from "@t3tools/provider-core/server/textGenerationPrompts";
 import {
   sanitizeCommitSubject,
@@ -394,12 +395,25 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
     });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
+  const generateWorkerReview: ProviderTextGeneration["generateWorkerReview"] = Effect.fn(
+    "MuseTextGeneration.generateWorkerReview",
+  )(function* (input) {
+    if (input.investigate !== false) {
+      return yield* investigationUnsupported("generateWorkerReview", "Muse Code");
+    }
+    return yield* runMuseJson({
+      operation: "generateWorkerReview",
+      ...buildWorkerReviewPrompt(input),
+      modelSelection: input.modelSelection,
+    });
+  });
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
     generateReviewGuide,
+    generateWorkerReview,
     generateTranscriptionPostProcessing,
   } satisfies ProviderTextGeneration;
 });

@@ -17,6 +17,10 @@ const FixRoundCap = Schema.Int.check(
   Schema.isGreaterThanOrEqualTo(1),
   Schema.isLessThanOrEqualTo(10),
 );
+const WorkerReviewRounds = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(3),
+);
 
 export const DropwaveRiskLevel = Schema.Literals(["careful", "normal", "yolo"]);
 export type DropwaveRiskLevel = typeof DropwaveRiskLevel.Type;
@@ -41,6 +45,8 @@ export const DropwaveBotProfile = Schema.Union([
     fixRoundCap: Schema.optional(FixRoundCap),
     loopSteps: Schema.optional(Schema.Array(DropwaveLoopStep).check(Schema.isMaxLength(12))),
     workerModelSelection: Schema.optional(ModelSelection),
+    workerReviewModelSelection: Schema.optional(ModelSelection),
+    workerReviewRounds: Schema.optional(WorkerReviewRounds),
     avatarSeed: Schema.optional(Schema.Int),
     personaId: Schema.optional(TrimmedNonEmptyString),
     onboardingPhase: Schema.optional(Schema.Literals(["first_run", "project"])),

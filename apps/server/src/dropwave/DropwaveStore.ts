@@ -30,6 +30,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
+import * as Stream from "effect/Stream";
 
 import { PERSONALITY_SOURCES } from "./personality/sources.ts";
 import * as Schema from "effect/Schema";
@@ -178,6 +180,25 @@ export function initializeDropwaveSchema(db: NodeSqlite.DatabaseSync): void {
     );
     CREATE INDEX IF NOT EXISTS idx_dropwave_habit_summaries_project
       ON dropwave_habit_summaries (project_id);
+
+    CREATE TABLE IF NOT EXISTS dropwave_worker_reviews (
+      job_id TEXT PRIMARY KEY,
+      lead_thread_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      worker_thread_id TEXT,
+      worker_branch TEXT,
+      status TEXT NOT NULL,
+      rounds INTEGER NOT NULL DEFAULT 0,
+      max_rounds INTEGER NOT NULL DEFAULT 1,
+      verdicts_json TEXT NOT NULL DEFAULT '[]',
+      land_override_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_dropwave_worker_reviews_project
+      ON dropwave_worker_reviews (project_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dropwave_worker_reviews_lead
+      ON dropwave_worker_reviews (lead_thread_id, updated_at DESC);
   `);
 
   const memoryColumns = new Set(
@@ -510,6 +531,41 @@ function rowToAsk(row: AskRow): DropwaveAsk {
   };
 }
 
+interface WorkerReviewRow {
+  readonly job_id: string;
+  readonly lead_thread_id: string;
+  readonly project_id: string;
+  readonly worker_thread_id: string | null;
+  readonly worker_branch: string | null;
+  readonly status: string;
+  readonly rounds: number;
+  readonly max_rounds: number;
+  readonly verdicts_json: string;
+  readonly land_override_json: string | null;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+function rowToWorkerReview(row: WorkerReviewRow): DropwaveWorkerReview {
+  return {
+    jobId: row.job_id,
+    leadThreadId: ThreadId.make(row.lead_thread_id),
+    projectId: ProjectId.make(row.project_id),
+    workerThreadId: row.worker_thread_id === null ? null : ThreadId.make(row.worker_thread_id),
+    workerBranch: row.worker_branch,
+    status: row.status as DropwaveWorkerReview["status"],
+    rounds: row.rounds,
+    maxRounds: row.max_rounds,
+    verdicts: parseJsonArray<DropwaveWorkerReviewVerdict>(row.verdicts_json),
+    landOverride:
+      row.land_override_json === null
+        ? null
+        : (JSON.parse(row.land_override_json) as { quote: string; at: IsoDateTime }),
+    createdAt: asIsoDateTime(row.created_at),
+    updatedAt: asIsoDateTime(row.updated_at),
+  };
+}
+
 interface PersonaRow {
   readonly id: string;
   readonly name: string;
@@ -698,6 +754,40 @@ function rowToSummaryNode(row: SummaryNodeRow): DropwaveSummaryNode {
   };
 }
 
+export interface DropwaveWorkerReviewIssue {
+  readonly severity: "blocker" | "major" | "minor";
+  readonly file: string;
+  readonly line: number | null;
+  readonly problem: string;
+  readonly fix: string;
+}
+
+export interface DropwaveWorkerReviewVerdict {
+  readonly round: number;
+  readonly verdict: "approve" | "changes" | "unreviewed";
+  readonly summary: string;
+  readonly issues: ReadonlyArray<DropwaveWorkerReviewIssue>;
+  readonly reviewerModel: string;
+  readonly diffNote?: string | undefined;
+  readonly reason?: string | undefined;
+  readonly at: IsoDateTime;
+}
+
+export interface DropwaveWorkerReview {
+  readonly jobId: string;
+  readonly leadThreadId: ThreadId;
+  readonly projectId: ProjectId;
+  readonly workerThreadId: ThreadId | null;
+  readonly workerBranch: string | null;
+  readonly status: "reviewing" | "fixing" | "approved" | "changes" | "unreviewed";
+  readonly rounds: number;
+  readonly maxRounds: number;
+  readonly verdicts: ReadonlyArray<DropwaveWorkerReviewVerdict>;
+  readonly landOverride: { readonly quote: string; readonly at: IsoDateTime } | null;
+  readonly createdAt: IsoDateTime;
+  readonly updatedAt: IsoDateTime;
+}
+
 export interface DropwaveHabitSummaryItem {
   readonly taskId: string;
   readonly summary: string;
@@ -748,6 +838,50 @@ export interface DropwaveStoreShape {
     readonly title?: string | undefined;
     readonly detail?: string | undefined;
   }) => Effect.Effect<ReadonlyArray<DropwaveAsk>, DropwaveOperationError>;
+
+  readonly startWorkerReview: (input: {
+    readonly jobId: string;
+    readonly leadThreadId: ThreadId;
+    readonly projectId: ProjectId;
+    readonly workerThreadId?: ThreadId | null | undefined;
+    readonly workerBranch?: string | null | undefined;
+    readonly maxRounds?: number | undefined;
+  }) => Effect.Effect<DropwaveWorkerReview, DropwaveOperationError>;
+
+  readonly getWorkerReview: (
+    jobId: string,
+  ) => Effect.Effect<DropwaveWorkerReview | null, DropwaveOperationError>;
+
+  readonly appendWorkerReviewVerdict: (input: {
+    readonly jobId: string;
+    readonly verdict: DropwaveWorkerReviewVerdict;
+  }) => Effect.Effect<DropwaveWorkerReview | null, DropwaveOperationError>;
+
+  readonly updateWorkerReview: (input: {
+    readonly jobId: string;
+    readonly status?: DropwaveWorkerReview["status"] | undefined;
+    readonly rounds?: number | undefined;
+  }) => Effect.Effect<DropwaveWorkerReview | null, DropwaveOperationError>;
+
+  readonly listWorkerReviews: (input: {
+    readonly projectId?: ProjectId | undefined;
+    readonly leadThreadId?: ThreadId | undefined;
+    readonly limit?: number | undefined;
+  }) => Effect.Effect<ReadonlyArray<DropwaveWorkerReview>, DropwaveOperationError>;
+
+  readonly subscribeWorkerReviews: (input: {
+    readonly projectId?: ProjectId | undefined;
+    readonly leadThreadId?: ThreadId | undefined;
+    readonly limit?: number | undefined;
+  }) => Stream.Stream<
+    { readonly reviews: ReadonlyArray<DropwaveWorkerReview> },
+    DropwaveOperationError
+  >;
+
+  readonly recordWorkerReviewLandOverride: (input: {
+    readonly jobId: string;
+    readonly quote: string;
+  }) => Effect.Effect<void, DropwaveOperationError>;
 
   readonly listUntouchedAsksForMessage: (
     messageId: string,
@@ -1079,7 +1213,10 @@ function storageError(cause: unknown): DropwaveOperationError {
   });
 }
 
-function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
+function makeDropwaveStore(
+  db: NodeSqlite.DatabaseSync,
+  workerReviewChanges: PubSub.PubSub<void>,
+): DropwaveStoreShape {
   const getOne = <T>(sql: string, ...params: Array<NodeSqlite.SQLInputValue>): T | undefined =>
     db.prepare(sql).get(...params) as unknown as T | undefined;
 
@@ -1245,6 +1382,40 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
       compressLevelIfReady(threadId, level + 1);
     }
   };
+
+  // Review writes notify subscribers; slow subscribers need only the newest dirty signal.
+  const notifyWorkerReviewsChanged = PubSub.publish(workerReviewChanges, undefined).pipe(
+    Effect.asVoid,
+  );
+
+  const listWorkerReviewRows = (input: {
+    readonly projectId?: ProjectId | undefined;
+    readonly leadThreadId?: ThreadId | undefined;
+    readonly limit?: number | undefined;
+  }) =>
+    Effect.try({
+      try: () => {
+        const clauses: Array<string> = [];
+        const params: Array<string | number> = [];
+        if (input.projectId !== undefined) {
+          clauses.push("project_id = ?");
+          params.push(input.projectId);
+        }
+        if (input.leadThreadId !== undefined) {
+          clauses.push("lead_thread_id = ?");
+          params.push(input.leadThreadId);
+        }
+        const where = clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : "";
+        const limit = input.limit ?? 100;
+        const rows = db
+          .prepare(
+            `SELECT * FROM dropwave_worker_reviews ${where} ORDER BY updated_at DESC LIMIT ?`,
+          )
+          .all(...params, limit) as unknown as Array<WorkerReviewRow>;
+        return rows.map(rowToWorkerReview);
+      },
+      catch: storageError,
+    });
 
   return {
     captureMessageAsks: (input) =>
@@ -2781,6 +2952,127 @@ function makeDropwaveStore(db: NodeSqlite.DatabaseSync): DropwaveStoreShape {
         },
         catch: storageError,
       }),
+
+    startWorkerReview: (input) =>
+      Effect.try({
+        try: () => {
+          const existing = getOne<WorkerReviewRow>(
+            "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+            input.jobId,
+          );
+          if (existing !== undefined) return rowToWorkerReview(existing);
+          const now = nowIso();
+          db.prepare(
+            `INSERT OR IGNORE INTO dropwave_worker_reviews
+               (job_id, lead_thread_id, project_id, worker_thread_id, worker_branch, status, rounds, max_rounds, verdicts_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, 'reviewing', 0, ?, '[]', ?, ?)`,
+          ).run(
+            input.jobId,
+            input.leadThreadId,
+            input.projectId,
+            input.workerThreadId ?? null,
+            input.workerBranch ?? null,
+            input.maxRounds ?? 1,
+            now,
+            now,
+          );
+          return rowToWorkerReview(
+            getOne<WorkerReviewRow>(
+              "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+              input.jobId,
+            )!,
+          );
+        },
+        catch: storageError,
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
+
+    getWorkerReview: (jobId) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<WorkerReviewRow>(
+            "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+            jobId,
+          );
+          return row === undefined ? null : rowToWorkerReview(row);
+        },
+        catch: storageError,
+      }),
+
+    appendWorkerReviewVerdict: (input) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<WorkerReviewRow>(
+            "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+            input.jobId,
+          );
+          if (row === undefined) return null;
+          const verdicts = [...parseJsonArray<DropwaveWorkerReviewVerdict>(row.verdicts_json)];
+          verdicts.push(input.verdict);
+          db.prepare(
+            "UPDATE dropwave_worker_reviews SET verdicts_json = ?, updated_at = ? WHERE job_id = ?",
+          ).run(JSON.stringify(verdicts), nowIso(), input.jobId);
+          return rowToWorkerReview(
+            getOne<WorkerReviewRow>(
+              "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+              input.jobId,
+            )!,
+          );
+        },
+        catch: storageError,
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
+
+    updateWorkerReview: (input) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<WorkerReviewRow>(
+            "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+            input.jobId,
+          );
+          if (row === undefined) return null;
+          db.prepare(
+            "UPDATE dropwave_worker_reviews SET status = COALESCE(?, status), rounds = COALESCE(?, rounds), updated_at = ? WHERE job_id = ?",
+          ).run(input.status ?? null, input.rounds ?? null, nowIso(), input.jobId);
+          return rowToWorkerReview(
+            getOne<WorkerReviewRow>(
+              "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+              input.jobId,
+            )!,
+          );
+        },
+        catch: storageError,
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
+
+    listWorkerReviews: listWorkerReviewRows,
+
+    subscribeWorkerReviews: (input) =>
+      Stream.unwrap(
+        Effect.gen(function* () {
+          // Subscribe before reading to buffer concurrent changes.
+          const subscription = yield* PubSub.subscribe(workerReviewChanges);
+          const list = () =>
+            listWorkerReviewRows(input).pipe(Effect.map((reviews) => ({ reviews })));
+          return Stream.concat(
+            Stream.fromEffect(list()),
+            Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => list())),
+          );
+        }),
+      ),
+
+    recordWorkerReviewLandOverride: (input) =>
+      Effect.try({
+        try: () => {
+          const row = getOne<WorkerReviewRow>(
+            "SELECT * FROM dropwave_worker_reviews WHERE job_id = ?",
+            input.jobId,
+          );
+          if (row === undefined) return;
+          const override = { quote: input.quote, at: nowIso() };
+          db.prepare(
+            "UPDATE dropwave_worker_reviews SET land_override_json = ?, updated_at = ? WHERE job_id = ?",
+          ).run(JSON.stringify(override), nowIso(), input.jobId);
+        },
+        catch: storageError,
+      }).pipe(Effect.tap(() => notifyWorkerReviewsChanged)),
   };
 }
 
@@ -2809,28 +3101,33 @@ export const layer: Layer.Layer<DropwaveStore, DropwaveOperationError, ServerCon
             }
           }),
       );
-      return DropwaveStore.of(makeDropwaveStore(db));
+      const workerReviewChanges = yield* PubSub.sliding<void>(1);
+      return DropwaveStore.of(makeDropwaveStore(db, workerReviewChanges));
     }),
   );
 
 export const layerMemory: Layer.Layer<DropwaveStore, DropwaveOperationError> = Layer.effect(
   DropwaveStore,
-  Effect.acquireRelease(
-    Effect.try({
-      try: () => {
-        const handle = new NodeSqlite.DatabaseSync(":memory:");
-        initializeDropwaveSchema(handle);
-        return handle;
-      },
-      catch: storageError,
-    }),
-    (handle) =>
-      Effect.sync(() => {
-        try {
-          handle.close();
-        } catch {
-          // ignore
-        }
+  Effect.gen(function* () {
+    const db = yield* Effect.acquireRelease(
+      Effect.try({
+        try: () => {
+          const handle = new NodeSqlite.DatabaseSync(":memory:");
+          initializeDropwaveSchema(handle);
+          return handle;
+        },
+        catch: storageError,
       }),
-  ).pipe(Effect.map((db) => DropwaveStore.of(makeDropwaveStore(db)))),
+      (handle) =>
+        Effect.sync(() => {
+          try {
+            handle.close();
+          } catch {
+            // ignore
+          }
+        }),
+    );
+    const workerReviewChanges = yield* PubSub.sliding<void>(1);
+    return DropwaveStore.of(makeDropwaveStore(db, workerReviewChanges));
+  }),
 );

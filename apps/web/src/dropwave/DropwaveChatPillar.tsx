@@ -53,6 +53,8 @@ import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
 import { DropwaveComposerControls } from "./DropwaveComposerControls";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
+import { DropwaveReviewChip } from "./DropwaveReviewChip";
+import { useModelSelectionLabel, useWorkerReviews } from "./useWorkerReviews";
 import { buildDropwaveChatTimeline } from "./DropwaveChatTimeline.logic";
 import { DropwaveWorkingBlock, workSegmentHasSteps } from "./DropwaveWorkingBlock";
 import { workState } from "./model";
@@ -459,6 +461,18 @@ export function DropwaveChatPillar({
 
   const projection = useThreadProjection(activeThreadRef);
   const visibleItems = useThreadVisibleTurnItems(activeThreadRef);
+  const workerReviews = useWorkerReviews({
+    environmentId: workspace?.project?.environmentId ?? activeThread?.environmentId ?? null,
+    projectId: workspace?.project?.id ?? null,
+  });
+  const leadReviewSelection =
+    workspace?.lead?.source.dropwaveBot?.kind === "lead"
+      ? workspace.lead.source.dropwaveBot.workerReviewModelSelection
+      : null;
+  const workerReviewerName = useModelSelectionLabel(
+    workspace?.project?.environmentId ?? activeThread?.environmentId ?? null,
+    leadReviewSelection ?? null,
+  );
   const pendingRequests = useAtomValue(
     activeThreadRef
       ? environmentThreadDetails.pendingRequestsAtom(activeThreadRef)
@@ -976,41 +990,51 @@ export function DropwaveChatPillar({
 
                     <div data-dw-work-body={workersFoldOpen ? "open" : "closed"}>
                       <div data-dw-work-body-inner="">
-                        {liveSubagents.slice(-8).map((sub) => (
-                          <div key={sub.id} data-dw-work-step="">
-                            <div data-dw-work-step-head="">
-                              <strong>{sub.title || sub.prompt.slice(0, 60)}</strong>
-                              <span
-                                data-dw-mono={
-                                  sub.status === "failed"
-                                    ? "coral"
-                                    : sub.status === "running"
-                                      ? "emerald"
-                                      : "dim"
-                                }
-                              >
-                                {sub.status}
-                              </span>
+                        {liveSubagents.slice(-8).map((sub) => {
+                          const review = workerReviews.get(sub.id);
+                          return (
+                            <div key={sub.id} data-dw-work-step="">
+                              <div data-dw-work-step-head="">
+                                <strong>{sub.title || sub.prompt.slice(0, 60)}</strong>
+                                {review ? (
+                                  <DropwaveReviewChip
+                                    review={review}
+                                    reviewerName={workerReviewerName}
+                                  />
+                                ) : (
+                                  <span
+                                    data-dw-mono={
+                                      sub.status === "failed"
+                                        ? "coral"
+                                        : sub.status === "running"
+                                          ? "emerald"
+                                          : "dim"
+                                    }
+                                  >
+                                    {sub.status}
+                                  </span>
+                                )}
+                              </div>
+                              {sub.result ? <p>{sub.result.slice(0, 220)}</p> : null}
+                              {sub.childThreadId ? (
+                                <button
+                                  type="button"
+                                  data-dw-inline-link=""
+                                  onClick={() =>
+                                    workspace.openThread(
+                                      scopeThreadRef(
+                                        activeThreadRef.environmentId,
+                                        sub.childThreadId!,
+                                      ),
+                                    )
+                                  }
+                                >
+                                  <T>Inspect run</T>
+                                </button>
+                              ) : null}
                             </div>
-                            {sub.result ? <p>{sub.result.slice(0, 220)}</p> : null}
-                            {sub.childThreadId ? (
-                              <button
-                                type="button"
-                                data-dw-inline-link=""
-                                onClick={() =>
-                                  workspace.openThread(
-                                    scopeThreadRef(
-                                      activeThreadRef.environmentId,
-                                      sub.childThreadId!,
-                                    ),
-                                  )
-                                }
-                              >
-                                <T>Inspect run</T>
-                              </button>
-                            ) : null}
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
