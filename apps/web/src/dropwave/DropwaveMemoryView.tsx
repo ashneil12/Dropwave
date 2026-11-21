@@ -12,7 +12,14 @@ import {
 } from "@t3tools/contracts";
 import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { T, msg, useGT } from "gt-react";
-import { BrainIcon, ChevronDownIcon, ExternalLinkIcon, SearchIcon, Undo2Icon } from "lucide-react";
+import {
+  BrainIcon,
+  ChevronDownIcon,
+  ExternalLinkIcon,
+  SearchIcon,
+  Trash2Icon,
+  Undo2Icon,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { serverEnvironment } from "../state/server";
@@ -45,6 +52,12 @@ function asTrace(value: unknown): {
   shown?: ReadonlyArray<TraceScore>;
   drops?: ReadonlyArray<TraceDrop>;
   vectors?: boolean;
+  timing?: {
+    readonly totalMs?: number;
+    readonly ftsMs?: number;
+    readonly vectorMs?: number;
+    readonly graphMs?: number;
+  };
 } {
   if (typeof value !== "object" || value === null) return {};
   const record = value as Record<string, unknown>;
@@ -53,6 +66,9 @@ function asTrace(value: unknown): {
     ...(Array.isArray(record.shown) ? { shown: record.shown as TraceScore[] } : {}),
     ...(Array.isArray(record.drops) ? { drops: record.drops as TraceDrop[] } : {}),
     ...(typeof record.vectors === "boolean" ? { vectors: record.vectors } : {}),
+    ...(typeof record.timing === "object" && record.timing !== null
+      ? { timing: record.timing as NonNullable<ReturnType<typeof asTrace>["timing"]> }
+      : {}),
   };
 }
 
@@ -115,6 +131,9 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
   const undoCmd = useAtomCommand(serverEnvironment.dropwaveMemoryUndo, {
     reportFailure: false,
   });
+  const removeCmd = useAtomCommand(serverEnvironment.dropwaveMemoryRemove, {
+    reportFailure: false,
+  });
   const scopeCmd = useAtomCommand(serverEnvironment.dropwaveMemorySetScope, {
     reportFailure: false,
   });
@@ -125,7 +144,7 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
   const reload = () => {
     const statuses =
       statusFilter === "all"
-        ? undefined
+        ? (["active", "needs_review", "superseded", "archived"] as const)
         : statusFilter === "active"
           ? (["active", "needs_review"] as const)
           : ([statusFilter] as const);
@@ -203,6 +222,18 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
     const res = await undoCmd({ environmentId, input: { id } });
     setBusy(false);
     if (res._tag === "Success") reload();
+  };
+
+  const forgetMemory = async (id: string) => {
+    if (busy) return;
+    setBusy(true);
+    const res = await removeCmd({ environmentId, input: { id } });
+    setBusy(false);
+    if (res._tag === "Success") reload();
+    else if (!isAtomCommandInterrupted(res)) {
+      const cause = squashAtomCommandFailure(res);
+      setError(cause instanceof Error ? cause.message : gt("Could not forget this memory."));
+    }
   };
 
   const moveScope = async (
@@ -359,6 +390,9 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
                       <span>
                         {trace.gate ?? "?"}
                         {trace.vectors === true ? ` · ${gt("vectors")}` : ""}
+                        {typeof trace.timing?.totalMs === "number"
+                          ? ` · ${gt("{ms} ms", { ms: Math.round(trace.timing.totalMs) })}`
+                          : ""}
                       </span>
                     </div>
                     {(trace.shown ?? []).map((shown) => (
@@ -497,6 +531,17 @@ export function DropwaveMemoryView({ project }: { project: EnvironmentProject })
                     ariaLabel={gt("Move memory scope")}
                     onChange={(value) => onScopeChange(item, value)}
                   />
+                  {item.status === "active" || item.status === "needs_review" ? (
+                    <button
+                      type="button"
+                      data-dropwave-icon-button=""
+                      aria-label={gt("Forget this memory")}
+                      disabled={busy}
+                      onClick={() => void forgetMemory(item.id)}
+                    >
+                      <Trash2Icon />
+                    </button>
+                  ) : null}
                 </div>
                 {item.subject !== "" ? <strong>{item.subject}</strong> : null}
                 <p>{item.text}</p>
