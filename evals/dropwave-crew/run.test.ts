@@ -75,6 +75,7 @@ const state = (over: Partial<CaseState>): CaseState => ({
   leadProfile: undefined,
   teammateProfiles: [],
   recallTraces: [],
+  workerReviews: [],
   workspaceRoot: "/w/main",
   ...over,
 });
@@ -422,5 +423,76 @@ describe("evaluateCheck", () => {
     expect(evaluateCheck(check, leaked, ctx([check])).pass).toBe(false);
     const empty = state({ memories: [pref], recallTraces: [] });
     expect(evaluateCheck(check, empty, ctx([check])).pass).toBe(false);
+  });
+
+  it("worker_review requires records, settled states, and a fix round or changes verdict", () => {
+    const check: Check = {
+      kind: "worker_review",
+      min: 1,
+      requireFixOrChanges: true,
+      requireSettled: true,
+    };
+    const approvedOnly = state({
+      workerReviews: [
+        {
+          jobId: "job-1",
+          status: "approved",
+          rounds: 0,
+          maxRounds: 1,
+          verdicts: [{ verdict: "approve", summary: "looks good", issues: [] }],
+        },
+      ],
+    });
+    // A clean first-pass approve is a real review but proves nothing about the loop.
+    expect(evaluateCheck(check, approvedOnly, ctx([check])).pass).toBe(false);
+
+    const fixed = state({
+      workerReviews: [
+        {
+          jobId: "job-1",
+          status: "approved",
+          rounds: 1,
+          maxRounds: 1,
+          verdicts: [
+            {
+              verdict: "changes",
+              summary: "coupon rounding floors instead of rounding",
+              issues: [{ severity: "major" }],
+            },
+            { verdict: "approve", summary: "fixed", issues: [] },
+          ],
+        },
+      ],
+    });
+    expect(evaluateCheck(check, fixed, ctx([check])).pass).toBe(true);
+
+    const stillChanges = state({
+      workerReviews: [
+        {
+          jobId: "job-1",
+          status: "changes",
+          rounds: 1,
+          maxRounds: 1,
+          verdicts: [{ verdict: "changes", summary: "still wrong", issues: [] }],
+        },
+      ],
+    });
+    expect(evaluateCheck(check, stillChanges, ctx([check])).pass).toBe(true);
+
+    const active = state({
+      workerReviews: [
+        {
+          jobId: "job-1",
+          status: "fixing",
+          rounds: 1,
+          maxRounds: 1,
+          verdicts: [{ verdict: "changes", summary: "x", issues: [] }],
+        },
+      ],
+    });
+    expect(evaluateCheck(check, active, ctx([check])).pass).toBe(false);
+
+    const none = state({ workerReviews: [] });
+    expect(evaluateCheck(check, none, ctx([check])).pass).toBe(false);
   });
 });

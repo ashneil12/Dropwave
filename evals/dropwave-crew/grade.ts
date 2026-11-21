@@ -52,6 +52,18 @@ export interface CaseState {
     readonly shown: ReadonlyArray<{ readonly id: string }>;
     readonly drops: ReadonlyArray<{ readonly id: string; readonly reason?: string | undefined }>;
   }>;
+  /** Persisted Fusion worker-review records (dropwave_worker_reviews), newest first. */
+  readonly workerReviews: ReadonlyArray<{
+    readonly jobId: string;
+    readonly status: string;
+    readonly rounds: number;
+    readonly maxRounds: number;
+    readonly verdicts: ReadonlyArray<{
+      readonly verdict: string;
+      readonly summary: string;
+      readonly issues: ReadonlyArray<{ readonly severity?: string }>;
+    }>;
+  }>;
 }
 
 export interface CheckResult {
@@ -137,6 +149,8 @@ function checkId(check: Check, index: number): string {
       return "lead_replies_never";
     case "recall_trace":
       return `recall_trace:${check.shownKeywords[0] ?? "*"}`;
+    case "worker_review":
+      return `worker_review>=${check.min}`;
     default:
       return `check_${index}`;
   }
@@ -490,6 +504,49 @@ export function evaluateCheck(check: Check, state: CaseState, ctx: CheckContext)
       return ok(
         id,
         `trace gate=${trace.gate ?? "?"} shown=${shownItems.length} drops=${trace.drops.length}`,
+      );
+    }
+    case "worker_review": {
+      const reviews = state.workerReviews;
+      if (reviews.length < check.min) {
+        return fail(
+          id,
+          `reviews=${reviews.length}; records: ${
+            reviews.map((r) => `${r.jobId}:${r.status}:r${r.rounds}/${r.maxRounds}`).join(" | ") ||
+            "none"
+          }`,
+        );
+      }
+      if (check.requireSettled) {
+        const active = reviews.filter((r) => r.status === "reviewing" || r.status === "fixing");
+        if (active.length > 0) {
+          return fail(
+            id,
+            `still active: ${active.map((r) => `${r.jobId}:${r.status}`).join(" | ")}`,
+          );
+        }
+      }
+      if (check.requireFixOrChanges) {
+        const worked = reviews.some(
+          (r) =>
+            r.rounds > 0 ||
+            r.status === "changes" ||
+            r.verdicts.some((v) => v.verdict === "changes"),
+        );
+        if (!worked) {
+          return fail(
+            id,
+            `no fix round or changes verdict; verdicts: ${reviews
+              .map((r) => `${r.jobId}=[${r.verdicts.map((v) => v.verdict).join(",")}]`)
+              .join(" | ")}`,
+          );
+        }
+      }
+      return ok(
+        id,
+        `${reviews.length} review(s): ${reviews
+          .map((r) => `${r.status}${r.rounds > 0 ? ` r${r.rounds}` : ""}`)
+          .join(", ")}`,
       );
     }
     default:

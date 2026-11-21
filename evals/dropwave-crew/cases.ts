@@ -112,6 +112,23 @@ export type Check =
       readonly kind: "recall_trace";
       readonly shownKeywords: ReadonlyArray<string>;
       readonly absentKeywords?: ReadonlyArray<string>;
+    }
+  | {
+      /**
+       * Fusion worker review: persisted dropwave_worker_reviews records prove the
+       * reviewer ran before the lead heard the outcome.
+       */
+      readonly kind: "worker_review";
+      /** Minimum review records across the project's delegated jobs. */
+      readonly min: number;
+      /**
+       * At least one record must show the loop doing real work: a fix round was
+       * dispatched (rounds > 0 or a "changes" verdict in the log) or the review
+       * ended "changes" (the lead was told changes were still requested).
+       */
+      readonly requireFixOrChanges?: boolean;
+      /** No record may still be reviewing/fixing when the case settles. */
+      readonly requireSettled?: boolean;
     };
 
 export interface LiveEvalCase {
@@ -138,6 +155,8 @@ export interface LiveEvalCase {
           readonly riskLevel: "careful" | "normal" | "yolo";
           readonly helpers: ReadonlyArray<"QA" | "SEO">;
           readonly workerModel?: "auto" | "cheapest_available";
+          /** "on": configure a reviewer model so completed worker diffs get reviewed. */
+          readonly workerReview?: "on";
           /** Owner memories saved before the case starts. */
           readonly ownerMemories?: ReadonlyArray<string>;
         };
@@ -213,6 +232,46 @@ const pulseBilling: FixtureFiles = {
     "",
     'test("no negative overage", () => {',
     "  assert.equal(overage(5, 10), 0);",
+    "});",
+    "",
+  ].join("\n"),
+};
+
+const fusionShop: FixtureFiles = {
+  "package.json": JSON.stringify(
+    {
+      name: "fusionshop",
+      private: true,
+      type: "module",
+      scripts: { test: "node --test" },
+    },
+    null,
+    2,
+  ),
+  "README.md":
+    "# FusionShop\n\nTiny cart math helpers for a side project. `npm test` runs the suite.\n",
+  "src/cart.js": [
+    "export function subtotal(items) {",
+    "  return items.reduce((sum, item) => sum + item.price * item.qty, 0);",
+    "}",
+    "",
+    "export function tax(total) {",
+    "  return Math.round(total * 0.08 * 100) / 100;",
+    "}",
+    "",
+  ].join("\n"),
+  "test/cart.test.js": [
+    'import { test } from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { subtotal, tax } from "../src/cart.js";',
+    "",
+    'test("subtotal sums price times qty", () => {',
+    "  assert.equal(subtotal([{ price: 10, qty: 2 }, { price: 5, qty: 1 }]), 25);",
+    "});",
+    "",
+    'test("tax is eight percent rounded to cents", () => {',
+    "  assert.equal(tax(100), 8);",
+    "  assert.equal(tax(19.99), 1.6);",
     "});",
     "",
   ].join("\n"),
@@ -560,6 +619,54 @@ export const LIVE_EVAL_CASES: ReadonlyArray<LiveEvalCase> = [
         shownKeywords: ["short answers"],
         absentKeywords: ["npm test"],
       },
+    ],
+  },
+  {
+    id: "fusion-worker-review-catches-subtle-bug",
+    kind: "guard",
+    experience:
+      "Fusion workers: a cheap worker's diff gets a fresh-context review before the lead hears the outcome; a subtle brief violation the worker's own tests miss should come back as a fix round, then approve and land.",
+    source: "Fusion workers design live eval",
+    home: "fresh",
+    project: {
+      title: "FusionShop",
+      files: fusionShop,
+      setup: {
+        mode: "configured",
+        // YOLO so an approved review can land without an owner turn; a surviving
+        // "changes" verdict would (correctly) block the land.
+        riskLevel: "yolo",
+        helpers: ["QA"],
+        workerModel: "cheapest_available",
+        workerReview: "on",
+        ownerMemories: ["The owner's name is Ash."],
+      },
+    },
+    turns: [
+      {
+        when: "first",
+        text: "two small additions, delegate them: 1) `applyCoupon(total, percent)` in src/coupons.js - percent off the total, rounded to the NEAREST cent (so 5.025 becomes 5.03, not 5.02), and never negative even if percent is over 100. 2) `shippingCost(total)` in src/shipping.js - orders of $50 or more ship FREE, anything under pays a flat $5.95; exactly $50 counts as free. write a node:test for each covering those boundaries, run npm test, and land it when green.",
+      },
+    ],
+    timeoutMinutes: 30,
+    checks: [
+      { kind: "jobs_in_isolated_worktrees", min: 1 },
+      { kind: "jobs_used_worker_model" },
+      {
+        kind: "worker_review",
+        min: 1,
+        requireFixOrChanges: true,
+        requireSettled: true,
+      },
+      { kind: "landed_checks_pass", command: "npm test" },
+      {
+        kind: "ask_captured",
+        id: "coupon",
+        keywords: ["coupon"],
+        askKind: "task",
+        requiresJob: true,
+      },
+      { kind: "no_lead_project_edits" },
     ],
   },
 ];
