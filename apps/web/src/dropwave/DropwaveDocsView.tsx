@@ -254,6 +254,10 @@ export function DropwaveDocsView({
   }
 
   const activeDocView = creatingNew || !selectedPath ? null : openDoc;
+  // Wide pointers edit in place: a selected doc always shows the editor, so a
+  // stale `editing=false` (e.g. re-clicking the open doc) can never strand the
+  // reader on desktop. Narrow/coarse keeps read-first with an Edit button.
+  const showEditor = editing || creatingNew || (activeDocView !== null && !narrowViewport);
   const filteredDocs = query.trim()
     ? docs.filter(
         (doc) =>
@@ -478,7 +482,7 @@ export function DropwaveDocsView({
         ) : null}
 
         {tab === "docs" ? (
-          editing || creatingNew ? (
+          showEditor ? (
             <div data-dropwave-doc-editor="editorial">
               <div data-dropwave-doc-bar="">
                 <DropwaveSelect
