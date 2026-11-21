@@ -114,6 +114,39 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+export interface WorkerReviewIssue {
+  readonly severity: "blocker" | "major" | "minor";
+  readonly file: string;
+  readonly line: number | null;
+  readonly problem: string;
+  readonly fix: string;
+}
+
+export interface WorkerReviewGenerationInput {
+  /** The worker's checkout; the reviewer reads it read-only when it can investigate. */
+  cwd: string;
+  /** The delegate_task brief without the appended worker boilerplate. */
+  brief: string;
+  /** Definition-of-done check lines, when the brief carried them. */
+  doneChecks?: string | undefined;
+  /** The worker's latest final report. */
+  workerReport: string;
+  /** `git diff <base>...HEAD` plus the uncommitted diff stat, capped inline. */
+  diff: string;
+  /** Appended inside the diff heading, e.g. that the diff is inlined for a non-investigating reviewer. */
+  diffNote?: string | undefined;
+  /** Default true: investigate cwd read-only. False: single-shot with the diff inline. */
+  investigate?: boolean | undefined;
+  modelSelection: ModelSelection;
+  projectId?: ProjectId | null | undefined;
+}
+
+export interface WorkerReviewGenerationResult {
+  readonly verdict: "approve" | "changes";
+  readonly summary: string;
+  readonly issues: ReadonlyArray<WorkerReviewIssue>;
+}
+
 export interface ProviderTextGeneration {
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
@@ -138,4 +171,8 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  readonly generateWorkerReview: (
+    input: WorkerReviewGenerationInput,
+  ) => Effect.Effect<WorkerReviewGenerationResult, TextGenerationError>;
 }

@@ -520,3 +520,52 @@ export const DropwavePersonaDeleteResult = Schema.Struct({
   deleted: Schema.Boolean,
 });
 export type DropwavePersonaDeleteResult = typeof DropwavePersonaDeleteResult.Type;
+
+export const DropwaveWorkerReviewIssue = Schema.Struct({
+  severity: Schema.Literals(["blocker", "major", "minor"]),
+  file: Schema.String,
+  line: Schema.NullOr(Schema.Int),
+  problem: Schema.String,
+  fix: Schema.String,
+});
+export type DropwaveWorkerReviewIssue = typeof DropwaveWorkerReviewIssue.Type;
+
+export const DropwaveWorkerReviewVerdict = Schema.Struct({
+  round: Schema.Int,
+  verdict: Schema.Literals(["approve", "changes", "unreviewed"]),
+  summary: Schema.String,
+  issues: Schema.Array(DropwaveWorkerReviewIssue),
+  reviewerModel: Schema.String,
+  diffNote: Schema.optional(Schema.String),
+  reason: Schema.optional(Schema.String),
+  at: IsoDateTime,
+});
+export type DropwaveWorkerReviewVerdict = typeof DropwaveWorkerReviewVerdict.Type;
+
+export const DropwaveWorkerReview = Schema.Struct({
+  jobId: TrimmedNonEmptyString,
+  leadThreadId: ThreadId,
+  projectId: ProjectId,
+  workerThreadId: Schema.NullOr(ThreadId),
+  workerBranch: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["reviewing", "fixing", "approved", "changes", "unreviewed"]),
+  rounds: Schema.Int,
+  maxRounds: Schema.Int,
+  verdicts: Schema.Array(DropwaveWorkerReviewVerdict),
+  landOverride: Schema.NullOr(Schema.Struct({ quote: Schema.String, at: IsoDateTime })),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+});
+export type DropwaveWorkerReview = typeof DropwaveWorkerReview.Type;
+
+export const DropwaveWorkerReviewsListInput = Schema.Struct({
+  projectId: Schema.optional(ProjectId),
+  leadThreadId: Schema.optional(ThreadId),
+  limit: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+});
+export type DropwaveWorkerReviewsListInput = typeof DropwaveWorkerReviewsListInput.Type;
+
+export const DropwaveWorkerReviewsListResult = Schema.Struct({
+  reviews: Schema.Array(DropwaveWorkerReview),
+});
+export type DropwaveWorkerReviewsListResult = typeof DropwaveWorkerReviewsListResult.Type;

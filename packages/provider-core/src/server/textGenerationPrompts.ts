@@ -520,3 +520,75 @@ export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
 
   return { prompt, outputSchema };
 }
+
+// Verbatim from the Fusion workers design (~/Worktrees/dropwave-plans/workerReviewPrompt.ts).
+const DROPWAVE_WORKER_REVIEW_PROMPT = `You are a code reviewer with fresh eyes. A worker was given the brief below and has finished. Decide whether the work actually does what the brief asks, safely, before anyone is told it is done. You have read-only access to the worker's checkout. Read the changed files, not just the diff, when you need context. You cannot edit anything and must not try.
+
+Check, in this order:
+1. Does it do what the brief asked? Every requirement, including ones the tests do not cover. Anything asked for but missing is a blocker.
+2. Is anything broken? Logic errors, wrong edge cases, crashes, data loss, security holes (injection, secrets in code or logs, missing auth checks), race conditions.
+3. Did it stay in scope? Unrequested changes to unrelated files, deleted tests, weakened assertions, skipped checks, or disabled lint rules to get green are blockers.
+4. Did it prove it? The definition-of-done checks should have been run and passed according to the worker's report. A claim with no evidence is a major issue.
+5. Only then: clarity and maintainability problems that will cause real trouble later (major), or small polish (minor).
+
+Do not nitpick style the project's formatter or linter would handle. Do not ask for rewrites that are a matter of taste. If the work is right, approve it; approving good work is as important as catching bad work.
+
+Severity:
+- "blocker": the brief is not met, or something is broken, unsafe, or out of scope.
+- "major": likely to cause a real problem, or a claim is unproven.
+- "minor": worth knowing, not worth another round.
+
+Verdict: "changes" if there is at least one blocker or major issue, otherwise "approve".
+
+Return ONLY JSON, no prose around it:
+{"verdict": "approve" | "changes", "summary": "<one or two plain sentences a busy owner understands>", "issues": [{"severity": "blocker" | "major" | "minor", "file": "<path or empty>", "line": <number or null>, "problem": "<what is wrong, concretely>", "fix": "<what to do, concretely>"}]}
+
+Brief:
+"""
+{{BRIEF}}
+"""
+
+Definition of done (checks the worker was told to run):
+"""
+{{DONE_CHECKS}}
+"""
+
+Worker's final report:
+"""
+{{WORKER_REPORT}}
+"""
+
+Changes (diff against the starting point{{DIFF_NOTE}}):
+"""
+{{DIFF}}
+"""`;
+
+export interface WorkerReviewPromptInput {
+  readonly brief: string;
+  readonly doneChecks?: string | undefined;
+  readonly workerReport: string;
+  readonly diff: string;
+  readonly diffNote?: string | undefined;
+}
+
+export function buildWorkerReviewPrompt(input: WorkerReviewPromptInput) {
+  const prompt = DROPWAVE_WORKER_REVIEW_PROMPT.replaceAll("{{BRIEF}}", input.brief)
+    .replaceAll("{{DONE_CHECKS}}", input.doneChecks?.trim() || "(none stated)")
+    .replaceAll("{{WORKER_REPORT}}", input.workerReport)
+    .replaceAll("{{DIFF_NOTE}}", input.diffNote ?? "")
+    .replaceAll("{{DIFF}}", input.diff);
+  const outputSchema = Schema.Struct({
+    verdict: Schema.Literals(["approve", "changes"]),
+    summary: Schema.String,
+    issues: Schema.Array(
+      Schema.Struct({
+        severity: Schema.Literals(["blocker", "major", "minor"]),
+        file: Schema.String,
+        line: Schema.NullOr(Schema.Int),
+        problem: Schema.String,
+        fix: Schema.String,
+      }),
+    ),
+  });
+  return { prompt, outputSchema };
+}
