@@ -550,6 +550,7 @@ export function DropwaveDocsView({
                 <DropwaveBlockNoteEditor
                   key={creatingNew ? "new" : (openDoc?.path ?? "draft")}
                   markdown={draftContent}
+                  title={draftTitle}
                   onChange={setDraftContent}
                 />
               </Suspense>
