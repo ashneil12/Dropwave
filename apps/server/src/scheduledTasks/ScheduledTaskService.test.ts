@@ -34,7 +34,11 @@ import { OrchestratorDispatchError } from "../orchestration-v2/Orchestrator.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as DropwaveStore from "../dropwave/DropwaveStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
+import * as MemoryTidy from "./memoryTidy.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
@@ -1225,4 +1229,99 @@ it.effect("a run interrupted right after it reserves the task does not block the
       assert.equal(yield* Ref.get(launches), 1);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect(
+  "memory tidy registers as a system habit, runs the dream without launching a thread, and cannot be deleted",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const store = yield* DropwaveStore.DropwaveStore;
+      const projectRow = {
+        projectId: ProjectId.make("project:tidy-host"),
+        title: "Tidy Host",
+        workspaceRoot: "/tmp/tidy-host",
+        deletedAt: null,
+      } as never;
+      for (let index = 0; index < 20; index += 1) {
+        yield* store.saveMemory({
+          projectId: ProjectId.make("project:tidy-host"),
+          botThreadId: ThreadId.make("thread:tidy-bot"),
+          scope: "owner",
+          kind: "fact",
+          subject: `Tidy pool ${index}`,
+          text: `A distinct memory number ${index} about its own topic.`,
+        });
+      }
+      const launches = yield* Ref.make(0);
+      const layer = ScheduledTaskService.layer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            ManagedPolicy.layerTest(),
+            Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+              launch: () =>
+                Ref.update(launches, (n) => n + 1).pipe(
+                  Effect.andThen(Effect.die("memory tidy must not launch a thread")),
+                ),
+            }),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              sendToThread: () => Effect.die("memory tidy must not message a thread"),
+            }),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+              namedProjectsRoot: "/projects",
+              isScratchProject: () => Effect.succeed(false),
+            }),
+            NodeCrypto.layer,
+            Scheduler.layer,
+            ServerSettings.ServerSettingsService.layerTest({
+              defaultModelSelection: {
+                instanceId: ProviderInstanceId.make("codex"),
+                model: "gpt-5.4",
+              },
+            }),
+            Layer.mock(ProjectStore.ProjectStoreV2)({
+              list: () => Effect.succeed([projectRow]),
+              get: () => Effect.succeed(Option.some(projectRow)),
+            }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ScheduledTaskService.ScheduledTaskService;
+        const { tasks } = yield* service.list();
+        const tidy = tasks.find((task) => task.id === MemoryTidy.MEMORY_TIDY_TASK_ID);
+        assert.isDefined(tidy);
+        assert.equal(tidy?.createdBy, "system");
+        assert.equal(tidy?.creationSource, "server");
+        assert.deepEqual(tidy?.schedule, { type: "fixed_time", timeOfDay: "03:00" });
+        assert.equal(tidy?.enabled, true);
+
+        yield* service.runNow({ id: tidy!.id });
+        assert.equal(yield* Ref.get(launches), 0);
+        const meta = yield* store.getMemoryMeta("dream:last");
+        assert.equal(typeof (meta as { at?: unknown }).at, "string");
+        const after = (yield* service.list()).tasks.find(
+          (task) => task.id === MemoryTidy.MEMORY_TIDY_TASK_ID,
+        );
+        assert.equal(after?.lastRunStatus, "succeeded");
+
+        const refused = yield* service.delete({ id: tidy!.id }).pipe(Effect.flip);
+        assert.isTrue(isScheduledTaskError(refused));
+        assert.include(refused.message, "cannot be deleted");
+        assert.lengthOf(
+          (yield* service.list()).tasks.filter(
+            (task) => task.id === MemoryTidy.MEMORY_TIDY_TASK_ID,
+          ),
+          1,
+        );
+      }).pipe(Effect.provide(layer));
+      // The ensure path is idempotent: a second list must not duplicate the row.
+      const rows = yield* sql<{ task_id: string }>`
+        SELECT task_id FROM scheduled_tasks WHERE task_id = ${String(MemoryTidy.MEMORY_TIDY_TASK_ID)}
+      `;
+      assert.lengthOf(rows, 1);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(SqlitePersistence.layerMemory, DropwaveStore.layerMemory)),
+    ),
 );

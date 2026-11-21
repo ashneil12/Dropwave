@@ -241,7 +241,10 @@ function DropwaveHabitsContent({ envId }: { envId: EnvironmentId }) {
         {shownTasks.map((task) => {
           const ownerProj = workspace.projects.find((p) => p.id === task.projectId);
           const owner = ownerFor(task);
-          const ownerName = owner?.title ?? ownerProj?.title ?? gt("A bot");
+          const systemTask = task.createdBy === "system";
+          const ownerName = systemTask
+            ? "Dropwave"
+            : (owner?.title ?? ownerProj?.title ?? gt("A bot"));
           const summary = summaries.get(task.id) ?? habitPromptFallback(task.prompt);
           const agentMade = task.createdBy === "agent" || task.creationSource === "mcp";
           return (
@@ -330,27 +333,31 @@ function DropwaveHabitsContent({ envId }: { envId: EnvironmentId }) {
                     <PlayIcon className="size-3.5" />
                   )}
                 </button>
-                <button
-                  type="button"
-                  data-dw-mini-icon=""
-                  aria-label={gt("Edit habit")}
-                  disabled={busyId === task.id}
-                  onClick={() => {
-                    const ownerProj = workspace.projects.find((p) => p.id === task.projectId);
-                    if (ownerProj) setSheet({ task, project: ownerProj });
-                  }}
-                >
-                  <PencilIcon className="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  data-dw-mini-icon=""
-                  aria-label={gt("Delete habit")}
-                  disabled={busyId === task.id}
-                  onClick={() => void removeTask(task)}
-                >
-                  <Trash2Icon className="size-3.5" />
-                </button>
+                {!systemTask ? (
+                  <>
+                    <button
+                      type="button"
+                      data-dw-mini-icon=""
+                      aria-label={gt("Edit habit")}
+                      disabled={busyId === task.id}
+                      onClick={() => {
+                        const ownerProj = workspace.projects.find((p) => p.id === task.projectId);
+                        if (ownerProj) setSheet({ task, project: ownerProj });
+                      }}
+                    >
+                      <PencilIcon className="size-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      data-dw-mini-icon=""
+                      aria-label={gt("Delete habit")}
+                      disabled={busyId === task.id}
+                      onClick={() => void removeTask(task)}
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
+                  </>
+                ) : null}
               </div>
             </article>
           );
