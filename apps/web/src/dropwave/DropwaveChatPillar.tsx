@@ -53,7 +53,8 @@ import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { DropwaveBotAvatar } from "./DropwaveBotAvatar";
 import { DropwaveComposerControls } from "./DropwaveComposerControls";
 import { DropwaveMarkdown } from "./DropwaveMarkdown";
-import { DropwaveWorkingBlock } from "./DropwaveWorkingBlock";
+import { buildDropwaveChatTimeline } from "./DropwaveChatTimeline.logic";
+import { DropwaveWorkingBlock, workSegmentHasSteps } from "./DropwaveWorkingBlock";
 import { workState } from "./model";
 import { useDropwaveWorkspace } from "./workspaceContext";
 
@@ -406,9 +407,11 @@ function HelperChildApprovals({
 }
 
 export function DropwaveChatPillar({
+  composerPrefill,
   onOpenDocPath,
   onOpenThreadId,
 }: {
+  composerPrefill?: { threadId: string; text: string; nonce: number } | null;
   onOpenDocPath?: (docPath: string) => void;
   onOpenThreadId?: (threadId: string) => void;
 } = {}) {
@@ -431,6 +434,16 @@ export function DropwaveChatPillar({
   const activeThreadRef = activeThread
     ? scopeThreadRef(activeThread.environmentId, activeThread.id)
     : null;
+
+  const appliedPrefillRef = useRef<number | null>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- applies a one-shot composer prefill requested from another surface
+  useEffect(() => {
+    if (!composerPrefill || composerPrefill.threadId !== activeThread?.id) return;
+    if (appliedPrefillRef.current === composerPrefill.nonce) return;
+    appliedPrefillRef.current = composerPrefill.nonce;
+    setDraft(composerPrefill.text);
+    textareaRef.current?.focus();
+  }, [composerPrefill, activeThread?.id]);
 
   const projection = useThreadProjection(activeThreadRef);
   const visibleItems = useThreadVisibleTurnItems(activeThreadRef);
@@ -716,6 +729,87 @@ export function DropwaveChatPillar({
 
   const projectName = workspace.project?.title ?? gt("Workspace");
 
+  const renderChatMessage = (msg: (typeof liveMessages)[number]) => {
+    if (msg.role === "user" && msg.createdBy !== "user") {
+      const isOpen = Boolean(openAgentMsgs[msg.id]);
+      const senderBot = msg.senderThreadId
+        ? workspace.bots.find((b) => b.id === msg.senderThreadId)
+        : null;
+      const senderLabel = senderBot
+        ? gt("From {name}", { name: senderBot.title })
+        : msg.text.startsWith("[Dropwave supervisor]")
+          ? gt("Supervisor check")
+          : gt("Agent update");
+      const preview = msg.text
+        .replace(/^\[Dropwave supervisor\]\s*/i, "")
+        .replace(/^\[From [^\]]+\]\s*/i, "")
+        .split("\n")[0]
+        ?.slice(0, 72);
+      return (
+        <div key={msg.id} data-dw-turn="bot">
+          <div data-dw-work-fold="">
+            <button
+              type="button"
+              data-dw-work-trigger=""
+              aria-expanded={isOpen}
+              onClick={() => setOpenAgentMsgs((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))}
+            >
+              <span data-dw-dot="indigo" />
+              <span>{senderLabel}</span>
+              {preview ? <span data-dw-mono="dim">· {preview}</span> : null}
+              {isOpen ? (
+                <ChevronUpIcon className="size-3 opacity-60" />
+              ) : (
+                <ChevronDownIcon className="size-3 opacity-60" />
+              )}
+            </button>
+            <div data-dw-work-body={isOpen ? "open" : "closed"}>
+              <div data-dw-work-body-inner="">
+                <div data-dw-work-step="">
+                  <DropwaveMarkdown
+                    text={msg.text}
+                    onOpenDocPath={onOpenDocPath}
+                    onOpenThreadId={onOpenThreadId}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return msg.role === "user" ? (
+      <div key={msg.id} data-dw-turn="owner">
+        <div data-dw-owner-pill="">
+          <p>{msg.text}</p>
+        </div>
+      </div>
+    ) : (
+      <div key={msg.id} data-dw-turn="bot">
+        <DropwaveMarkdown
+          text={msg.text}
+          onOpenDocPath={onOpenDocPath}
+          onOpenThreadId={onOpenThreadId}
+        />
+      </div>
+    );
+  };
+
+  // One ordered timeline from the same projected turn items T3's chat uses:
+  // each run of work renders as its own block where it happened. When the
+  // projection does not account for every message, fall back to the plain
+  // message list plus a single trailing block so nothing is lost.
+  const timelineSegments = buildDropwaveChatTimeline(visibleItems);
+  const lastWorkSegmentIndex = timelineSegments.findLastIndex((s) => s.kind === "work");
+  const messageById = new Map<string, (typeof liveMessages)[number]>(
+    liveMessages.map((msg) => [msg.id, msg]),
+  );
+  const coveredMessageIds = new Set(
+    timelineSegments.flatMap((segment) => (segment.kind === "message" ? [segment.messageId] : [])),
+  );
+  const timelineCoversMessages =
+    liveMessages.length > 0 && liveMessages.every((msg) => coveredMessageIds.has(msg.id));
+
   return (
     <div data-dw-chat-stage="">
       <div data-dw-chat-scroll="">
@@ -798,80 +892,34 @@ export function DropwaveChatPillar({
                     </button>
                   </div>
                 </div>
-              ) : (
-                liveMessages.map((msg) => {
-                  if (msg.role === "user" && msg.createdBy !== "user") {
-                    const isOpen = Boolean(openAgentMsgs[msg.id]);
-                    const senderBot = msg.senderThreadId
-                      ? workspace.bots.find((b) => b.id === msg.senderThreadId)
-                      : null;
-                    const senderLabel = senderBot
-                      ? gt("From {name}", { name: senderBot.title })
-                      : msg.text.startsWith("[Dropwave supervisor]")
-                        ? gt("Supervisor check")
-                        : gt("Agent update");
-                    const preview = msg.text
-                      .replace(/^\[Dropwave supervisor\]\s*/i, "")
-                      .replace(/^\[From [^\]]+\]\s*/i, "")
-                      .split("\n")[0]
-                      ?.slice(0, 72);
-                    return (
-                      <div key={msg.id} data-dw-turn="bot">
-                        <div data-dw-work-fold="">
-                          <button
-                            type="button"
-                            data-dw-work-trigger=""
-                            aria-expanded={isOpen}
-                            onClick={() =>
-                              setOpenAgentMsgs((prev) => ({ ...prev, [msg.id]: !prev[msg.id] }))
-                            }
-                          >
-                            <span data-dw-dot="indigo" />
-                            <span>{senderLabel}</span>
-                            {preview ? <span data-dw-mono="dim">· {preview}</span> : null}
-                            {isOpen ? (
-                              <ChevronUpIcon className="size-3 opacity-60" />
-                            ) : (
-                              <ChevronDownIcon className="size-3 opacity-60" />
-                            )}
-                          </button>
-                          <div data-dw-work-body={isOpen ? "open" : "closed"}>
-                            <div data-dw-work-body-inner="">
-                              <div data-dw-work-step="">
-                                <DropwaveMarkdown
-                                  text={msg.text}
-                                  onOpenDocPath={onOpenDocPath}
-                                  onOpenThreadId={onOpenThreadId}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
+              ) : timelineCoversMessages ? (
+                timelineSegments.map((segment, segmentIndex) => {
+                  if (segment.kind === "message") {
+                    const msg = messageById.get(segment.messageId);
+                    return msg ? renderChatMessage(msg) : null;
                   }
-                  return msg.role === "user" ? (
-                    <div key={msg.id} data-dw-turn="owner">
-                      <div data-dw-owner-pill="">
-                        <p>{msg.text}</p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div key={msg.id} data-dw-turn="bot">
-                      <DropwaveMarkdown
-                        text={msg.text}
-                        onOpenDocPath={onOpenDocPath}
-                        onOpenThreadId={onOpenThreadId}
+                  const workKey = segment.entries[0]?.item.id ?? `work-${segmentIndex}`;
+                  const segmentIsLive = isLiveRunning && segmentIndex === lastWorkSegmentIndex;
+                  if (!segmentIsLive && !workSegmentHasSteps(segment.entries)) return null;
+                  return (
+                    <div key={`work-${workKey}`} data-dw-turn="bot">
+                      <DropwaveWorkingBlock
+                        visibleItems={segment.entries}
+                        isRunning={segmentIsLive}
                       />
                     </div>
                   );
                 })
+              ) : (
+                liveMessages.map((msg) => renderChatMessage(msg))
               )}
 
               {/* Devin-Next style live working stream + faded auto-collapsing Thoughts + Thinking Orb */}
-              <div data-dw-turn="bot">
-                <DropwaveWorkingBlock visibleItems={visibleItems} isRunning={isLiveRunning} />
-              </div>
+              {!timelineCoversMessages ? (
+                <div data-dw-turn="bot">
+                  <DropwaveWorkingBlock visibleItems={visibleItems} isRunning={isLiveRunning} />
+                </div>
+              ) : null}
 
               {/* AffectUI-style 1-line folding background runs pill */}
               {liveSubagents.length > 0 && activeThreadRef ? (

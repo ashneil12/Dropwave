@@ -27,6 +27,7 @@ import { useEnvironmentScope } from "../state/session";
 import { threadFamilies } from "../state/threads";
 import { DropwaveAsksPanel } from "./DropwaveAsksPanel";
 import { DropwaveBotEditor } from "./DropwaveBotEditor";
+import { DropwaveProjectRuns } from "./DropwaveProjectRuns";
 import {
   attentionFirst,
   botOwner,
@@ -351,6 +352,13 @@ export function DropwavePanels({ panel, onClose }: { panel: WorkspacePanel; onCl
   const gt = useGT();
   if (!workspace) return null;
   if (panel.kind === "profile") {
+    if (
+      panel.target.kind === "edit" &&
+      panel.target.decision === undefined &&
+      panel.target.bot.source.dropwaveBot?.kind === "lead"
+    ) {
+      return <DropwaveProjectRuns bot={panel.target.bot} onClose={onClose} />;
+    }
     return <DropwaveBotEditor target={panel.target} onClose={onClose} />;
   }
 

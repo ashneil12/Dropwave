@@ -1,19 +1,12 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type {
-  DropwaveAsk,
-  DropwaveAskStatus,
-  DropwaveDoc,
-  DropwaveDocSummary,
-} from "@t3tools/contracts";
+import type { DropwaveDoc, DropwaveDocSummary } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { T, msg, useGT, useMessages } from "gt-react";
+import { T, useGT } from "gt-react";
 import {
   CheckCircle2Icon,
-  KanbanIcon,
   LayoutGridIcon,
   PinIcon,
   PinOffIcon,
-  PlusIcon,
   Trash2Icon,
   Wand2Icon,
 } from "lucide-react";
@@ -29,8 +22,13 @@ import { useDropwaveWorkspace } from "./workspaceContext";
 
 export const PINNED_HUBS_KEY = "dropwave:pinned-hubs";
 export const PinnedHubsSchema = Schema.Array(Schema.String);
-export const BUILTIN_KANBAN_HUB_ID = "builtin:kanban";
 export const BUILTIN_SHIP_GATE_HUB_ID = "builtin:ship-gate";
+/** Retired hub id kept only to sanitize stale pins stored in localStorage. */
+const RETIRED_KANBAN_HUB_ID = "builtin:kanban";
+
+function liveHubId(id: string | null | undefined): string {
+  return !id || id === RETIRED_KANBAN_HUB_ID ? BUILTIN_SHIP_GATE_HUB_ID : id;
+}
 
 const DROPWAVE_HUB_THEME_HEAD = `<style>
 :root {
@@ -61,158 +59,7 @@ function injectHubTheme(rawHtml: string): string {
   return `<!doctype html><html><head><meta charset="utf-8">${DROPWAVE_HUB_THEME_HEAD}</head><body>${rawHtml}</body></html>`;
 }
 
-const KANBAN_COLUMNS: ReadonlyArray<{
-  readonly id: string;
-  readonly statuses: ReadonlyArray<DropwaveAskStatus>;
-  readonly nextStatus: DropwaveAskStatus;
-  readonly title: string;
-  readonly tone: "amber" | "indigo" | "coral" | "emerald";
-}> = [
-  {
-    id: "queued",
-    statuses: ["heard", "maybe"],
-    nextStatus: "started",
-    title: msg("Queued"),
-    tone: "amber",
-  },
-  {
-    id: "progress",
-    statuses: ["started"],
-    nextStatus: "done",
-    title: msg("In Progress"),
-    tone: "indigo",
-  },
-  {
-    id: "waiting",
-    statuses: ["waiting"],
-    nextStatus: "started",
-    title: msg("Waiting"),
-    tone: "coral",
-  },
-  { id: "done", statuses: ["done"], nextStatus: "heard", title: msg("Done"), tone: "emerald" },
-];
-
 const ChecklistSchema = Schema.Record(Schema.String, Schema.Boolean);
-
-function BuiltinKanbanHub() {
-  const workspace = useDropwaveWorkspace();
-  const gt = useGT();
-  const m = useMessages();
-  const project = workspace?.project ?? null;
-  const [asks, setAsks] = useState<ReadonlyArray<DropwaveAsk>>([]);
-  const [newAskText, setNewAskText] = useState("");
-  const [nonce, setNonce] = useState(0);
-
-  const listAsks = useAtomCommand(serverEnvironment.dropwaveAsksList, { reportFailure: false });
-  const addAsk = useAtomCommand(serverEnvironment.dropwaveAskAdd, { reportFailure: false });
-  const updateAsk = useAtomCommand(serverEnvironment.dropwaveAskUpdate, { reportFailure: false });
-
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- loads project asks for live Kanban hub
-  useEffect(() => {
-    if (!project || nonce < 0) return;
-    let cancelled = false;
-    void listAsks({
-      environmentId: project.environmentId,
-      input: { projectId: project.id, includeClosed: true },
-    }).then((res) => {
-      if (!cancelled && res._tag === "Success") setAsks(res.value.asks);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [listAsks, nonce, project]);
-
-  if (!workspace || !project) return null;
-
-  const handleAdd = async (e: FormEvent) => {
-    e.preventDefault();
-    const text = newAskText.trim();
-    if (!text || !workspace.lead) return;
-    const res = await addAsk({
-      environmentId: project.environmentId,
-      input: {
-        projectId: project.id,
-        botThreadId: workspace.lead.id,
-        text,
-        kind: "do",
-      },
-    });
-    if (res._tag === "Success") {
-      setNewAskText("");
-      setNonce((n) => n + 1);
-      workspace.refreshOpenAsksCount();
-    }
-  };
-
-  const moveAsk = async (ask: DropwaveAsk, status: DropwaveAskStatus) => {
-    await updateAsk({
-      environmentId: project.environmentId,
-      input: {
-        askId: ask.id,
-        status,
-        ...(status === "done" ? { proof: gt("Marked done on Kanban hub") } : {}),
-      },
-    });
-    setNonce((n) => n + 1);
-    workspace.refreshOpenAsksCount();
-  };
-
-  return (
-    <div data-dw-kanban-wrap="">
-      <form data-dw-kanban-add="" onSubmit={(e) => void handleAdd(e)}>
-        <input
-          value={newAskText}
-          onChange={(e) => setNewAskText(e.currentTarget.value)}
-          placeholder={gt("Add card directly to {name} Kanban…", { name: project.title })}
-        />
-        <button type="submit" data-dw-btn-solid="" disabled={!newAskText.trim() || !workspace.lead}>
-          <PlusIcon className="size-3.5" />
-          <T>Add card</T>
-        </button>
-      </form>
-
-      <div data-dw-kanban-grid="">
-        {KANBAN_COLUMNS.map((col) => {
-          const cards = asks.filter((a) => col.statuses.includes(a.status));
-          return (
-            <div key={col.id} data-dw-kanban-col="">
-              <header data-dw-kanban-col-head="">
-                <span>
-                  <span data-dw-dot={col.tone} />
-                  <strong>{m(col.title)}</strong>
-                </span>
-                <span data-dw-mono="dim">{cards.length}</span>
-              </header>
-              <div data-dw-kanban-cards="">
-                {cards.map((ask) => (
-                  <div key={ask.id} data-dw-kanban-card="">
-                    <div data-dw-kanban-card-top="">
-                      <span data-dw-mono="dim">#{ask.n}</span>
-                      <button
-                        type="button"
-                        data-dw-inline-link=""
-                        onClick={() => void moveAsk(ask, col.nextStatus)}
-                      >
-                        {col.id === "done" ? <T>Reopen</T> : <T>Advance →</T>}
-                      </button>
-                    </div>
-                    <p>{ask.summary}</p>
-                    {ask.proof ? <small>{ask.proof}</small> : null}
-                  </div>
-                ))}
-                {cards.length === 0 ? (
-                  <p data-dw-rail-empty="">
-                    <T>Empty</T>
-                  </p>
-                ) : null}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 function BuiltinShipGateHub({ projectKey }: { projectKey: string }) {
   const gt = useGT();
@@ -269,11 +116,11 @@ export function DropwaveHubsView({
 
   const [pinnedHubs, setPinnedHubs] = useLocalStorage(
     PINNED_HUBS_KEY,
-    [BUILTIN_KANBAN_HUB_ID],
+    [BUILTIN_SHIP_GATE_HUB_ID],
     PinnedHubsSchema,
   );
   const [customHubs, setCustomHubs] = useState<ReadonlyArray<DropwaveDocSummary>>([]);
-  const [selectedHubId, setSelectedHubId] = useState<string>(initialHubId || BUILTIN_KANBAN_HUB_ID);
+  const [selectedHubId, setSelectedHubId] = useState<string>(() => liveHubId(initialHubId));
   const [loadedHubDoc, setLoadedHubDoc] = useState<DropwaveDoc | null>(null);
   const [buildIdea, setBuildIdea] = useState("");
   const [building, setBuilding] = useState(false);
@@ -284,7 +131,7 @@ export function DropwaveHubsView({
   const deleteDoc = useAtomCommand(serverEnvironment.dropwaveDocDelete, { reportFailure: false });
   const startTurn = useOrchestrationCommand(threadEnvironment.startTurn, { reportFailure: false });
 
-  const activeHubId = initialHubId || selectedHubId;
+  const activeHubId = liveHubId(initialHubId || selectedHubId);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- lists custom agent-built HTML hubs from .dropwave/hubs/
   useEffect(() => {
@@ -374,7 +221,7 @@ export function DropwaveHubsView({
       input: { projectId: project.id, path },
     });
     if (pinnedSet.has(path)) togglePin(path);
-    selectHub(BUILTIN_KANBAN_HUB_ID);
+    selectHub(BUILTIN_SHIP_GATE_HUB_ID);
     setNonce((n) => n + 1);
   };
 
@@ -389,34 +236,33 @@ export function DropwaveHubsView({
           </span>
         </div>
         <div data-dw-hub-list="">
-          {[
-            { id: BUILTIN_KANBAN_HUB_ID, title: gt("Asks Kanban"), icon: KanbanIcon },
-            { id: BUILTIN_SHIP_GATE_HUB_ID, title: gt("Ship Gate"), icon: CheckCircle2Icon },
-          ].map((hub) => {
-            const Icon = hub.icon;
-            const pinned = pinnedSet.has(hub.id);
-            return (
-              <div
-                key={hub.id}
-                data-dw-hub-item=""
-                data-active={activeHubId === hub.id ? "true" : undefined}
-              >
-                <button type="button" data-dw-hub-pick="" onClick={() => selectHub(hub.id)}>
-                  <Icon className="size-3.5 shrink-0" />
-                  <span>{hub.title}</span>
-                </button>
-                <button
-                  type="button"
-                  data-dw-pin-btn=""
-                  aria-label={pinned ? gt("Unpin hub") : gt("Pin hub to sidebar")}
-                  aria-pressed={pinned}
-                  onClick={() => togglePin(hub.id)}
+          {[{ id: BUILTIN_SHIP_GATE_HUB_ID, title: gt("Ship Gate"), icon: CheckCircle2Icon }].map(
+            (hub) => {
+              const Icon = hub.icon;
+              const pinned = pinnedSet.has(hub.id);
+              return (
+                <div
+                  key={hub.id}
+                  data-dw-hub-item=""
+                  data-active={activeHubId === hub.id ? "true" : undefined}
                 >
-                  {pinned ? <PinOffIcon className="size-3" /> : <PinIcon className="size-3" />}
-                </button>
-              </div>
-            );
-          })}
+                  <button type="button" data-dw-hub-pick="" onClick={() => selectHub(hub.id)}>
+                    <Icon className="size-3.5 shrink-0" />
+                    <span>{hub.title}</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-dw-pin-btn=""
+                    aria-label={pinned ? gt("Unpin hub") : gt("Pin hub to sidebar")}
+                    aria-pressed={pinned}
+                    onClick={() => togglePin(hub.id)}
+                  >
+                    {pinned ? <PinOffIcon className="size-3" /> : <PinIcon className="size-3" />}
+                  </button>
+                </div>
+              );
+            },
+          )}
         </div>
 
         <div data-dw-rail-head="" style={{ marginTop: 14 }}>
@@ -478,9 +324,7 @@ export function DropwaveHubsView({
       </aside>
 
       <div data-dw-hubs-stage="">
-        {activeHubId === BUILTIN_KANBAN_HUB_ID ? (
-          <BuiltinKanbanHub />
-        ) : activeHubId === BUILTIN_SHIP_GATE_HUB_ID ? (
+        {activeHubId === BUILTIN_SHIP_GATE_HUB_ID ? (
           <BuiltinShipGateHub projectKey={`${project.environmentId}:${project.id}`} />
         ) : !isBuiltin && loadedHubDoc ? (
           <div data-dw-custom-hub-frame="">

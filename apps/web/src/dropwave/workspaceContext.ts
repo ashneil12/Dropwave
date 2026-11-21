@@ -39,6 +39,8 @@ interface DropwaveWorkspaceState {
   readonly refreshOpenAsksCount: () => void;
   readonly selectProject: (project: EnvironmentProject) => void;
   readonly openThread: (thread: ScopedThreadRef) => void;
+  /** Opens the thread and drops `text` into its composer without sending. */
+  readonly prefillComposer: (thread: ScopedThreadRef, text: string) => void;
   readonly openPanel: (panel: WorkspacePanel | null) => void;
   readonly openDecisionQueue: () => void;
   readonly openSettings: () => void;

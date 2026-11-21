@@ -13,7 +13,7 @@ import { useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 import { T, Var, useGT } from "gt-react";
 import { PanelLeftOpenIcon } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { SidebarProvider } from "../components/ui/sidebar";
 import { useComposerDraftStore } from "../composerDraftStore";
@@ -191,6 +191,18 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
     void navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
   };
 
+  const [composerPrefill, setComposerPrefill] = useState<{
+    threadId: string;
+    text: string;
+    nonce: number;
+  } | null>(null);
+  const prefillNonceRef = useRef(0);
+  const prefillComposer = (ref: ScopedThreadRef, text: string) => {
+    prefillNonceRef.current += 1;
+    setComposerPrefill({ threadId: ref.threadId, text, nonce: prefillNonceRef.current });
+    openThread(ref);
+  };
+
   const selectProject = (chosen: EnvironmentProject) => {
     setLastProject(keyOfProject(chosen));
     setPanel(null);
@@ -243,6 +255,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
         refreshOpenAsksCount: () => setRefreshNonce((n) => n + 1),
         selectProject,
         openThread,
+        prefillComposer,
         openPanel: setPanel,
         openDecisionQueue: () => setDecisionModalOpen(true),
         openSettings: () => setSettingsOpen(true),
@@ -294,12 +307,6 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                       size="sm"
                     />
                     <strong>{headerName}</strong>
-                    {activeBot?.source.dropwaveBot?.kind === "lead" &&
-                    activeBot.source.dropwaveBot.onboardingPhase !== undefined ? (
-                      <em data-dw-onboarding-chip="">
-                        <T>Onboarding</T>
-                      </em>
-                    ) : null}
                     {project ? <span>{project.title}</span> : null}
                   </button>
                 </div>
@@ -390,6 +397,7 @@ export function DropwaveWorkspace({ children }: { children: ReactNode }) {
                   <DropwaveHabitsView />
                 ) : (
                   <DropwaveChatPillar
+                    composerPrefill={composerPrefill}
                     onOpenDocPath={(docPath) => {
                       setOpenDocPath(docPath);
                       setMainView("docs");
