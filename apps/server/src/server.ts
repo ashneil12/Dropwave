@@ -10,6 +10,7 @@ import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchRea
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as DropwaveDocsService from "./dropwave/DropwaveDocsService.ts";
 import * as DropwaveStore from "./dropwave/DropwaveStore.ts";
+import * as MemoryEmbeddings from "./dropwave/memoryEmbeddings.ts";
 import * as DropwaveSupervisor from "./dropwave/DropwaveSupervisor.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
@@ -749,7 +750,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
 ).pipe(
   Layer.provideMerge(
-    Layer.merge(DropwaveDocsService.layer, DropwaveStore.layer).pipe(
+    Layer.mergeAll(DropwaveDocsService.layer, DropwaveStore.layer, MemoryEmbeddings.layer).pipe(
       Layer.provideMerge(layerOrchestrationApplication),
     ),
   ),
